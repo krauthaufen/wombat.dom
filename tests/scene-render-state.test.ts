@@ -74,38 +74,38 @@ describe("Phase 1 — render-state scopes", () => {
   it("DepthTest overrides default 'less' on the leaf's PipelineState", () => {
     const tree = Sg({ DepthTest: "greater", children: leaf() });
     const [obj] = compileToObjects(tree);
-    expect(obj!.pipelineState.depth?.compare).toBe("greater");
+    expect(AVal.force(obj!.pipelineState.depth!.compare)).toBe("greater");
   });
 
   it("DepthTest innermost wins (override)", () => {
     const tree = Sg({ DepthTest: "always", children: Sg({ DepthTest: "equal", children: leaf() }) });
     const [obj] = compileToObjects(tree);
-    expect(obj!.pipelineState.depth?.compare).toBe("equal");
+    expect(AVal.force(obj!.pipelineState.depth!.compare)).toBe("equal");
   });
 
   it("DepthMask propagates to depth.write", () => {
     const tree = Sg({ DepthMask: false, children: leaf() });
     const [obj] = compileToObjects(tree);
-    expect(obj!.pipelineState.depth?.write).toBe(false);
+    expect(AVal.force(obj!.pipelineState.depth!.write)).toBe(false);
   });
 
   it("DepthBias maps to rasterizer.depthBias", () => {
     const tree = Sg({ DepthBias: { constant: 1, slopeScale: 2, clamp: 0 }, children: leaf() });
     const [obj] = compileToObjects(tree);
-    expect(obj!.pipelineState.rasterizer.depthBias).toEqual({ constant: 1, slopeScale: 2, clamp: 0 });
+    expect(AVal.force(obj!.pipelineState.rasterizer.depthBias!)).toEqual({ constant: 1, slopeScale: 2, clamp: 0 });
   });
 
   it("CullMode + FrontFace propagate", () => {
     const tree = Sg({ CullMode: "back", FrontFace: "cw", children: leaf() });
     const [obj] = compileToObjects(tree);
-    expect(obj!.pipelineState.rasterizer.cullMode).toBe("back");
-    expect(obj!.pipelineState.rasterizer.frontFace).toBe("cw");
+    expect(AVal.force(obj!.pipelineState.rasterizer.cullMode)).toBe("back");
+    expect(AVal.force(obj!.pipelineState.rasterizer.frontFace)).toBe("cw");
   });
 
   it("FillMode='line' overrides topology to line-list (with warning)", () => {
     const tree = Sg({ FillMode: "line", children: leaf() });
     const [obj] = compileToObjects(tree);
-    expect(obj!.pipelineState.rasterizer.topology).toBe("line-list");
+    expect(AVal.force(obj!.pipelineState.rasterizer.topology)).toBe("line-list");
   });
 
   it("StencilMode produces a stencil state when enabled", () => {
@@ -122,16 +122,17 @@ describe("Phase 1 — render-state scopes", () => {
     });
     const [obj] = compileToObjects(tree);
     expect(obj!.pipelineState.stencil).toBeDefined();
-    expect(obj!.pipelineState.stencil!.front.passOp).toBe("replace");
+    expect(AVal.force(obj!.pipelineState.stencil!.front.passOp)).toBe("replace");
   });
 
   it("ColorMask single-attachment shorthand produces a 'color' blend with channel mask", () => {
     const tree = Sg({ ColorMask: { r: true, g: false, b: true, a: false }, children: leaf() });
     const [obj] = compileToObjects(tree);
-    const cb = obj!.pipelineState.blends?.tryFind("color");
+    const blends = AVal.force(obj!.pipelineState.blends!);
+    const cb = blends.tryFind("color");
     expect(cb).toBeDefined();
     // R=1, B=4 → mask = 5
-    expect(cb!.writeMask).toBe(5);
+    expect(AVal.force(cb!.writeMask)).toBe(5);
   });
 
   it("Pass groups leaves: pass=10 leaf comes after pass=0 leaf regardless of scene order", () => {

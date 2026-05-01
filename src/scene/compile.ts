@@ -31,8 +31,9 @@ import { M44f, Trafo3d } from "@aardworx/wombat.base";
 import { RenderTree } from "@aardworx/wombat.rendering/core";
 import type {
   BlendState,
-  Command, ClearValues, IFramebuffer, ISampler, ITexture,
-  PipelineState, RasterizerState, RenderObject,
+  Command, ClearValues, DepthBiasState, DepthState,
+  IFramebuffer, ISampler, ITexture,
+  PipelineState, PlainRasterizerState, RasterizerState, RenderObject,
   StencilState, Topology,
 } from "@aardworx/wombat.rendering/core";
 import type { Effect } from "@aardworx/wombat.shader";
@@ -63,7 +64,8 @@ export interface CompileSceneOptions {
   /** Optional clear pass before the render. */
   readonly clear?: ClearValues;
   /** Default rasterizer state. */
-  readonly rasterizer?: RasterizerState;
+  /** Default rasterizer state (plain values). Wraps to avals at compile time. */
+  readonly rasterizer?: PlainRasterizerState;
   /** Whether to inject `ModelTrafo` / `ViewTrafo` / `ProjTrafo` / `ViewProjTrafo` uniforms. Default `true`. */
   readonly autoUniforms?: boolean;
   /**
@@ -543,7 +545,7 @@ function autoInjectedUniforms(state: TraversalState): HashMap<string, aval<unkno
 // docs/FUTURE.md: "reactive PipelineState".)
 // ---------------------------------------------------------------------------
 
-const defaultRasterizer: RasterizerState = {
+const defaultRasterizer: PlainRasterizerState = {
   topology: "triangle-list",
   cullMode: "none",
   frontFace: "ccw",
@@ -576,96 +578,128 @@ function topologyForMode(mode: ModeValue, fill: "fill" | "line" | "point"): Topo
   return mode;
 }
 
-function blendStateWithMask(b: BlendState, mask: ColorMaskValue | undefined): BlendState {
-  if (mask === undefined) return b;
+function maskBits(mask: ColorMaskValue): number {
   let bits = 0;
   if (mask.r) bits |= 1;
   if (mask.g) bits |= 2;
   if (mask.b) bits |= 4;
   if (mask.a) bits |= 8;
-  return { color: b.color, alpha: b.alpha, writeMask: bits };
+  return bits;
+}
+
+function blendStateWithMask(b: BlendState, mask: ColorMaskValue | undefined): BlendState {
+  if (mask === undefined) return b;
+  return { color: b.color, alpha: b.alpha, writeMask: AVal.constant(maskBits(mask)) };
 }
 
 function defaultBlendForMask(mask: ColorMaskValue): BlendState {
   // No blending, just channel mask. Mirrors WebGPU's "passthrough".
-  let bits = 0;
-  if (mask.r) bits |= 1;
-  if (mask.g) bits |= 2;
-  if (mask.b) bits |= 4;
-  if (mask.a) bits |= 8;
   return {
-    color: { operation: "add", srcFactor: "one", dstFactor: "zero" },
-    alpha: { operation: "add", srcFactor: "one", dstFactor: "zero" },
-    writeMask: bits,
+    color: {
+      operation: AVal.constant<GPUBlendOperation>("add"),
+      srcFactor: AVal.constant<GPUBlendFactor>("one"),
+      dstFactor: AVal.constant<GPUBlendFactor>("zero"),
+    },
+    alpha: {
+      operation: AVal.constant<GPUBlendOperation>("add"),
+      srcFactor: AVal.constant<GPUBlendFactor>("one"),
+      dstFactor: AVal.constant<GPUBlendFactor>("zero"),
+    },
+    writeMask: AVal.constant(maskBits(mask)),
   };
 }
 
 function derivePipelineState(state: TraversalState, opts: CompileSceneOptions): PipelineState {
   const baseRast = opts.rasterizer ?? defaultRasterizer;
-  const cull = AVal.force(state.cullMode);
-  const frontFace = AVal.force(state.frontFace);
-  const fill = AVal.force(state.fillMode);
-  const mode = AVal.force(state.mode);
-  const topology = topologyForMode(mode, fill);
+
+  // Topology = mode + fillMode (combine reactively). Calls
+  // `topologyForMode` per evaluation so the FillMode warning still
+  // triggers, but only as a side effect of the aval map.
+  const topology: aval<Topology> = AVal.zip(state.mode, state.fillMode).map((m, f) =>
+    topologyForMode(m, f),
+  );
+
+  // depthBias: state.depthBias (if present) is the source of truth;
+  // otherwise fall back to the static base rasterizer's depthBias.
+  const baseDepthBias = baseRast.depthBias;
+  const depthBiasAval = state.depthBias !== undefined
+    ? state.depthBias.map(b => b as DepthBiasState | undefined)
+    : (baseDepthBias !== undefined ? AVal.constant<DepthBiasState | undefined>(baseDepthBias) : undefined);
+
   const rasterizer: RasterizerState = {
     topology,
-    cullMode: cull,
-    frontFace,
-    ...(state.depthBias !== undefined
-      ? { depthBias: AVal.force(state.depthBias) }
-      : (baseRast.depthBias !== undefined ? { depthBias: baseRast.depthBias } : {})),
+    cullMode: state.cullMode,
+    frontFace: state.frontFace,
+    ...(depthBiasAval !== undefined ? { depthBias: depthBiasAval } : {}),
   };
 
-  const depthCompare = AVal.force(state.depthTest);
-  const depthWrite = AVal.force(state.depthMask);
-
-  // Phase 1 — depth clamp / multisample / blend-constant: WebGPU
-  // exposure of these is partial (require adapter features) — we
-  // surface the API for parity but log once if used.
-  if (!warnedDepthClamp && AVal.force(state.depthClamp) === true) {
-    console.warn("[wombat.dom] DepthClamp scope is set; WebGPU 'unclippedDepth' must be enabled on the device.");
-    warnedDepthClamp = true;
-  }
-  if (!warnedMultisample && AVal.force(state.multisample) === false) {
-    console.warn("[wombat.dom] Multisample=false has no effect — wombat.rendering does not expose per-RO sample masks.");
-    warnedMultisample = true;
-  }
-  if (!warnedBlendConstant && state.blendConstant !== undefined) {
-    console.warn("[wombat.dom] BlendConstant scope set; wombat.rendering does not expose `setBlendConstant` per RO. The constant is captured but not wired to the encoder.");
-    warnedBlendConstant = true;
-  }
-
-  // ColorMask: a HashMap<attachment, ColorMaskValue> override.
-  const masks = AVal.force(state.colorMask);
-  let blends: HashMap<string, BlendState> | undefined;
-  if (state.blendMode !== undefined) {
-    blends = HashMap.empty<string, BlendState>().add("color", blendStateWithMask(state.blendMode, masks.tryFind("color")));
-  }
-  if (masks.count > 0) {
-    if (blends === undefined) blends = HashMap.empty<string, BlendState>();
-    for (const [k, v] of masks) {
-      if (blends.tryFind(k) === undefined) blends = blends.add(k, defaultBlendForMask(v));
-    }
+  // ColorMask + BlendMode → blends aval. We construct the entire
+  // blends HashMap reactively from state.colorMask (and the static
+  // state.blendMode if present); per-entry BlendState fields stay
+  // aval-typed.
+  let blends: aval<HashMap<string, BlendState>> | undefined;
+  const blendModeStatic = state.blendMode;
+  if (blendModeStatic !== undefined || state.colorMask !== undefined) {
+    blends = state.colorMask.map(masks => {
+      let m = HashMap.empty<string, BlendState>();
+      if (blendModeStatic !== undefined) {
+        m = m.add("color", blendStateWithMask(blendModeStatic, masks.tryFind("color")));
+      }
+      for (const [k, v] of masks) {
+        if (m.tryFind(k) === undefined) m = m.add(k, defaultBlendForMask(v));
+      }
+      return m;
+    });
+    // If neither blendMode nor any colorMask entries, this evaluates
+    // to an empty HashMap — fine to leave on PipelineState; the
+    // prepared-RO snapshots empty as no-blend.
   }
 
+  // Stencil: state.stencilMode is `aval<StencilModeValue> | undefined`.
+  // The shape carries all fields in one aval; we lift each field.
   let stencil: StencilState | undefined;
-  if (state.stencilMode !== undefined) {
-    const sm = AVal.force(state.stencilMode);
-    if (sm.enabled) {
-      stencil = {
-        readMask: sm.readMask,
-        writeMask: sm.writeMask,
-        front: { compare: sm.front.compare, failOp: sm.front.fail, depthFailOp: sm.front.depthFail, passOp: sm.front.pass },
-        back:  { compare: sm.back.compare,  failOp: sm.back.fail,  depthFailOp: sm.back.depthFail,  passOp: sm.back.pass  },
-      };
-    }
+  const sm = state.stencilMode;
+  if (sm !== undefined) {
+    stencil = {
+      enabled: sm.map(v => v.enabled),
+      reference: sm.map(v => v.reference),
+      readMask: sm.map(v => v.readMask),
+      writeMask: sm.map(v => v.writeMask),
+      front: {
+        compare:     sm.map(v => v.front.compare),
+        failOp:      sm.map(v => v.front.fail),
+        depthFailOp: sm.map(v => v.front.depthFail),
+        passOp:      sm.map(v => v.front.pass),
+      },
+      back: {
+        compare:     sm.map(v => v.back.compare),
+        failOp:      sm.map(v => v.back.fail),
+        depthFailOp: sm.map(v => v.back.depthFail),
+        passOp:      sm.map(v => v.back.pass),
+      },
+    };
   }
+
+  // Phase 1's compile-time warnings for DepthClamp / Multisample /
+  // BlendConstant were dropped when PipelineState became fully
+  // reactive: we no longer force these avals at compile time, so
+  // the warning would now fire lazily on first frame-eval rather
+  // than at scope entry. The non-pipeline-rebuild fields are wired
+  // to per-frame setters in `preparedRenderObject.record`.
+  void warnedDepthClamp; void warnedMultisample; void warnedBlendConstant;
+
+  const depth: DepthState = {
+    write: state.depthMask,
+    compare: state.depthTest,
+    clamp: state.depthClamp,
+  };
 
   const ps: PipelineState = {
     rasterizer,
-    depth: { write: depthWrite, compare: depthCompare },
+    depth,
     ...(blends !== undefined ? { blends } : {}),
     ...(stencil !== undefined ? { stencil } : {}),
+    ...(state.blendConstant !== undefined ? { blendConstant: state.blendConstant } : {}),
   };
   return ps;
 }

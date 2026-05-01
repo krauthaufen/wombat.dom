@@ -120,7 +120,7 @@ describe("Phase 2 — geometry-attribute scopes", () => {
   it("Mode scope flows into pipelineState.rasterizer.topology", () => {
     const tree = Sg.mode("line-list")(minimalLeaf());
     const [obj] = compile(tree);
-    expect(obj!.pipelineState.rasterizer.topology).toBe("line-list");
+    expect(AVal.force(obj!.pipelineState.rasterizer.topology)).toBe("line-list");
   });
 
   it("nested Vertex scopes — inner-wins on key collision, outer keys kept", () => {
