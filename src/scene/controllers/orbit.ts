@@ -88,6 +88,20 @@ export const interpolateV2 = (now: number, a: Animation<V2d>): V2d => interpRaw(
 // Config + state
 // ---------------------------------------------------------------------------
 
+/**
+ * Per-axis spring "stiffness" used by the integrator instead of the
+ * single-knob `speed`. Each value is the gain that drives `target − cur`
+ * → `cur` per `0.05 s` of `dt`. Defaults are picked so that with the
+ * default `speed = 0.3` the per-axis behaviour matches the historical
+ * `speed * dt / 0.05` law.
+ */
+export interface OrbitSpringConstants {
+  readonly phi: number;
+  readonly theta: number;
+  readonly radius: number;
+  readonly center: number;
+}
+
 export interface OrbitConfig {
   readonly radiusRange: V2d;          // (min, max)
   readonly thetaRange: V2d;           // (min, max), elevation in radians
@@ -96,6 +110,18 @@ export interface OrbitConfig {
   readonly speed: number;
   readonly rotateButton: number;      // mouse button id: 0=L, 1=M, 2=R
   readonly panButton: number;
+  /**
+   * When true (default) MMB pan is free in screen X+Y. When false, pan
+   * only moves along the camera's screen-X axis (vertical mouse motion
+   * is ignored). Mirrors F# `freeMovePan`.
+   */
+  readonly freeMovePan: boolean;
+  /**
+   * Per-axis spring constants for the integrator. When undefined, a
+   * uniform `speed` is used for every axis (back-compat with pre-port
+   * behaviour).
+   */
+  readonly springConstants?: OrbitSpringConstants;
 }
 
 export const OrbitConfigDefault: OrbitConfig = {
@@ -106,6 +132,7 @@ export const OrbitConfigDefault: OrbitConfig = {
   speed: 0.3,
   rotateButton: 0,
   panButton: 1,
+  freeMovePan: true,
 };
 
 export interface DragStart {
@@ -211,23 +238,28 @@ function step(s: OrbitState, nowMs: number): OrbitState {
   const dradius = s.targetRadius - s.radius;
 
   const dt = s.lastRenderMs === undefined ? 0 : (nowMs - s.lastRenderMs) / 1000;
-  const part = dt > 0 ? clamp(0, 1, s.config.speed * dt / 0.05) : 0;
+  const sk = s.config.springConstants;
+  const partOf = (gain: number): number => dt > 0 ? clamp(0, 1, gain * dt / 0.05) : 0;
+  const partPhi = partOf(sk?.phi ?? s.config.speed);
+  const partTheta = partOf(sk?.theta ?? s.config.speed);
+  const partRadius = partOf(sk?.radius ?? s.config.speed);
+  const partCenter = partOf(sk?.center ?? s.config.speed);
   let next: OrbitState = { ...s, lastRenderMs: nowMs };
 
   if (Math.abs(dphi) > 0) {
     next = Math.abs(dphi) < 1e-4
       ? { ...next, phi: next.targetPhi }
-      : { ...next, phi: (next.phi + part * dphi) % TWO_PI };
+      : { ...next, phi: (next.phi + partPhi * dphi) % TWO_PI };
   }
   if (Math.abs(dtheta) > 0) {
     next = Math.abs(dtheta) < 1e-4
       ? { ...next, theta: next.targetTheta }
-      : { ...next, theta: next.theta + part * dtheta };
+      : { ...next, theta: next.theta + partTheta * dtheta };
   }
   if (Math.abs(dradius) > 0) {
     next = Math.abs(dradius) < 1e-4
       ? { ...next, radius: next.targetRadius }
-      : { ...next, radius: next.radius + part * dradius };
+      : { ...next, radius: next.radius + partRadius * dradius };
   }
 
   // Center / location animation (requires deriving current view location).
@@ -254,7 +286,7 @@ function step(s: OrbitState, nowMs: number): OrbitState {
         if (nowMs >= ca.stopTimeMs) {
           next = setLocation(la.stopValue, ca.stopValue, { ...next, centerAnimation: undefined, locationAnimation: undefined });
         } else {
-          next = setLocation(v.eye.add(dLoc.mul(part)), next.center.add(dCenter.mul(part)), next);
+          next = setLocation(v.eye.add(dLoc.mul(partCenter)), next.center.add(dCenter.mul(partCenter)), next);
         }
       } else {
         if (nowMs < ca.stopTimeMs) {
@@ -270,7 +302,7 @@ function step(s: OrbitState, nowMs: number): OrbitState {
       const len = dCenter.length();
       if (ca.kind.kind === "Exp") {
         if (len < 1e-4) next = { ...next, center: ca.stopValue, centerAnimation: undefined };
-        else next = { ...next, center: next.center.add(dCenter.mul(part)) };
+        else next = { ...next, center: next.center.add(dCenter.mul(partCenter)) };
       } else {
         if (nowMs < ca.stopTimeMs) {
           next = { ...next, center: interpolateV3(nowMs, ca) };
@@ -287,7 +319,7 @@ function step(s: OrbitState, nowMs: number): OrbitState {
     const len = Math.hypot(dCenter.x, dCenter.y);
     if (pa.kind.kind === "Exp") {
       if (len < 1e-4) next = { ...next, shift: pa.stopValue, panAnimation: undefined };
-      else next = { ...next, shift: next.shift.add(dCenter.mul(part)) };
+      else next = { ...next, shift: next.shift.add(dCenter.mul(partCenter)) };
     } else {
       if (nowMs < pa.stopTimeMs) {
         next = { ...next, shift: interpolateV2(nowMs, pa) };
@@ -307,6 +339,12 @@ function step(s: OrbitState, nowMs: number): OrbitState {
 export interface OrbitAttachOptions {
   /** Optional pick callback for depth-aware pan. Not currently used by the controller core, kept for API parity. */
   pickDepth?: (clientX: number, clientY: number) => number | undefined;
+  /**
+   * Optional world-space picker. When set, releasing the pan-button
+   * (MMB by default) re-centres the orbit on the world-space hit at
+   * the canvas centre. Animated over ~250 ms with QuadInOut easing.
+   */
+  picker?: (clientX: number, clientY: number) => Promise<V3d | undefined>;
 }
 
 export class OrbitController {
@@ -389,7 +427,6 @@ export class OrbitController {
   // ---------- DOM wiring ----------
 
   attach(target: HTMLElement, time: aval<number>, opts: OrbitAttachOptions = {}): () => void {
-    void opts;
 
     // Pointer tracking — distinct from F# state because mouse + touch
     // both flow through PointerEvents in the browser. We still feed the
@@ -412,6 +449,9 @@ export class OrbitController {
     };
 
     const onPointerUp = (e: PointerEvent): void => {
+      const wasMouse = pointers.get(e.pointerId)?.type === "mouse";
+      const start = this.state.value.dragStarts.get(e.pointerId);
+      const wasPan = wasMouse && start !== undefined && start.button === this.state.value.config.panButton;
       pointers.delete(e.pointerId);
       this.update(s => {
         const m = new Map(s.dragStarts);
@@ -419,6 +459,31 @@ export class OrbitController {
         return { ...s, dragStarts: m, lastRenderMs: undefined };
       });
       (target as Element).releasePointerCapture?.(e.pointerId);
+
+      // Pick-aware MMB-up snap: ask the picker for the world-space hit
+      // at the centre of the canvas; if a hit comes back, animate
+      // `center` to it over 250 ms (QuadInOut).
+      if (wasPan && opts.picker !== undefined) {
+        const rect = target.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        void opts.picker(cx, cy).then((hit) => {
+          if (hit === undefined) return;
+          const now = performance.now();
+          this.update(s => ({
+            ...s,
+            userModifiedCenter: true,
+            centerAnimation: {
+              kind: Anim.QuadInOut,
+              startTimeMs: now,
+              stopTimeMs: now + 250,
+              startValue: s.center,
+              stopValue: hit,
+            },
+            lastRenderMs: undefined,
+          }));
+        });
+      }
     };
 
     const onPointerMove = (e: PointerEvent): void => {
@@ -452,9 +517,10 @@ export class OrbitController {
           } else if (isPan) {
             const v = deriveView(s);
             const r = Math.max(s.radius, 0.3);
+            const dyEff = s.config.freeMovePan ? dy : 0;
             const newCenter = s.center
               .add(v.right.mul(dx * -0.001 * r))
-              .add(v.up.mul(dy * 0.001 * r));
+              .add(v.up.mul(dyEff * 0.001 * r));
             return {
               ...s,
               dragStarts: new Map(s.dragStarts).set(e.pointerId, { pos: cur, button: start.button }),

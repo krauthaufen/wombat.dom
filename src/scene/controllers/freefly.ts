@@ -207,6 +207,8 @@ export interface FreeFlyAttachOptions {
   pickDepth?: (clientX: number, clientY: number) => number | undefined;
   /** If true, attach key listeners to `window`; otherwise to `target`. Default: window. */
   keysOnWindow?: boolean;
+  /** When true, mount on-canvas virtual joystick overlays (left=move, right=look) for touch devices. */
+  virtualSticks?: boolean;
 }
 
 export class FreeFlyController {
@@ -268,6 +270,35 @@ export class FreeFlyController {
   /** Manually advance integration by `dt` seconds. Used by tests; production drives via `attach()`. */
   tick(dt: number): void {
     this.update(s => step(s, dt));
+  }
+
+  /**
+   * Animate the camera toward `location` looking along `forward`. Ports
+   * the F# `FlyTo` branch: the yaw rotation is the planar-XY angle delta
+   * between current and target forward, the pitch is the elevation delta.
+   * Both are loaded into `TargetTurn`; the offset to `location` is loaded
+   * into `TargetMoveGlobal` so subsequent ticks consume it via the
+   * standard integration path.
+   */
+  flyTo(location: V3d, forward: V3d): void {
+    this.guarded(s => {
+      const f = forward.normalize();
+      const cf = s.Forward;
+      // Yaw delta: angle between (cf.x, cf.y) and (f.x, f.y).
+      const dx = Math.atan2(f.y, f.x) - Math.atan2(cf.y, cf.x);
+      // Pitch delta: elevation difference.
+      const dy = Math.asin(Math.max(-1, Math.min(1, f.z))) - Math.asin(Math.max(-1, Math.min(1, cf.z)));
+      const wrap = (a: number): number => {
+        while (a > Math.PI) a -= 2 * Math.PI;
+        while (a < -Math.PI) a += 2 * Math.PI;
+        return a;
+      };
+      return {
+        ...s,
+        TargetTurn: s.TargetTurn.add(new V2d(wrap(dx), wrap(dy))),
+        TargetMoveGlobal: s.TargetMoveGlobal.add(location.sub(s.Position)),
+      };
+    });
   }
 
   private update(f: (s: FreeFlyState) => FreeFlyState): void {
@@ -453,14 +484,172 @@ export class FreeFlyController {
       (target as Element).releasePointerCapture?.(e.pointerId);
     };
 
+    // ---- Gamepad state (button transitions tracked across polls) ----
+    interface GpState {
+      readonly buttons: ReadonlyArray<boolean>;
+    }
+    const gpStates = new Map<number, GpState>();
+    const STICK_DEAD_ZONE = 0.15;
+    const applyExp = (v: number, exp: number): number => {
+      const a = Math.abs(v);
+      if (a < STICK_DEAD_ZONE) return 0;
+      const s = (a - STICK_DEAD_ZONE) / (1 - STICK_DEAD_ZONE);
+      return Math.sign(v) * Math.pow(s, exp);
+    };
+
+    const pollGamepads = (): void => {
+      const nav = (typeof navigator !== "undefined" ? navigator : undefined) as
+        | (Navigator & { getGamepads?: () => (Gamepad | null)[] }) | undefined;
+      if (nav?.getGamepads === undefined) return;
+      const gps = nav.getGamepads();
+      const c = cfg();
+      for (let i = 0; i < gps.length; i++) {
+        const gp = gps[i];
+        if (!gp) continue;
+        const key = `gp${gp.index}`;
+        // ---- Sticks ----
+        const lx = applyExp(gp.axes[0] ?? 0, c.StickExponent);
+        const ly = applyExp(gp.axes[1] ?? 0, c.StickExponent);
+        // LeftStick → MoveVec (X right, Y forward — Y axis on stick is inverted for "push up = forward")
+        this.setMoveVec(`${key}.lstick`, new V3d(lx, 0, -ly));
+        const rx = applyExp(gp.axes[2] ?? 0, c.StickExponent);
+        const ry = applyExp(gp.axes[3] ?? 0, c.StickExponent);
+        this.setTurnVec(`${key}.rstick`, new V2d(-rx, -ry));
+
+        // ---- Buttons (rising/falling edges) ----
+        const prev = gpStates.get(gp.index);
+        const buttons = gp.buttons.map(b => b.pressed);
+        const wasPressed = (idx: number): boolean => prev?.buttons[idx] ?? false;
+        const press = (idx: number): boolean => buttons[idx] === true && !wasPressed(idx);
+        const release = (idx: number): boolean => buttons[idx] === false && wasPressed(idx);
+
+        // DPad: Up=12, Down=13, Left=14, Right=15  → AddMoveVec
+        if (press(12)) this.addMoveVec(`${key}.dpad`, new V3d(0, 0, 1));
+        if (release(12)) this.addMoveVec(`${key}.dpad`, new V3d(0, 0, -1));
+        if (press(13)) this.addMoveVec(`${key}.dpad`, new V3d(0, 0, -1));
+        if (release(13)) this.addMoveVec(`${key}.dpad`, new V3d(0, 0, 1));
+        if (press(14)) this.addMoveVec(`${key}.dpad`, new V3d(-1, 0, 0));
+        if (release(14)) this.addMoveVec(`${key}.dpad`, new V3d(1, 0, 0));
+        if (press(15)) this.addMoveVec(`${key}.dpad`, new V3d(1, 0, 0));
+        if (release(15)) this.addMoveVec(`${key}.dpad`, new V3d(-1, 0, 0));
+
+        // LB(4)/RB(5) → AdjustMoveSpeed (rising edges only)
+        if (press(4)) this.adjustMoveSpeed(1 / 1.5);
+        if (press(5)) this.adjustMoveSpeed(1.5);
+
+        // LT(6)/RT(7) → AddMoveVec on Y (down/up)
+        if (press(6)) this.addMoveVec(`${key}.trig`, new V3d(0, -1, 0));
+        if (release(6)) this.addMoveVec(`${key}.trig`, new V3d(0, 1, 0));
+        if (press(7)) this.addMoveVec(`${key}.trig`, new V3d(0, 1, 0));
+        if (release(7)) this.addMoveVec(`${key}.trig`, new V3d(0, -1, 0));
+
+        gpStates.set(gp.index, { buttons });
+      }
+    };
+
     // ---- Frame integration ----
     let lastT: number | undefined;
     const cb: IDisposable = avalAddCallback(time, (now: number) => {
+      pollGamepads();
       if (lastT === undefined) { lastT = now; return; }
       const dt = (now - lastT) / 1000;
       lastT = now;
       if (dt > 0) this.tick(dt);
     });
+
+    // ---- Virtual-stick overlays ----
+    const virtualStickEls: HTMLDivElement[] = [];
+    if (opts.virtualSticks) {
+      const isTouchDevice =
+        typeof window !== "undefined" &&
+        ((typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches)
+          || ("ontouchstart" in window));
+      if (isTouchDevice) {
+        const stickRadius = 60;
+        const knobRadius = 22;
+        const baseStyle =
+          `position:absolute;width:${stickRadius * 2}px;height:${stickRadius * 2}px;` +
+          `border-radius:50%;background:rgba(255,255,255,0.12);` +
+          `border:2px solid rgba(255,255,255,0.35);touch-action:none;pointer-events:auto;` +
+          `box-sizing:border-box;`;
+        const knobStyle =
+          `position:absolute;width:${knobRadius * 2}px;height:${knobRadius * 2}px;` +
+          `border-radius:50%;background:rgba(255,255,255,0.5);` +
+          `left:${stickRadius - knobRadius}px;top:${stickRadius - knobRadius}px;` +
+          `pointer-events:none;`;
+        const mkStick = (
+          which: "left" | "right",
+          onVec: (nx: number, ny: number) => void,
+        ): HTMLDivElement => {
+          const el = document.createElement("div");
+          el.setAttribute("data-virtual-stick", which);
+          el.setAttribute(
+            "style",
+            baseStyle + (which === "left" ? "left:24px;bottom:24px;" : "right:24px;bottom:24px;"),
+          );
+          const knob = document.createElement("div");
+          knob.setAttribute("style", knobStyle);
+          el.appendChild(knob);
+          let activeId: number | undefined;
+          const update = (cx: number, cy: number): void => {
+            const r = el.getBoundingClientRect();
+            let dx = cx - (r.left + r.width / 2);
+            let dy = cy - (r.top + r.height / 2);
+            const len = Math.hypot(dx, dy);
+            if (len > stickRadius) { dx = dx * stickRadius / len; dy = dy * stickRadius / len; }
+            knob.style.left = `${stickRadius + dx - knobRadius}px`;
+            knob.style.top = `${stickRadius + dy - knobRadius}px`;
+            onVec(dx / stickRadius, dy / stickRadius);
+          };
+          const reset = (): void => {
+            knob.style.left = `${stickRadius - knobRadius}px`;
+            knob.style.top = `${stickRadius - knobRadius}px`;
+            onVec(0, 0);
+          };
+          el.addEventListener("pointerdown", (ev: PointerEvent) => {
+            if (activeId !== undefined) return;
+            activeId = ev.pointerId;
+            (el as Element).setPointerCapture?.(ev.pointerId);
+            update(ev.clientX, ev.clientY);
+            ev.preventDefault();
+            ev.stopPropagation();
+          });
+          el.addEventListener("pointermove", (ev: PointerEvent) => {
+            if (ev.pointerId !== activeId) return;
+            update(ev.clientX, ev.clientY);
+            ev.preventDefault();
+            ev.stopPropagation();
+          });
+          const release = (ev: PointerEvent): void => {
+            if (ev.pointerId !== activeId) return;
+            activeId = undefined;
+            (el as Element).releasePointerCapture?.(ev.pointerId);
+            reset();
+          };
+          el.addEventListener("pointerup", release);
+          el.addEventListener("pointercancel", release);
+          return el;
+        };
+        const left = mkStick("left", (nx, ny) => {
+          // ny is screen-down-positive; "push up" → forward (+Z in our convention).
+          this.setMoveVec("vstick.left", new V3d(nx, 0, -ny));
+        });
+        const right = mkStick("right", (nx, ny) => {
+          this.setTurnVec("vstick.right", new V2d(-nx, -ny));
+        });
+        // Mount on the target's parent (so they're absolute-positioned relative
+        // to the canvas's positioned ancestor). If the target itself is not a
+        // positioning context, give it position:relative.
+        const host = target;
+        const cs = (typeof window !== "undefined" && window.getComputedStyle)
+          ? window.getComputedStyle(host).position
+          : "static";
+        if (cs === "static" || cs === "" || cs === undefined) host.style.position = "relative";
+        host.appendChild(left);
+        host.appendChild(right);
+        virtualStickEls.push(left, right);
+      }
+    }
 
     // ---- Wire listeners ----
     const onPointerDown = (e: PointerEvent): void => {
@@ -485,6 +674,8 @@ export class FreeFlyController {
 
     return () => {
       cb.dispose();
+      for (const el of virtualStickEls) el.parentNode?.removeChild(el);
+      virtualStickEls.length = 0;
       target.removeEventListener("pointerdown", onPointerDown as EventListener);
       target.removeEventListener("pointermove", onPointerMove as EventListener);
       target.removeEventListener("pointerup", onPointerUp as EventListener);

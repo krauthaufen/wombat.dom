@@ -21,6 +21,7 @@ export {
   interpolateV2,
   interpolateV3,
   type OrbitConfig,
+  type OrbitSpringConstants,
   type OrbitState,
   type OrbitInitial,
   type OrbitView,

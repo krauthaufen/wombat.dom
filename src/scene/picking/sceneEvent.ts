@@ -37,7 +37,13 @@ export type SceneEventKind =
   // Phase 6
   | "OnDragStart"
   | "OnDrag"
-  | "OnDragEnd";
+  | "OnDragEnd"
+  // Multi-touch gestures (synthesised from concurrent pointers)
+  | "OnPinch"
+  | "OnTwoFingerPan"
+  | "OnTwoFingerRotate"
+  // Hover after dwell
+  | "OnHover";
 
 /**
  * Dispatcher hook the SceneEvent uses to delegate pointer-capture
@@ -83,6 +89,12 @@ export interface SceneEventInit {
   // Phase 6 — drag
   readonly dragStartX?: number;
   readonly dragStartY?: number;
+  // Multi-touch gestures
+  readonly pinchScale?: number;
+  readonly pinchCenter?: { x: number; y: number };
+  readonly panDeltaX?: number;
+  readonly panDeltaY?: number;
+  readonly rotateRadians?: number;
 }
 
 export class SceneEvent {
@@ -135,6 +147,12 @@ export class SceneEvent {
   // Phase 6 — drag origin
   readonly dragStartX?: number;
   readonly dragStartY?: number;
+  // Multi-touch gestures
+  readonly pinchScale?: number;
+  readonly pinchCenter?: { x: number; y: number };
+  readonly panDeltaX?: number;
+  readonly panDeltaY?: number;
+  readonly rotateRadians?: number;
 
   // Why mutable internals despite readonly fields above: handlers
   // mutate these via the public methods. The fields stay readonly to
@@ -172,6 +190,11 @@ export class SceneEvent {
     if (init.relatedTarget !== undefined) this.relatedTarget = init.relatedTarget;
     if (init.dragStartX !== undefined) this.dragStartX = init.dragStartX;
     if (init.dragStartY !== undefined) this.dragStartY = init.dragStartY;
+    if (init.pinchScale !== undefined) this.pinchScale = init.pinchScale;
+    if (init.pinchCenter !== undefined) this.pinchCenter = init.pinchCenter;
+    if (init.panDeltaX !== undefined) this.panDeltaX = init.panDeltaX;
+    if (init.panDeltaY !== undefined) this.panDeltaY = init.panDeltaY;
+    if (init.rotateRadians !== undefined) this.rotateRadians = init.rotateRadians;
     if (init.scope !== undefined) this._scope = init.scope;
     if (init.dispatch !== undefined) this._dispatch = init.dispatch;
   }

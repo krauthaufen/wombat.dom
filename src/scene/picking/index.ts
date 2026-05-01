@@ -77,5 +77,13 @@ export {
 
 export {
   PickDispatcher,
+  TAP_MAX_DURATION_MS,
+  TAP_MAX_MOVE_PX,
+  DOUBLE_TAP_GAP_MS,
+  DOUBLE_TAP_MOVE_PX,
+  LONG_PRESS_MS,
+  DRAG_THRESHOLD_PX,
+  HOVER_DELAY_MS,
   type ReadRegion,
+  type TapThresholds,
 } from "./dispatcher.js";

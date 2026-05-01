@@ -43,7 +43,7 @@ import type { SgNode } from "./sg.js";
 import { TraversalState } from "./traversalState.js";
 import { PickRegistry } from "./picking/registry.js";
 import { createPickFramebuffer } from "./picking/pickFramebuffer.js";
-import { PickDispatcher } from "./picking/dispatcher.js";
+import { PickDispatcher, type TapThresholds } from "./picking/dispatcher.js";
 import { readPickRegion, type PickRegion } from "./picking/readback.js";
 
 // ---------------------------------------------------------------------------
@@ -122,6 +122,13 @@ export interface RenderControlProps {
    * Absent ⇒ no pick attachment, no listeners, no overhead.
    */
   readonly picking?: PickRegistry;
+
+  /**
+   * Per-instance overrides for the tap / long-press / double-tap /
+   * drag / hover thresholds. Any unset field falls back to the module
+   * default. Picking must be enabled for these to take effect.
+   */
+  readonly tapThresholds?: TapThresholds;
 
   // HTML pass-through props (canvas attributes). Kept loose so
   // callers can pass anything the canvas DOM element accepts; the
@@ -205,12 +212,12 @@ export function RenderControl(props: RenderControlProps): import("../vnode.js").
   // attribute binder.
   const { scene, children, view, proj, defaultEffect, clear,
           device, runtime, attach, format, depthFormat, sampleCount,
-          onReady, picking, style: userStyle,
+          onReady, picking, tapThresholds, style: userStyle,
           ...htmlProps } = props;
   void scene; void children; void view; void proj; void defaultEffect; void clear;
   void device; void runtime; void attach;
   void format; void depthFormat; void sampleCount;
-  void onReady; void picking;
+  void onReady; void picking; void tapThresholds;
 
   // Phase 5 — when no tabindex is supplied, set tabindex=0 so the
   // canvas can receive keyboard focus (otherwise key events do not
@@ -347,6 +354,7 @@ async function initialise(
       () => AVal.force(view),
       () => AVal.force(proj),
       () => canvas.getBoundingClientRect(),
+      props.tapThresholds,
     );
     const readRegion = async (x: number, y: number): Promise<PickRegion | undefined> => {
       const tex = AVal.force(pickFb!.readbackPickTexture);

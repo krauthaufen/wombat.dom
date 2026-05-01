@@ -58,6 +58,23 @@ export const DOUBLE_TAP_MOVE_PX = 20;
 export const LONG_PRESS_MS = 500;
 /** Distance moved (CSS px) past which a press becomes a drag. Mirrors Aardvark's drag threshold. */
 export const DRAG_THRESHOLD_PX = 5;
+/** Cursor must rest still over the same scope this long before OnHover fires (ms). */
+export const HOVER_DELAY_MS = 500;
+
+/**
+ * Per-RenderControl override of the tap/long-press/double-tap/drag/hover
+ * thresholds. Any unset field falls back to the corresponding module
+ * default constant.
+ */
+export interface TapThresholds {
+  readonly tapMaxDurationMs?: number;
+  readonly tapMaxMovePx?: number;
+  readonly doubleTapGapMs?: number;
+  readonly doubleTapMovePx?: number;
+  readonly longPressMs?: number;
+  readonly dragThresholdPx?: number;
+  readonly hoverDelayMs?: number;
+}
 
 /**
  * Reader for the 33×33 pick region centred on `(x, y)` in device
@@ -150,13 +167,51 @@ export class PickDispatcher implements SceneEventDispatch {
   private readonly presses: Map<number, PressState> = new Map();
   private lastTap: LastTapInfo | undefined;
 
+  // Multi-touch gesture state. Tracks every active pointer's last
+  // CSS-pixel position; OnPinch / OnTwoFingerPan / OnTwoFingerRotate
+  // are synthesised from this map on every pointermove with ≥2 active
+  // pointers. The "primary" gesture scope is captured at the moment
+  // the second pointer goes down (whichever scope the first pointer
+  // was over), so subsequent finger movement keeps routing to the
+  // same target even if individual fingers wander.
+  private readonly activePointers: Map<number, { x: number; y: number }> = new Map();
+  private gestureScope: LeafPickScope | undefined;
+  private gestureLastDist: number | undefined;
+  private gestureLastAngle: number | undefined;
+  private gestureLastCenter: { x: number; y: number } | undefined;
+
+  // Hover dwell. Each move that resolves to a different scope cancels
+  // the pending timer and schedules a new one for the new scope; on
+  // fire we dispatch OnHover via capture/bubble. Cancelled on leave.
+  private hoverTimer: ReturnType<typeof setTimeout> | undefined;
+  private hoverPickId: number | undefined;
+
+  // Effective thresholds (instance copy of the module defaults; can
+  // be overridden via the ctor to support per-RenderControl tuning).
+  private readonly tTapMaxDuration: number;
+  private readonly tTapMaxMove: number;
+  private readonly tDoubleTapGap: number;
+  private readonly tDoubleTapMove: number;
+  private readonly tLongPress: number;
+  private readonly tDragThreshold: number;
+  private readonly tHoverDelay: number;
+
   constructor(
     private readonly registry: PickRegistry,
     /** Used by BVH ray fall-through to construct the world-space cursor ray. */
     private readonly _getView: () => Trafo3d,
     private readonly _getProj: () => Trafo3d,
     private readonly getCanvasRect: () => DOMRect,
-  ) {}
+    thresholds?: TapThresholds,
+  ) {
+    this.tTapMaxDuration = thresholds?.tapMaxDurationMs ?? TAP_MAX_DURATION_MS;
+    this.tTapMaxMove     = thresholds?.tapMaxMovePx     ?? TAP_MAX_MOVE_PX;
+    this.tDoubleTapGap   = thresholds?.doubleTapGapMs   ?? DOUBLE_TAP_GAP_MS;
+    this.tDoubleTapMove  = thresholds?.doubleTapMovePx  ?? DOUBLE_TAP_MOVE_PX;
+    this.tLongPress      = thresholds?.longPressMs      ?? LONG_PRESS_MS;
+    this.tDragThreshold  = thresholds?.dragThresholdPx  ?? DRAG_THRESHOLD_PX;
+    this.tHoverDelay     = thresholds?.hoverDelayMs     ?? HOVER_DELAY_MS;
+  }
 
   /**
    * Wire pointer listeners to the canvas. Returns a disposer.
@@ -199,6 +254,7 @@ export class PickDispatcher implements SceneEventDispatch {
       this.cancelPress(e.pointerId);
     };
     const onLeave  = (e: PointerEvent): void => {
+      this.cancelHover();
       if (this.lastHit !== 0) {
         const scope = this.registry.lookup(this.lastHit);
         if (scope !== undefined && !scope.pickThrough && AVal.force(scope.active)) {
@@ -330,6 +386,7 @@ export class PickDispatcher implements SceneEventDispatch {
       focusUnsub.dispose();
       // Cancel any pending long-press timers so the disposer is clean.
       for (const id of [...this.presses.keys()]) this.cancelPress(id);
+      this.cancelHover();
     };
   }
 
@@ -492,6 +549,38 @@ export class PickDispatcher implements SceneEventDispatch {
   ): void {
     const pointerId = ev.pointerId ?? 0;
 
+    // ---- Multi-touch gesture tracking ---------------------------------
+    // Maintain `activePointers` and synthesise pinch / two-finger
+    // pan / two-finger rotate events when ≥2 pointers are active.
+    // Pointer "type" check is intentionally absent — works for touch,
+    // pen, and even mouse (rarely useful for the latter, but cheap).
+    if (kind === "OnPointerDown") {
+      this.activePointers.set(pointerId, { x: cssX, y: cssY });
+      // On the second-finger-down, latch the gesture's target scope
+      // to whatever is currently under the cursor (the spiral hit
+      // produced by THIS down event).
+      if (this.activePointers.size === 2 && hit !== undefined) {
+        this.gestureScope = hit.scope;
+      }
+      this.refreshGestureRefs();
+    } else if (kind === "OnPointerMove") {
+      const prev = this.activePointers.get(pointerId);
+      this.activePointers.set(pointerId, { x: cssX, y: cssY });
+      if (prev !== undefined && this.activePointers.size >= 2) {
+        this.dispatchGestureEvents(ev);
+      }
+    } else if (kind === "OnPointerUp") {
+      this.activePointers.delete(pointerId);
+      if (this.activePointers.size < 2) {
+        this.gestureScope = undefined;
+        this.gestureLastDist = undefined;
+        this.gestureLastAngle = undefined;
+        this.gestureLastCenter = undefined;
+      } else {
+        this.refreshGestureRefs();
+      }
+    }
+
     // Always record the latest cursor position for synthetic-move
     // replay on capture release. Track `hit` from the spiral so we
     // can replay against the geometry under the cursor at release
@@ -499,7 +588,19 @@ export class PickDispatcher implements SceneEventDispatch {
     // don't have a fresh region read in hand).
     this.lastMove = { raw: ev, cssX, cssY, rect, sx, sy, hit };
 
-    const captured = this.capturedScopes.get(pointerId);
+    let captured = this.capturedScopes.get(pointerId);
+    // If the captured scope was removed from the registry (e.g.
+    // scene-graph subtree unmounted), the registry's `lookup` either
+    // returns undefined or a different scope under the recycled id.
+    // Either way we drop the stale capture so the event falls back to
+    // the spiral hit.
+    if (captured !== undefined) {
+      const fresh = this.registry.lookup(captured.pickId);
+      if (fresh !== captured) {
+        this.capturedScopes.delete(pointerId);
+        captured = undefined;
+      }
+    }
     if (captured !== undefined) {
       // Route to captured scope; do NOT update lastHit/lastPath. F#
       // `SceneHandler.fs:1700–` skips lastOver updates while a
@@ -534,6 +635,12 @@ export class PickDispatcher implements SceneEventDispatch {
     const hitId = hitScope?.pickId ?? 0;
     const newPath = hitScope?.handlers ?? [];
 
+    if (kind === "OnPointerMove") {
+      // Hover dwell: any move cancels the pending timer; we re-schedule
+      // when the move resolves to a (still-current) scope below.
+      if (hitId !== this.hoverPickId) this.cancelHover();
+    }
+
     if (kind === "OnPointerMove" && hitId !== this.lastHit) {
       // Differential enter/leave. Diff oldPath vs newPath by
       // longest shared prefix (reference equality on EventHandlers
@@ -565,6 +672,7 @@ export class PickDispatcher implements SceneEventDispatch {
     }
 
     if (hitScope === undefined) {
+      if (kind === "OnPointerMove") this.cancelHover();
       // No scope under cursor: still let pointermove cancel a press
       // that drifted off-target (movement check below). Pointerdown /
       // pointerup with no hit can't synthesise a tap (no scope to
@@ -590,6 +698,13 @@ export class PickDispatcher implements SceneEventDispatch {
     const modeB = hit?.decoded.modeB ?? false;
     const sceneEv = this.makeEvent(kind, ev, cssX, cssY, hitScope, hitScope.pickId, modeB, viewPos, bvhViewNormal);
     this.runCaptureBubble(hitScope.handlers, sceneEv);
+
+    // Hover dwell: a move that resolves to a known scope re-arms the
+    // hover timer. The cancel above handles transitions to a different
+    // scope; here we (re)schedule for the current scope.
+    if (kind === "OnPointerMove") {
+      this.scheduleHover(hitScope, cssX, cssY, ev);
+    }
 
     // Phase 5 — auto-focus on click. Mirrors DOM mousedown→focus
     // behaviour but on `OnClick` (primary button) so it composes with
@@ -631,7 +746,7 @@ export class PickDispatcher implements SceneEventDispatch {
         const lpScope = this.registry.lookup(cur.hitPickId);
         if (lpScope === undefined || !AVal.force(lpScope.active) || lpScope.pickThrough) return;
         this.dispatchSynthetic("OnLongPress", ev, cssX, cssY, lpScope, modeB, viewPos);
-      }, LONG_PRESS_MS);
+      }, this.tLongPress);
       this.presses.set(pointerId, press);
     } else if (kind === "OnPointerMove") {
       this.checkPressMove(pointerId, cssX, cssY);
@@ -647,12 +762,12 @@ export class PickDispatcher implements SceneEventDispatch {
       if (wasDrag) return;
       if (press.movedTooFar) return;
       const dt = Date.now() - press.downAt;
-      if (dt > TAP_MAX_DURATION_MS) return;
+      if (dt > this.tTapMaxDuration) return;
       // Movement check on the up position too — we may not have had a
       // pointermove between down and up.
       const mdx = cssX - press.downX;
       const mdy = cssY - press.downY;
-      if (mdx * mdx + mdy * mdy > TAP_MAX_MOVE_PX * TAP_MAX_MOVE_PX) return;
+      if (mdx * mdx + mdy * mdy > this.tTapMaxMove * this.tTapMaxMove) return;
       // Tap fires against the scope under the cursor at pointerup.
       this.dispatchSynthetic("OnTap", ev, cssX, cssY, hitScope, modeB, viewPos);
 
@@ -663,11 +778,11 @@ export class PickDispatcher implements SceneEventDispatch {
       if (
         prev !== undefined
         && prev.pickId === hitScope.pickId
-        && now - prev.at <= DOUBLE_TAP_GAP_MS
+        && now - prev.at <= this.tDoubleTapGap
       ) {
         const dx = press.downX - prev.x;
         const dy = press.downY - prev.y;
-        if (dx * dx + dy * dy <= DOUBLE_TAP_MOVE_PX * DOUBLE_TAP_MOVE_PX) {
+        if (dx * dx + dy * dy <= this.tDoubleTapMove * this.tDoubleTapMove) {
           this.dispatchSynthetic("OnDoubleTap", ev, cssX, cssY, hitScope, modeB, viewPos);
           // Consume — a third quick tap should not pair with this
           // tap as the "previous" one.
@@ -693,7 +808,7 @@ export class PickDispatcher implements SceneEventDispatch {
     const dy = cssY - press.downY;
     const d2 = dx * dx + dy * dy;
     if (!press.dragging) {
-      if (d2 < DRAG_THRESHOLD_PX * DRAG_THRESHOLD_PX) return;
+      if (d2 < this.tDragThreshold * this.tDragThreshold) return;
       press.dragging = true;
       // Cancel pending long-press — drag wins.
       if (press.longPressTimer !== undefined) {
@@ -753,7 +868,7 @@ export class PickDispatcher implements SceneEventDispatch {
     if (press === undefined || press.movedTooFar) return;
     const dx = cssX - press.downX;
     const dy = cssY - press.downY;
-    if (dx * dx + dy * dy > TAP_MAX_MOVE_PX * TAP_MAX_MOVE_PX) {
+    if (dx * dx + dy * dy > this.tTapMaxMove * this.tTapMaxMove) {
       press.movedTooFar = true;
       if (press.longPressTimer !== undefined) {
         clearTimeout(press.longPressTimer);
@@ -950,6 +1065,133 @@ export class PickDispatcher implements SceneEventDispatch {
       scope,
       dispatch: this,
     });
+  }
+
+  // --- Multi-touch gesture synthesis ---------------------------------------
+
+  private refreshGestureRefs(): void {
+    if (this.activePointers.size < 2) {
+      this.gestureLastDist = undefined;
+      this.gestureLastAngle = undefined;
+      this.gestureLastCenter = undefined;
+      return;
+    }
+    const arr = Array.from(this.activePointers.values());
+    const a = arr[0]!, b = arr[1]!;
+    this.gestureLastDist = Math.hypot(a.x - b.x, a.y - b.y);
+    this.gestureLastAngle = Math.atan2(b.y - a.y, b.x - a.x);
+    let cx = 0, cy = 0;
+    for (const p of arr) { cx += p.x; cy += p.y; }
+    this.gestureLastCenter = { x: cx / arr.length, y: cy / arr.length };
+  }
+
+  private dispatchGestureEvents(raw: PointerEvent): void {
+    if (this.gestureScope === undefined) return;
+    const scope = this.registry.lookup(this.gestureScope.pickId);
+    if (scope !== this.gestureScope) {
+      // Captured-scope-style invalidation: the original gesture target
+      // disappeared. Drop and let the next pointer-down latch a new one.
+      this.gestureScope = undefined;
+      return;
+    }
+    if (!AVal.force(scope.active)) return;
+
+    const arr = Array.from(this.activePointers.values());
+    const a = arr[0]!, b = arr[1]!;
+    const newDist = Math.hypot(a.x - b.x, a.y - b.y);
+    const newAngle = Math.atan2(b.y - a.y, b.x - a.x);
+    let cx = 0, cy = 0;
+    for (const p of arr) { cx += p.x; cy += p.y; }
+    cx /= arr.length; cy /= arr.length;
+
+    if (this.gestureLastDist !== undefined && this.gestureLastDist > 0) {
+      const scale = newDist / this.gestureLastDist;
+      if (Math.abs(scale - 1) > 1e-6) {
+        const ev = new SceneEvent({
+          kind: "OnPinch",
+          clientX: cx, clientY: cy,
+          pickId: scope.pickId, modeB: false,
+          pointerId: raw.pointerId ?? 0,
+          pointerType: raw.pointerType ?? "",
+          raw,
+          pinchScale: scale,
+          pinchCenter: { x: cx, y: cy },
+          scope, dispatch: this,
+        });
+        this.runCaptureBubble(scope.handlers, ev);
+      }
+    }
+    if (this.gestureLastCenter !== undefined) {
+      const dx = cx - this.gestureLastCenter.x;
+      const dy = cy - this.gestureLastCenter.y;
+      if (dx !== 0 || dy !== 0) {
+        const ev = new SceneEvent({
+          kind: "OnTwoFingerPan",
+          clientX: cx, clientY: cy,
+          pickId: scope.pickId, modeB: false,
+          pointerId: raw.pointerId ?? 0,
+          pointerType: raw.pointerType ?? "",
+          raw,
+          panDeltaX: dx, panDeltaY: dy,
+          scope, dispatch: this,
+        });
+        this.runCaptureBubble(scope.handlers, ev);
+      }
+    }
+    if (this.gestureLastAngle !== undefined) {
+      let dA = newAngle - this.gestureLastAngle;
+      while (dA > Math.PI) dA -= 2 * Math.PI;
+      while (dA < -Math.PI) dA += 2 * Math.PI;
+      if (Math.abs(dA) > 1e-6) {
+        const ev = new SceneEvent({
+          kind: "OnTwoFingerRotate",
+          clientX: cx, clientY: cy,
+          pickId: scope.pickId, modeB: false,
+          pointerId: raw.pointerId ?? 0,
+          pointerType: raw.pointerType ?? "",
+          raw,
+          rotateRadians: dA,
+          scope, dispatch: this,
+        });
+        this.runCaptureBubble(scope.handlers, ev);
+      }
+    }
+
+    this.gestureLastDist = newDist;
+    this.gestureLastAngle = newAngle;
+    this.gestureLastCenter = { x: cx, y: cy };
+  }
+
+  // --- Hover dwell ----------------------------------------------------------
+
+  private cancelHover(): void {
+    if (this.hoverTimer !== undefined) {
+      clearTimeout(this.hoverTimer);
+      this.hoverTimer = undefined;
+    }
+    this.hoverPickId = undefined;
+  }
+
+  private scheduleHover(scope: LeafPickScope, cssX: number, cssY: number, raw: PointerEvent): void {
+    if (this.hoverPickId === scope.pickId && this.hoverTimer !== undefined) return;
+    this.cancelHover();
+    this.hoverPickId = scope.pickId;
+    this.hoverTimer = setTimeout(() => {
+      this.hoverTimer = undefined;
+      const fresh = this.registry.lookup(scope.pickId);
+      if (fresh !== scope) return;
+      if (!AVal.force(scope.active)) return;
+      const ev = new SceneEvent({
+        kind: "OnHover",
+        clientX: cssX, clientY: cssY,
+        pickId: scope.pickId, modeB: false,
+        pointerId: raw.pointerId ?? 0,
+        pointerType: raw.pointerType ?? "",
+        raw,
+        scope, dispatch: this,
+      });
+      this.runCaptureBubble(scope.handlers, ev);
+    }, this.tHoverDelay);
   }
 }
 
