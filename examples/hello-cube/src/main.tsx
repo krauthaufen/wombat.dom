@@ -34,8 +34,11 @@ const ctl = orbitController({
 });
 
 // Clear the framebuffer to a dark grey before rendering each frame.
+// Attachment name matches the canvas signature configured by
+// `<RenderControl>` (which uses `colorAttachmentName: "outColor"`
+// by default to match wombat.shader's fragment-output convention).
 const clear: ClearValues = {
-  colors: HashMap.empty<string, V4f>().add("color", new V4f(0.07, 0.07, 0.08, 1.0)),
+  colors: HashMap.empty<string, V4f>().add("outColor", new V4f(0.07, 0.07, 0.08, 1.0)),
   depth: 1.0,
 };
 

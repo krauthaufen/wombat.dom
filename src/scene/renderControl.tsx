@@ -208,7 +208,14 @@ async function initialise(
   // Canvas attachment — picks the right format + sample count;
   // exposes `framebuffer: aval<IFramebuffer>` and `size:
   // aval<{w,h}>`.
+  //
+  // `colorAttachmentName: "outColor"` aligns the framebuffer
+  // signature with the de-facto wombat.shader convention (the
+  // fragment output is named `outColor` in `DefaultSurfaces.basic`
+  // and in the renderto-real coverage in wombat.rendering). User
+  // code can still override via `attach.colorAttachmentName`.
   const attachment = attachCanvas(device, canvas, {
+    colorAttachmentName: "outColor",
     ...(props.attach ?? {}),
     ...(props.format !== undefined ? { format: props.format } : {}),
     ...(props.depthFormat !== undefined ? { depthFormat: props.depthFormat } : {}),
@@ -272,7 +279,12 @@ interface SniffResult {
 function sniffViewProj(node: SgNode): SniffResult {
   const out: SniffResult = { view: undefined, proj: undefined };
   let cur: SgNode = node;
-  // Walk through scope nodes that pass to a single child.
+  // Walk through scope nodes that pass to a single child. `Delay`
+  // is force-expanded with `TraversalState.empty` so View/Proj
+  // hidden inside an outermost `Sg.delay` (the viewport-aware
+  // perspective pattern) are still found. The expansion is
+  // discarded after sniffing — the actual render path runs delay
+  // with the real state.
   while (true) {
     switch (cur.kind) {
       case "View":
@@ -292,6 +304,10 @@ function sniffViewProj(node: SgNode): SniffResult {
       case "On":
       case "Active":
         cur = cur.child;
+        continue;
+      case "Delay":
+        try { cur = cur.create(TraversalState.empty); }
+        catch { return out; }
         continue;
       default:
         return out;
