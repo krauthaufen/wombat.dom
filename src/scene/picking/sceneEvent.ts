@@ -25,7 +25,19 @@ export type SceneEventKind =
   | "OnPointerLeave"
   | "OnTap"
   | "OnDoubleTap"
-  | "OnLongPress";
+  | "OnLongPress"
+  // Phase 4
+  | "OnWheel"
+  // Phase 5
+  | "OnFocus"
+  | "OnBlur"
+  | "OnKeyDown"
+  | "OnKeyUp"
+  | "OnKeyPress"
+  // Phase 6
+  | "OnDragStart"
+  | "OnDrag"
+  | "OnDragEnd";
 
 /**
  * Dispatcher hook the SceneEvent uses to delegate pointer-capture
@@ -51,9 +63,26 @@ export interface SceneEventInit {
   readonly viewNormal?: V3d;
   readonly pointerId: number;
   readonly pointerType: string;
-  readonly raw: PointerEvent;
+  readonly raw: PointerEvent | WheelEvent | KeyboardEvent | FocusEvent;
   readonly scope?: LeafPickScope;
   readonly dispatch?: SceneEventDispatch;
+  // Phase 4 — wheel
+  readonly deltaX?: number;
+  readonly deltaY?: number;
+  readonly deltaZ?: number;
+  readonly deltaMode?: 0 | 1 | 2;
+  // Phase 5 — keyboard / focus
+  readonly key?: string;
+  readonly code?: string;
+  readonly repeat?: boolean;
+  readonly ctrlKey?: boolean;
+  readonly shiftKey?: boolean;
+  readonly altKey?: boolean;
+  readonly metaKey?: boolean;
+  readonly relatedTarget?: number;  // PickId of the previously / next focused scope.
+  // Phase 6 — drag
+  readonly dragStartX?: number;
+  readonly dragStartY?: number;
 }
 
 export class SceneEvent {
@@ -86,8 +115,26 @@ export class SceneEvent {
   readonly pointerId: number;
   /** Forwarded from PointerEvent.pointerType. */
   readonly pointerType: string;
-  /** Escape hatch for handlers that need the unprocessed PointerEvent. */
-  readonly raw: PointerEvent;
+  /** Escape hatch for handlers that need the unprocessed DOM event. */
+  readonly raw: PointerEvent | WheelEvent | KeyboardEvent | FocusEvent;
+  // Phase 4 — wheel deltas (only set on OnWheel events).
+  readonly deltaX?: number;
+  readonly deltaY?: number;
+  readonly deltaZ?: number;
+  readonly deltaMode?: 0 | 1 | 2;
+  // Phase 5 — keyboard / focus state.
+  readonly key?: string;
+  readonly code?: string;
+  readonly repeat?: boolean;
+  readonly ctrlKey?: boolean;
+  readonly shiftKey?: boolean;
+  readonly altKey?: boolean;
+  readonly metaKey?: boolean;
+  /** PickId of the previously focused (Blur) / newly focused (Focus) scope. */
+  readonly relatedTarget?: number;
+  // Phase 6 — drag origin
+  readonly dragStartX?: number;
+  readonly dragStartY?: number;
 
   // Why mutable internals despite readonly fields above: handlers
   // mutate these via the public methods. The fields stay readonly to
@@ -111,6 +158,20 @@ export class SceneEvent {
     this.pointerId = init.pointerId;
     this.pointerType = init.pointerType;
     this.raw = init.raw;
+    if (init.deltaX !== undefined) this.deltaX = init.deltaX;
+    if (init.deltaY !== undefined) this.deltaY = init.deltaY;
+    if (init.deltaZ !== undefined) this.deltaZ = init.deltaZ;
+    if (init.deltaMode !== undefined) this.deltaMode = init.deltaMode;
+    if (init.key !== undefined) this.key = init.key;
+    if (init.code !== undefined) this.code = init.code;
+    if (init.repeat !== undefined) this.repeat = init.repeat;
+    if (init.ctrlKey !== undefined) this.ctrlKey = init.ctrlKey;
+    if (init.shiftKey !== undefined) this.shiftKey = init.shiftKey;
+    if (init.altKey !== undefined) this.altKey = init.altKey;
+    if (init.metaKey !== undefined) this.metaKey = init.metaKey;
+    if (init.relatedTarget !== undefined) this.relatedTarget = init.relatedTarget;
+    if (init.dragStartX !== undefined) this.dragStartX = init.dragStartX;
+    if (init.dragStartY !== undefined) this.dragStartY = init.dragStartY;
     if (init.scope !== undefined) this._scope = init.scope;
     if (init.dispatch !== undefined) this._dispatch = init.dispatch;
   }

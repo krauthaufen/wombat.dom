@@ -91,6 +91,47 @@ export function forEachLeaf(
       // into whatever sub-tree it returns — same state.
       forEachLeaf(node.create(state), state, visit);
       return;
+    case "Intersectable":
+      forEachLeaf(node.child, state.pushIntersectable(node.intersectable), visit);
+      return;
+    case "DepthTest":
+      forEachLeaf(node.child, state.pushDepthTest(node.mode), visit); return;
+    case "DepthMask":
+      forEachLeaf(node.child, state.pushDepthMask(node.write), visit); return;
+    case "DepthBias":
+      forEachLeaf(node.child, state.pushDepthBias(node.bias), visit); return;
+    case "DepthClamp":
+      forEachLeaf(node.child, state.pushDepthClamp(node.clamp), visit); return;
+    case "CullMode":
+      forEachLeaf(node.child, state.pushCullMode(node.mode), visit); return;
+    case "FrontFace":
+      forEachLeaf(node.child, state.pushFrontFace(node.mode), visit); return;
+    case "FillMode":
+      forEachLeaf(node.child, state.pushFillMode(node.mode), visit); return;
+    case "Multisample":
+      forEachLeaf(node.child, state.pushMultisample(node.enabled), visit); return;
+    case "BlendConstant":
+      forEachLeaf(node.child, state.pushBlendConstant(node.value), visit); return;
+    case "ColorMask":
+      forEachLeaf(node.child, state.pushColorMask(node.mask), visit); return;
+    case "StencilMode":
+      forEachLeaf(node.child, state.pushStencilMode(node.mode), visit); return;
+    case "Pass":
+      forEachLeaf(node.child, state.pushRenderPass(node.pass), visit); return;
+    case "VertexAttributes":
+      forEachLeaf(node.child, state.pushVertexAttributes(node.attributes), visit); return;
+    case "InstanceAttributes":
+      forEachLeaf(node.child, state.pushInstanceAttributes(node.attributes), visit); return;
+    case "Index":
+      forEachLeaf(node.child, state.pushIndex(node.index), visit); return;
+    case "Mode":
+      forEachLeaf(node.child, state.pushMode(node.mode), visit); return;
+    case "NoEvents":
+      forEachLeaf(node.child, state.pushNoEvents(node.value), visit); return;
+    case "ForcePixelPicking":
+      forEachLeaf(node.child, state.pushForcePixelPicking(node.value), visit); return;
+    case "CanFocus":
+      forEachLeaf(node.child, state.pushCanFocus(node.value), visit); return;
   }
 }
 

@@ -30,12 +30,18 @@ import {
 import { M44f, Trafo3d } from "@aardworx/wombat.base";
 import { RenderTree } from "@aardworx/wombat.rendering/core";
 import type {
+  BlendState,
   Command, ClearValues, IFramebuffer, ISampler, ITexture,
   PipelineState, RasterizerState, RenderObject,
+  StencilState, Topology,
 } from "@aardworx/wombat.rendering/core";
 import type { Effect } from "@aardworx/wombat.shader";
 
-import type { SgLeaf, SgNode } from "./sg.js";
+import type {
+  ColorMaskValue,
+  ModeValue,
+  SgLeaf, SgNode,
+} from "./sg.js";
 import { TraversalState } from "./traversalState.js";
 import { composePickChain } from "./picking/pickChain.js";
 import type { PickRegistry } from "./picking/registry.js";
@@ -89,13 +95,129 @@ export function compileScene(
   opts: CompileSceneOptions = {},
 ): alist<Command> {
   const initial = opts.initialState ?? TraversalState.empty;
-  const tree = lower(sg, initial, opts);
+  // If the scene uses any `Sg.pass` scope, fall through to a flat
+  // lowering that orders leaves by pass first, scene-graph order
+  // second. Otherwise the structural lower path is identical to the
+  // pre-Phase-1 behaviour.
+  const tree = sceneUsesPass(sg)
+    ? lowerByPass(sg, initial, opts)
+    : lower(sg, initial, opts);
   const cmds: Command[] = [];
   if (opts.clear !== undefined) {
     cmds.push({ kind: "Clear", output, values: opts.clear });
   }
   cmds.push({ kind: "Render", output, tree });
   return AList.ofList(cmds);
+}
+
+function sceneUsesPass(node: SgNode): boolean {
+  switch (node.kind) {
+    case "Pass": return true;
+    case "Empty": case "Leaf": return false;
+    case "Group": {
+      for (const c of AVal.force(node.children.content)) if (sceneUsesPass(c)) return true;
+      return false;
+    }
+    case "UnorderedGroup": {
+      for (const c of AVal.force(node.children.content)) if (sceneUsesPass(c)) return true;
+      return false;
+    }
+    case "AdaptiveGroup": return sceneUsesPass(AVal.force(node.child));
+    case "Trafo": case "Shader": case "Uniform": case "BlendMode":
+    case "Cursor": case "PickThrough": case "Intersectable":
+    case "PixelSnapRadius": case "On": case "Active": case "View": case "Proj":
+    case "DepthTest": case "DepthMask": case "DepthBias": case "DepthClamp":
+    case "CullMode": case "FrontFace": case "FillMode": case "Multisample":
+    case "BlendConstant": case "ColorMask": case "StencilMode":
+    case "VertexAttributes": case "InstanceAttributes": case "Index": case "Mode":
+    case "NoEvents": case "ForcePixelPicking": case "CanFocus":
+      return sceneUsesPass(node.child);
+    case "Delay":
+      try { return sceneUsesPass(node.create(TraversalState.empty)); }
+      catch { return false; }
+  }
+}
+
+/**
+ * Pass-grouped lowering — walks the tree eagerly (forcing adaptive
+ * containers once at compile time), bucketing each leaf's
+ * RenderTree.leaf(...) into a `Map<pass, RenderTree[]>`. The result
+ * is `RenderTree.ordered(...passSorted.flatMap(arr))`. Adaptive
+ * subtrees inside a Pass-using scene are flattened ONCE; later
+ * dynamic restructuring won't re-evaluate the pass split (use
+ * `Sg.adaptive` outside Pass scopes if you need it).
+ */
+function lowerByPass(node: SgNode, state: TraversalState, opts: CompileSceneOptions): RenderTree {
+  const buckets = new Map<number, RenderTree[]>();
+  collectByPass(node, state, opts, buckets);
+  const passes = [...buckets.keys()].sort((a, b) => a - b);
+  const ordered: RenderTree[] = [];
+  for (const p of passes) for (const t of buckets.get(p)!) ordered.push(t);
+  return RenderTree.ordered(...ordered);
+}
+
+function collectByPass(
+  node: SgNode,
+  state: TraversalState,
+  opts: CompileSceneOptions,
+  buckets: Map<number, RenderTree[]>,
+): void {
+  switch (node.kind) {
+    case "Empty": return;
+    case "Leaf": {
+      const tree = lowerLeaf(node, state, opts);
+      if (tree.kind === "Empty") return;
+      const arr = buckets.get(state.renderPass) ?? [];
+      arr.push(tree);
+      buckets.set(state.renderPass, arr);
+      return;
+    }
+    case "Group":
+      for (const c of AVal.force(node.children.content)) collectByPass(c, state, opts, buckets);
+      return;
+    case "UnorderedGroup":
+      for (const c of AVal.force(node.children.content)) collectByPass(c, state, opts, buckets);
+      return;
+    case "AdaptiveGroup":
+      collectByPass(AVal.force(node.child), state, opts, buckets);
+      return;
+    case "Trafo": collectByPass(node.child, state.pushTrafo(node.value), opts, buckets); return;
+    case "Shader": collectByPass(node.child, state.pushShader(node.effect), opts, buckets); return;
+    case "Uniform": {
+      const entries = node.bag.kind === "Static" ? node.bag.entries : AVal.force(node.bag.entries.content);
+      collectByPass(node.child, state.pushUniforms(entries), opts, buckets);
+      return;
+    }
+    case "BlendMode": collectByPass(node.child, state.pushBlendMode(node.mode), opts, buckets); return;
+    case "Cursor": collectByPass(node.child, state.pushCursor(node.cursor), opts, buckets); return;
+    case "PickThrough": collectByPass(node.child, state.pushPickThrough(node.value), opts, buckets); return;
+    case "Intersectable": collectByPass(node.child, state.pushIntersectable(node.intersectable), opts, buckets); return;
+    case "PixelSnapRadius": collectByPass(node.child, state.pushPixelSnapRadius(node.radius), opts, buckets); return;
+    case "On": collectByPass(node.child, state.pushHandlers(node.handlers), opts, buckets); return;
+    case "Active": collectByPass(node.child, state.pushActive(node.active), opts, buckets); return;
+    case "View": collectByPass(node.child, state.withCamera(node.view, state.proj), opts, buckets); return;
+    case "Proj": collectByPass(node.child, state.withCamera(state.view, node.proj), opts, buckets); return;
+    case "Delay": collectByPass(node.create(state), state, opts, buckets); return;
+    case "DepthTest": collectByPass(node.child, state.pushDepthTest(node.mode), opts, buckets); return;
+    case "DepthMask": collectByPass(node.child, state.pushDepthMask(node.write), opts, buckets); return;
+    case "DepthBias": collectByPass(node.child, state.pushDepthBias(node.bias), opts, buckets); return;
+    case "DepthClamp": collectByPass(node.child, state.pushDepthClamp(node.clamp), opts, buckets); return;
+    case "CullMode": collectByPass(node.child, state.pushCullMode(node.mode), opts, buckets); return;
+    case "FrontFace": collectByPass(node.child, state.pushFrontFace(node.mode), opts, buckets); return;
+    case "FillMode": collectByPass(node.child, state.pushFillMode(node.mode), opts, buckets); return;
+    case "Multisample": collectByPass(node.child, state.pushMultisample(node.enabled), opts, buckets); return;
+    case "BlendConstant": collectByPass(node.child, state.pushBlendConstant(node.value), opts, buckets); return;
+    case "ColorMask": collectByPass(node.child, state.pushColorMask(node.mask), opts, buckets); return;
+    case "StencilMode": collectByPass(node.child, state.pushStencilMode(node.mode), opts, buckets); return;
+    case "Pass": collectByPass(node.child, state.pushRenderPass(node.pass), opts, buckets); return;
+    case "VertexAttributes": collectByPass(node.child, state.pushVertexAttributes(node.attributes), opts, buckets); return;
+    case "InstanceAttributes": collectByPass(node.child, state.pushInstanceAttributes(node.attributes), opts, buckets); return;
+    case "Index": collectByPass(node.child, state.pushIndex(node.index), opts, buckets); return;
+    case "Mode": collectByPass(node.child, state.pushMode(node.mode), opts, buckets); return;
+    case "NoEvents": collectByPass(node.child, state.pushNoEvents(node.value), opts, buckets); return;
+    case "ForcePixelPicking": collectByPass(node.child, state.pushForcePixelPicking(node.value), opts, buckets); return;
+    case "CanFocus": collectByPass(node.child, state.pushCanFocus(node.value), opts, buckets); return;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +307,40 @@ function lower(
       // scope that pushes anything; it just builds the child from
       // what it sees.
       return lower(node.create(state), state, opts);
+
+    case "DepthTest":   return lower(node.child, state.pushDepthTest(node.mode), opts);
+    case "DepthMask":   return lower(node.child, state.pushDepthMask(node.write), opts);
+    case "DepthBias":   return lower(node.child, state.pushDepthBias(node.bias), opts);
+    case "DepthClamp":  return lower(node.child, state.pushDepthClamp(node.clamp), opts);
+    case "CullMode":    return lower(node.child, state.pushCullMode(node.mode), opts);
+    case "FrontFace":   return lower(node.child, state.pushFrontFace(node.mode), opts);
+    case "FillMode":    return lower(node.child, state.pushFillMode(node.mode), opts);
+    case "Multisample": return lower(node.child, state.pushMultisample(node.enabled), opts);
+    case "BlendConstant": return lower(node.child, state.pushBlendConstant(node.value), opts);
+    case "ColorMask":   return lower(node.child, state.pushColorMask(node.mask), opts);
+    case "StencilMode": return lower(node.child, state.pushStencilMode(node.mode), opts);
+    case "Pass": {
+      // When opts.passBuckets is present (top-level lowering with
+      // pass-grouping requested) the leaves below this scope route
+      // into the corresponding bucket. Otherwise, ignore — leaves
+      // emit as ordered in the surrounding tree.
+      return lower(node.child, state.pushRenderPass(node.pass), opts);
+    }
+    case "VertexAttributes":
+      return lower(node.child, state.pushVertexAttributes(node.attributes), opts);
+    case "InstanceAttributes":
+      return lower(node.child, state.pushInstanceAttributes(node.attributes), opts);
+    case "Index":
+      return lower(node.child, state.pushIndex(node.index), opts);
+    case "Mode":
+      return lower(node.child, state.pushMode(node.mode), opts);
+
+    case "NoEvents":
+      return lower(node.child, state.pushNoEvents(node.value), opts);
+    case "ForcePixelPicking":
+      return lower(node.child, state.pushForcePixelPicking(node.value), opts);
+    case "CanFocus":
+      return lower(node.child, state.pushCanFocus(node.value), opts);
   }
 }
 
@@ -206,10 +362,19 @@ function lowerLeaf(
     return RenderTree.empty;
   }
 
+  // Merge geometry-attribute scopes into the leaf — leaf-supplied
+  // values win on per-key conflict. This is the Phase-2 contract:
+  // VertexAttributes/InstanceAttributes/Index/Mode scope nodes flow
+  // through state, and the leaf's own (more specific) entries take
+  // precedence.
+  const merged = mergeLeafGeometry(leaf, state);
+
   let effect: Effect = userEffect;
   let pickId: number | undefined;
-  if (opts.picking !== undefined) {
-    const geomHas = opts.picking.geomHas ?? defaultGeomHas(leaf);
+  // NoEvents scope short-circuits picking registration entirely.
+  const noEvents = AVal.force(state.noEvents);
+  if (opts.picking !== undefined && !noEvents) {
+    const geomHas = opts.picking.geomHas ?? defaultGeomHas(merged);
     effect = composePickChain(userEffect, geomHas);
     pickId = opts.picking.registry.acquire({
       handlers: state.handlers,
@@ -220,11 +385,13 @@ function lowerLeaf(
       proj: state.proj,
       model: state.model,
       pixelSnapRadius: state.pixelSnapRadius,
+      forcePixelPicking: state.forcePixelPicking,
+      canFocus: state.canFocus,
       ...(state.intersectable !== undefined ? { intersectable: state.intersectable } : {}),
     });
   }
 
-  const obj: RenderObject = buildRenderObject(leaf, state, effect, opts, pickId);
+  const obj: RenderObject = buildRenderObject(merged, state, effect, opts, pickId);
   const baseTree: RenderTree = RenderTree.leaf(obj);
 
   // Active gating: skip when statically false, wrap as adaptive
@@ -257,6 +424,50 @@ function buildRenderObject(
     drawCall: leaf.drawCall,
   };
   return obj;
+}
+
+/**
+ * Merge state's geometry-attribute scopes into the leaf — leaf-
+ * supplied values win on per-key conflict for vertex / instance
+ * attributes, and on whole-value override for index. The returned
+ * leaf is structurally identical when no scopes were entered.
+ */
+function mergeLeafGeometry(leaf: SgLeaf, state: TraversalState): SgLeaf {
+  const scopeVertex = AVal.force(state.vertexAttributes);
+  const scopeInstance = AVal.force(state.instanceAttributes);
+  const scopeIndex = AVal.force(state.index);
+
+  // Vertex attributes: scope ⊕ leaf, leaf-wins.
+  let vertex = leaf.vertexAttributes;
+  if (scopeVertex.count > 0) {
+    let m = scopeVertex;
+    for (const [k, v] of leaf.vertexAttributes) m = m.add(k, v);
+    vertex = m;
+  }
+
+  // Instance attributes: scope ⊕ leaf, leaf-wins.
+  let instance = leaf.instanceAttributes;
+  if (scopeInstance.count > 0) {
+    let m = scopeInstance;
+    if (leaf.instanceAttributes !== undefined) {
+      for (const [k, v] of leaf.instanceAttributes) m = m.add(k, v);
+    }
+    instance = m;
+  }
+
+  // Index: leaf-supplied wins; otherwise use scope.
+  let index = leaf.indices;
+  if (index === undefined && scopeIndex !== undefined) {
+    index = AVal.constant(scopeIndex);
+  }
+
+  return {
+    kind: "Leaf",
+    vertexAttributes: vertex,
+    ...(instance !== undefined ? { instanceAttributes: instance } : {}),
+    ...(index !== undefined ? { indices: index } : {}),
+    drawCall: leaf.drawCall,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -320,8 +531,16 @@ function autoInjectedUniforms(state: TraversalState): HashMap<string, aval<unkno
 }
 
 // ---------------------------------------------------------------------------
-// Pipeline state — sane defaults; BlendMode / DepthState scopes
-// override pieces.
+// Pipeline state — derived from TraversalState's render-state scopes.
+//
+// All Phase-1 scopes (DepthTest/Mask/Bias/Clamp, CullMode, FrontFace,
+// FillMode, Multisample, BlendConstant, ColorMask, StencilMode) are
+// declared as `aval<…>` for parity with Aardvark.Dom. PipelineState
+// itself is a static value on RenderObject — the runtime caches
+// pipelines by it. We `force` the avals once at compile time. For
+// dynamic state changes, swap the subtree via `Sg.adaptive` so a new
+// RenderObject (with fresh PipelineState) is produced. (See
+// docs/FUTURE.md: "reactive PipelineState".)
 // ---------------------------------------------------------------------------
 
 const defaultRasterizer: RasterizerState = {
@@ -330,17 +549,123 @@ const defaultRasterizer: RasterizerState = {
   frontFace: "ccw",
 };
 
+function fillModeWarning(): void { /* no-op stub; logged-once below */ }
+let warnedNonFillFillMode = false;
+let warnedDepthClamp = false;
+let warnedMultisample = false;
+let warnedBlendConstant = false;
+
+function topologyForMode(mode: ModeValue, fill: "fill" | "line" | "point"): Topology {
+  // FillMode "fill" leaves topology to the leaf-supplied Mode scope.
+  // FillMode "line" / "point" overrides topology to a wireframe-ish
+  // approximation (WebGPU has no real polygonMode). DOC: limitation.
+  if (fill === "line") {
+    if (!warnedNonFillFillMode) {
+      console.warn("[wombat.dom] FillMode='line' approximated by topology='line-list' — true polygon-mode wireframe is not exposed by WebGPU.");
+      warnedNonFillFillMode = true; fillModeWarning();
+    }
+    return "line-list";
+  }
+  if (fill === "point") {
+    if (!warnedNonFillFillMode) {
+      console.warn("[wombat.dom] FillMode='point' approximated by topology='point-list'.");
+      warnedNonFillFillMode = true;
+    }
+    return "point-list";
+  }
+  return mode;
+}
+
+function blendStateWithMask(b: BlendState, mask: ColorMaskValue | undefined): BlendState {
+  if (mask === undefined) return b;
+  let bits = 0;
+  if (mask.r) bits |= 1;
+  if (mask.g) bits |= 2;
+  if (mask.b) bits |= 4;
+  if (mask.a) bits |= 8;
+  return { color: b.color, alpha: b.alpha, writeMask: bits };
+}
+
+function defaultBlendForMask(mask: ColorMaskValue): BlendState {
+  // No blending, just channel mask. Mirrors WebGPU's "passthrough".
+  let bits = 0;
+  if (mask.r) bits |= 1;
+  if (mask.g) bits |= 2;
+  if (mask.b) bits |= 4;
+  if (mask.a) bits |= 8;
+  return {
+    color: { operation: "add", srcFactor: "one", dstFactor: "zero" },
+    alpha: { operation: "add", srcFactor: "one", dstFactor: "zero" },
+    writeMask: bits,
+  };
+}
+
 function derivePipelineState(state: TraversalState, opts: CompileSceneOptions): PipelineState {
-  const rasterizer = opts.rasterizer ?? defaultRasterizer;
+  const baseRast = opts.rasterizer ?? defaultRasterizer;
+  const cull = AVal.force(state.cullMode);
+  const frontFace = AVal.force(state.frontFace);
+  const fill = AVal.force(state.fillMode);
+  const mode = AVal.force(state.mode);
+  const topology = topologyForMode(mode, fill);
+  const rasterizer: RasterizerState = {
+    topology,
+    cullMode: cull,
+    frontFace,
+    ...(state.depthBias !== undefined
+      ? { depthBias: AVal.force(state.depthBias) }
+      : (baseRast.depthBias !== undefined ? { depthBias: baseRast.depthBias } : {})),
+  };
+
+  const depthCompare = AVal.force(state.depthTest);
+  const depthWrite = AVal.force(state.depthMask);
+
+  // Phase 1 — depth clamp / multisample / blend-constant: WebGPU
+  // exposure of these is partial (require adapter features) — we
+  // surface the API for parity but log once if used.
+  if (!warnedDepthClamp && AVal.force(state.depthClamp) === true) {
+    console.warn("[wombat.dom] DepthClamp scope is set; WebGPU 'unclippedDepth' must be enabled on the device.");
+    warnedDepthClamp = true;
+  }
+  if (!warnedMultisample && AVal.force(state.multisample) === false) {
+    console.warn("[wombat.dom] Multisample=false has no effect — wombat.rendering does not expose per-RO sample masks.");
+    warnedMultisample = true;
+  }
+  if (!warnedBlendConstant && state.blendConstant !== undefined) {
+    console.warn("[wombat.dom] BlendConstant scope set; wombat.rendering does not expose `setBlendConstant` per RO. The constant is captured but not wired to the encoder.");
+    warnedBlendConstant = true;
+  }
+
+  // ColorMask: a HashMap<attachment, ColorMaskValue> override.
+  const masks = AVal.force(state.colorMask);
+  let blends: HashMap<string, BlendState> | undefined;
+  if (state.blendMode !== undefined) {
+    blends = HashMap.empty<string, BlendState>().add("color", blendStateWithMask(state.blendMode, masks.tryFind("color")));
+  }
+  if (masks.count > 0) {
+    if (blends === undefined) blends = HashMap.empty<string, BlendState>();
+    for (const [k, v] of masks) {
+      if (blends.tryFind(k) === undefined) blends = blends.add(k, defaultBlendForMask(v));
+    }
+  }
+
+  let stencil: StencilState | undefined;
+  if (state.stencilMode !== undefined) {
+    const sm = AVal.force(state.stencilMode);
+    if (sm.enabled) {
+      stencil = {
+        readMask: sm.readMask,
+        writeMask: sm.writeMask,
+        front: { compare: sm.front.compare, failOp: sm.front.fail, depthFailOp: sm.front.depthFail, passOp: sm.front.pass },
+        back:  { compare: sm.back.compare,  failOp: sm.back.fail,  depthFailOp: sm.back.depthFail,  passOp: sm.back.pass  },
+      };
+    }
+  }
+
   const ps: PipelineState = {
     rasterizer,
-    depth: { write: true, compare: "less" },
-    ...(state.blendMode !== undefined
-      // Single-attachment default: apply the scope's blend to "color".
-      // Multi-target scenes plug their own per-attachment map via
-      // a dedicated attribute scope (M9+).
-      ? { blends: HashMap.empty<string, typeof state.blendMode>().add("color", state.blendMode) }
-      : {}),
+    depth: { write: depthWrite, compare: depthCompare },
+    ...(blends !== undefined ? { blends } : {}),
+    ...(stencil !== undefined ? { stencil } : {}),
   };
   return ps;
 }

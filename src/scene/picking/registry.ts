@@ -5,7 +5,7 @@
 // Mirrors the F# `Aardvark.Dom.SceneHandler.acquireId` /
 // `pickBuffer` capture, minus the recycling. See file footer.
 
-import { AVal, type aval } from "@aardworx/wombat.adaptive";
+import { AVal, cval, transact, type aval } from "@aardworx/wombat.adaptive";
 import { Bvh, type IIntersectable, type Trafo3d } from "@aardworx/wombat.base";
 
 import type { EventHandlers } from "../sg.js";
@@ -51,6 +51,13 @@ export interface LeafPickScope {
    * scopes when the pixel-pick lands on a "transparent" hit.
    */
   readonly intersectable?: aval<IIntersectable>;
+  /**
+   * When true, the dispatcher's BVH ray fall-through is suppressed
+   * for hits on this scope: the pixel-pick result is final.
+   */
+  readonly forcePixelPicking?: aval<boolean>;
+  /** When true, this scope can receive keyboard / focus events. */
+  readonly canFocus?: aval<boolean>;
 }
 
 /**
@@ -77,6 +84,12 @@ export class PickRegistry {
   private _bvh: Bvh<PickId, IIntersectable> | undefined = undefined;
   private _bvhVersion: number = -1;
 
+  // Phase 5 — focus model. `focusedPickId` is observable via aval;
+  // dispatcher subscribes to drive OnFocus / OnBlur.
+  private readonly _focused = cval<PickId | undefined>(undefined);
+  /** Currently focused scope's PickId, or `undefined`. Observable. */
+  readonly focusedPickId: aval<PickId | undefined> = this._focused;
+
   acquire(scope: Omit<LeafPickScope, "pickId">): PickId {
     const pickId = this.next++;
     const full: LeafPickScope = { pickId, ...scope };
@@ -95,10 +108,32 @@ export class PickRegistry {
     this._dirtyVersion++;
     this._bvh = undefined;
     this._bvhVersion = -1;
+    transact(() => { this._focused.value = undefined; });
   }
 
   size(): number {
     return this.entries.size;
+  }
+
+  /**
+   * Move focus to the given scope. Validates that the target's
+   * `canFocus = true`; silently rejects otherwise. Pass `undefined`
+   * (or call {@link clearFocus}) to drop focus.
+   */
+  setFocus(pickId: PickId | undefined): void {
+    if (pickId === undefined) {
+      transact(() => { this._focused.value = undefined; });
+      return;
+    }
+    const scope = this.entries.get(pickId);
+    if (scope === undefined) return;
+    if (scope.canFocus === undefined || !AVal.force(scope.canFocus)) return;
+    transact(() => { this._focused.value = pickId; });
+  }
+
+  /** Drop focus. Equivalent to `setFocus(undefined)`. */
+  clearFocus(): void {
+    transact(() => { this._focused.value = undefined; });
   }
 
   /**

@@ -55,4 +55,12 @@ export const SG_KINDS: ReadonlySet<string> = new Set<string>([
   "Empty", "Group", "UnorderedGroup", "AdaptiveGroup", "Leaf",
   "Trafo", "Shader", "Uniform", "BlendMode", "Cursor", "PickThrough",
   "Intersectable", "PixelSnapRadius", "On", "Active", "View", "Proj", "Delay",
+  // Phase 1
+  "DepthTest", "DepthMask", "DepthBias", "DepthClamp",
+  "CullMode", "FrontFace", "FillMode", "Multisample",
+  "BlendConstant", "ColorMask", "StencilMode", "Pass",
+  // Phase 2
+  "VertexAttributes", "InstanceAttributes", "Index", "Mode",
+  // Phase 3
+  "NoEvents", "ForcePixelPicking", "CanFocus",
 ]);

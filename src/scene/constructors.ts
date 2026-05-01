@@ -34,13 +34,23 @@ import type { Child, VNode } from "../vnode.js";
 import { isVNode } from "../vnode.js";
 import { isAList, isASet, isAVal } from "../guards.js";
 import type {
+  BlendConstantValue,
+  ColorMaskValue,
+  CullValue,
+  DepthBiasValue,
+  DepthCompare,
   EventHandlers,
+  FillModeValue,
+  FrontFaceValue,
+  ModeValue,
   SceneEventHandler,
   SgNode,
   SgLeaf,
+  StencilModeValue,
   TrafoValue,
   UniformBag,
 } from "./sg.js";
+import { RenderPass } from "./sg.js";
 import type { SceneEventKind } from "./picking/sceneEvent.js";
 import { box as boxLeaf, quad as quadLeaf, type BoxOptions, type QuadOptions } from "./primitives.js";
 import {
@@ -183,6 +193,117 @@ function delay(
 }
 
 // ---------------------------------------------------------------------------
+// Phase 1 — render-state scope builders
+// ---------------------------------------------------------------------------
+
+function liftAval<T>(v: T | aval<T>): aval<T> {
+  return isAValRuntime(v) ? (v as aval<T>) : AVal.constant(v as T);
+}
+
+function depthTest(mode: DepthCompare | aval<DepthCompare>): (child: SgNode) => SgNode {
+  const m = liftAval(mode);
+  return (child: SgNode): SgNode => ({ kind: "DepthTest", mode: m, child });
+}
+function depthMask(write: boolean | aval<boolean>): (child: SgNode) => SgNode {
+  const w = liftAval(write);
+  return (child: SgNode): SgNode => ({ kind: "DepthMask", write: w, child });
+}
+function depthBias(bias: DepthBiasValue | aval<DepthBiasValue>): (child: SgNode) => SgNode {
+  const b = liftAval(bias);
+  return (child: SgNode): SgNode => ({ kind: "DepthBias", bias: b, child });
+}
+function depthClamp(clamp: boolean | aval<boolean>): (child: SgNode) => SgNode {
+  const c = liftAval(clamp);
+  return (child: SgNode): SgNode => ({ kind: "DepthClamp", clamp: c, child });
+}
+function cullMode(mode: CullValue | aval<CullValue>): (child: SgNode) => SgNode {
+  const m = liftAval(mode);
+  return (child: SgNode): SgNode => ({ kind: "CullMode", mode: m, child });
+}
+function frontFace(mode: FrontFaceValue | aval<FrontFaceValue>): (child: SgNode) => SgNode {
+  const m = liftAval(mode);
+  return (child: SgNode): SgNode => ({ kind: "FrontFace", mode: m, child });
+}
+function fillMode(mode: FillModeValue | aval<FillModeValue>): (child: SgNode) => SgNode {
+  const m = liftAval(mode);
+  return (child: SgNode): SgNode => ({ kind: "FillMode", mode: m, child });
+}
+function multisample(enabled: boolean | aval<boolean>): (child: SgNode) => SgNode {
+  const e = liftAval(enabled);
+  return (child: SgNode): SgNode => ({ kind: "Multisample", enabled: e, child });
+}
+function blendConstant(value: BlendConstantValue | aval<BlendConstantValue>): (child: SgNode) => SgNode {
+  const v = liftAval(value);
+  return (child: SgNode): SgNode => ({ kind: "BlendConstant", value: v, child });
+}
+function colorMask(
+  mask: ColorMaskValue | HashMap<string, ColorMaskValue> | aval<HashMap<string, ColorMaskValue>>,
+): (child: SgNode) => SgNode {
+  let m: aval<HashMap<string, ColorMaskValue>>;
+  if (isAValRuntime(mask)) {
+    m = mask as aval<HashMap<string, ColorMaskValue>>;
+  } else if ((mask as HashMap<string, ColorMaskValue>).count !== undefined) {
+    m = AVal.constant(mask as HashMap<string, ColorMaskValue>);
+  } else {
+    const single = mask as ColorMaskValue;
+    m = AVal.constant(HashMap.empty<string, ColorMaskValue>().add("color", single));
+  }
+  return (child: SgNode): SgNode => ({ kind: "ColorMask", mask: m, child });
+}
+function stencilMode(mode: StencilModeValue | aval<StencilModeValue>): (child: SgNode) => SgNode {
+  const m = liftAval(mode);
+  return (child: SgNode): SgNode => ({ kind: "StencilMode", mode: m, child });
+}
+function pass(value: number, child: SgNode): SgNode {
+  return { kind: "Pass", pass: value, child };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 — geometry-attribute scopes
+// ---------------------------------------------------------------------------
+
+function vertexAttributes(
+  attrs: HashMap<string, aval<BufferView>> | aval<HashMap<string, aval<BufferView>>>,
+): (child: SgNode) => SgNode {
+  const a: aval<HashMap<string, aval<BufferView>>> = isAValRuntime(attrs)
+    ? (attrs as aval<HashMap<string, aval<BufferView>>>)
+    : AVal.constant(attrs as HashMap<string, aval<BufferView>>);
+  return (child: SgNode): SgNode => ({ kind: "VertexAttributes", attributes: a, child });
+}
+function instanceAttributes(
+  attrs: HashMap<string, aval<BufferView>> | aval<HashMap<string, aval<BufferView>>>,
+): (child: SgNode) => SgNode {
+  const a: aval<HashMap<string, aval<BufferView>>> = isAValRuntime(attrs)
+    ? (attrs as aval<HashMap<string, aval<BufferView>>>)
+    : AVal.constant(attrs as HashMap<string, aval<BufferView>>);
+  return (child: SgNode): SgNode => ({ kind: "InstanceAttributes", attributes: a, child });
+}
+function index(idx: BufferView | undefined | aval<BufferView | undefined>): (child: SgNode) => SgNode {
+  const i: aval<BufferView | undefined> = isAValRuntime(idx)
+    ? (idx as aval<BufferView | undefined>)
+    : AVal.constant(idx as BufferView | undefined);
+  return (child: SgNode): SgNode => ({ kind: "Index", index: i, child });
+}
+function mode(m: ModeValue | aval<ModeValue>): (child: SgNode) => SgNode {
+  const v = liftAval(m);
+  return (child: SgNode): SgNode => ({ kind: "Mode", mode: v, child });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 — misc scopes
+// ---------------------------------------------------------------------------
+
+function noEvents(value: boolean | aval<boolean>, child: SgNode): SgNode {
+  return { kind: "NoEvents", value: liftAval(value), child };
+}
+function forcePixelPicking(value: boolean | aval<boolean>, child: SgNode): SgNode {
+  return { kind: "ForcePixelPicking", value: liftAval(value), child };
+}
+function canFocus(value: boolean | aval<boolean>, child: SgNode): SgNode {
+  return { kind: "CanFocus", value: liftAval(value), child };
+}
+
+// ---------------------------------------------------------------------------
 // Trafo helpers — return Trafo3d (or aval<Trafo3d>) for use in arrays
 // ---------------------------------------------------------------------------
 
@@ -244,6 +365,34 @@ export interface SgScopeProps {
   // Active gating (AND across nesting).
   Active?: aval<boolean>;
 
+  // Phase 1 — render-state scopes (override semantics)
+  DepthTest?: DepthCompare | aval<DepthCompare>;
+  DepthMask?: boolean | aval<boolean>;
+  DepthBias?: DepthBiasValue | aval<DepthBiasValue>;
+  DepthClamp?: boolean | aval<boolean>;
+  CullMode?: CullValue | aval<CullValue>;
+  FrontFace?: FrontFaceValue | aval<FrontFaceValue>;
+  FillMode?: FillModeValue | aval<FillModeValue>;
+  Multisample?: boolean | aval<boolean>;
+  BlendConstant?: BlendConstantValue | aval<BlendConstantValue>;
+  ColorMask?:
+    | ColorMaskValue
+    | HashMap<string, ColorMaskValue>
+    | aval<HashMap<string, ColorMaskValue>>;
+  StencilMode?: StencilModeValue | aval<StencilModeValue>;
+  Pass?: number;
+
+  // Phase 2 — geometry attribute scopes
+  VertexAttributes?: HashMap<string, aval<BufferView>> | aval<HashMap<string, aval<BufferView>>>;
+  InstanceAttributes?: HashMap<string, aval<BufferView>> | aval<HashMap<string, aval<BufferView>>>;
+  Index?: BufferView | undefined | aval<BufferView | undefined>;
+  Mode?: ModeValue | aval<ModeValue>;
+
+  // Phase 3 — misc scopes
+  NoEvents?: boolean | aval<boolean>;
+  ForcePixelPicking?: boolean | aval<boolean>;
+  CanFocus?: boolean | aval<boolean>;
+
   // Event handlers — appended to the chain at this scope. Each
   // pair is `On<Kind>` (bubble) and `OnCapture<Kind>` (capture);
   // the dispatcher walks capture outer-first then bubble inner-
@@ -266,6 +415,27 @@ export interface SgScopeProps {
   OnCaptureDoubleTap?: SceneEventHandler;
   OnLongPress?:       SceneEventHandler;
   OnCaptureLongPress?: SceneEventHandler;
+  // Phase 4
+  OnWheel?:           SceneEventHandler;
+  OnCaptureWheel?:    SceneEventHandler;
+  // Phase 5 — focus/blur and keyboard
+  OnFocus?:           SceneEventHandler;
+  OnCaptureFocus?:    SceneEventHandler;
+  OnBlur?:            SceneEventHandler;
+  OnCaptureBlur?:     SceneEventHandler;
+  OnKeyDown?:         SceneEventHandler;
+  OnCaptureKeyDown?:  SceneEventHandler;
+  OnKeyUp?:           SceneEventHandler;
+  OnCaptureKeyUp?:    SceneEventHandler;
+  OnKeyPress?:        SceneEventHandler;
+  OnCaptureKeyPress?: SceneEventHandler;
+  // Phase 6 — drag
+  OnDragStart?:       SceneEventHandler;
+  OnCaptureDragStart?: SceneEventHandler;
+  OnDrag?:            SceneEventHandler;
+  OnCaptureDrag?:     SceneEventHandler;
+  OnDragEnd?:         SceneEventHandler;
+  OnCaptureDragEnd?:  SceneEventHandler;
 
   /**
    * Children: ordinary JSX (Sg components, fragments, arrays) plus
@@ -293,6 +463,28 @@ function applyScopeAttrs(node: SgNode, props: SgScopeProps): SgNode {
   if (props.BlendMode !== undefined)   n = blendMode(props.BlendMode, n);
   if (props.Shader !== undefined)      n = shader(props.Shader, n);
   if (props.Uniform !== undefined)     n = uniform(props.Uniform, n);
+  // Phase 3 — innermost (close to leaves)
+  if (props.NoEvents !== undefined)        n = noEvents(props.NoEvents, n);
+  if (props.ForcePixelPicking !== undefined) n = forcePixelPicking(props.ForcePixelPicking, n);
+  if (props.CanFocus !== undefined)        n = canFocus(props.CanFocus, n);
+  // Phase 2 — geometry
+  if (props.VertexAttributes !== undefined)   n = vertexAttributes(props.VertexAttributes)(n);
+  if (props.InstanceAttributes !== undefined) n = instanceAttributes(props.InstanceAttributes)(n);
+  if (props.Index !== undefined)              n = index(props.Index)(n);
+  if (props.Mode !== undefined)               n = mode(props.Mode)(n);
+  // Phase 1 — render state
+  if (props.DepthTest !== undefined)   n = depthTest(props.DepthTest)(n);
+  if (props.DepthMask !== undefined)   n = depthMask(props.DepthMask)(n);
+  if (props.DepthBias !== undefined)   n = depthBias(props.DepthBias)(n);
+  if (props.DepthClamp !== undefined)  n = depthClamp(props.DepthClamp)(n);
+  if (props.CullMode !== undefined)    n = cullMode(props.CullMode)(n);
+  if (props.FrontFace !== undefined)   n = frontFace(props.FrontFace)(n);
+  if (props.FillMode !== undefined)    n = fillMode(props.FillMode)(n);
+  if (props.Multisample !== undefined) n = multisample(props.Multisample)(n);
+  if (props.BlendConstant !== undefined) n = blendConstant(props.BlendConstant)(n);
+  if (props.ColorMask !== undefined)   n = colorMask(props.ColorMask)(n);
+  if (props.StencilMode !== undefined) n = stencilMode(props.StencilMode)(n);
+  if (props.Pass !== undefined)        n = pass(props.Pass, n);
   if (props.Trafo !== undefined)       n = trafo(props.Trafo, n);
   return n;
 }
@@ -319,6 +511,24 @@ function collectEventHandlers(props: SgScopeProps): EventHandlers | undefined {
   if (props.OnCaptureTap)          { capture.OnTap = props.OnCaptureTap; any = true; }
   if (props.OnCaptureDoubleTap)    { capture.OnDoubleTap = props.OnCaptureDoubleTap; any = true; }
   if (props.OnCaptureLongPress)    { capture.OnLongPress = props.OnCaptureLongPress; any = true; }
+  if (props.OnWheel)        { bubble.OnWheel = props.OnWheel; any = true; }
+  if (props.OnCaptureWheel) { capture.OnWheel = props.OnCaptureWheel; any = true; }
+  if (props.OnFocus)        { bubble.OnFocus = props.OnFocus; any = true; }
+  if (props.OnCaptureFocus) { capture.OnFocus = props.OnCaptureFocus; any = true; }
+  if (props.OnBlur)         { bubble.OnBlur = props.OnBlur; any = true; }
+  if (props.OnCaptureBlur)  { capture.OnBlur = props.OnCaptureBlur; any = true; }
+  if (props.OnKeyDown)      { bubble.OnKeyDown = props.OnKeyDown; any = true; }
+  if (props.OnCaptureKeyDown) { capture.OnKeyDown = props.OnCaptureKeyDown; any = true; }
+  if (props.OnKeyUp)        { bubble.OnKeyUp = props.OnKeyUp; any = true; }
+  if (props.OnCaptureKeyUp) { capture.OnKeyUp = props.OnCaptureKeyUp; any = true; }
+  if (props.OnKeyPress)     { bubble.OnKeyPress = props.OnKeyPress; any = true; }
+  if (props.OnCaptureKeyPress) { capture.OnKeyPress = props.OnCaptureKeyPress; any = true; }
+  if (props.OnDragStart)    { bubble.OnDragStart = props.OnDragStart; any = true; }
+  if (props.OnCaptureDragStart) { capture.OnDragStart = props.OnCaptureDragStart; any = true; }
+  if (props.OnDrag)         { bubble.OnDrag = props.OnDrag; any = true; }
+  if (props.OnCaptureDrag)  { capture.OnDrag = props.OnCaptureDrag; any = true; }
+  if (props.OnDragEnd)      { bubble.OnDragEnd = props.OnDragEnd; any = true; }
+  if (props.OnCaptureDragEnd) { capture.OnDragEnd = props.OnCaptureDragEnd; any = true; }
   if (!any) return undefined;
   const out: { capture?: typeof capture; bubble?: typeof bubble } = {};
   if (Object.keys(capture).length > 0) out.capture = capture;
@@ -457,6 +667,32 @@ interface SgNamespace {
   scale:     typeof scale;
   rotate:    typeof rotate;
   trafoOf:   typeof trafoOf;
+
+  // Phase 1 builders
+  depthTest:    typeof depthTest;
+  depthMask:    typeof depthMask;
+  depthBias:    typeof depthBias;
+  depthClamp:   typeof depthClamp;
+  cullMode:     typeof cullMode;
+  frontFace:    typeof frontFace;
+  fillMode:     typeof fillMode;
+  multisample:  typeof multisample;
+  blendConstant: typeof blendConstant;
+  colorMask:    typeof colorMask;
+  stencilMode:  typeof stencilMode;
+  pass:         typeof pass;
+  RenderPass:   typeof RenderPass;
+
+  // Phase 2 builders
+  vertexAttributes:   typeof vertexAttributes;
+  instanceAttributes: typeof instanceAttributes;
+  index:              typeof index;
+  mode:               typeof mode;
+
+  // Phase 3 builders
+  noEvents:          typeof noEvents;
+  forcePixelPicking: typeof forcePixelPicking;
+  canFocus:          typeof canFocus;
 }
 
 export const Sg: SgNamespace = (() => {
@@ -497,6 +733,26 @@ export const Sg: SgNamespace = (() => {
   fn.scale       = scale;
   fn.rotate      = rotate;
   fn.trafoOf     = trafoOf;
+  fn.depthTest    = depthTest;
+  fn.depthMask    = depthMask;
+  fn.depthBias    = depthBias;
+  fn.depthClamp   = depthClamp;
+  fn.cullMode     = cullMode;
+  fn.frontFace    = frontFace;
+  fn.fillMode     = fillMode;
+  fn.multisample  = multisample;
+  fn.blendConstant = blendConstant;
+  fn.colorMask    = colorMask;
+  fn.stencilMode  = stencilMode;
+  fn.pass         = pass;
+  fn.RenderPass   = RenderPass;
+  fn.vertexAttributes   = vertexAttributes;
+  fn.instanceAttributes = instanceAttributes;
+  fn.index              = index;
+  fn.mode               = mode;
+  fn.noEvents          = noEvents;
+  fn.forcePixelPicking = forcePixelPicking;
+  fn.canFocus          = canFocus;
   return fn;
 })();
 

@@ -55,8 +55,20 @@ import {
 } from "@aardworx/wombat.adaptive";
 import { Trafo3d, type IIntersectable } from "@aardworx/wombat.base";
 import type { Effect } from "@aardworx/wombat.shader";
-import type { BlendState } from "@aardworx/wombat.rendering/core";
-import type { EventHandlers, TrafoValue } from "./sg.js";
+import type { BlendState, BufferView } from "@aardworx/wombat.rendering/core";
+import type {
+  BlendConstantValue,
+  ColorMaskValue,
+  CullValue,
+  DepthBiasValue,
+  DepthCompare,
+  EventHandlers,
+  FillModeValue,
+  FrontFaceValue,
+  ModeValue,
+  StencilModeValue,
+  TrafoValue,
+} from "./sg.js";
 
 // ---------------------------------------------------------------------------
 // Helpers — value-or-aval normalisation
@@ -163,21 +175,52 @@ export class TraversalState {
    */
   readonly handlers: ReadonlyArray<EventHandlers>;
 
-  private constructor(spec: {
-    model: aval<Trafo3d>;
-    view: aval<Trafo3d>;
-    proj: aval<Trafo3d>;
-    viewport: aval<{ width: number; height: number }>;
-    shader: Effect | undefined;
-    uniforms: HashMap<string, aval<unknown>>;
-    blendMode: BlendState | undefined;
-    cursor: aval<string> | undefined;
-    pickThrough: boolean;
-    intersectable: aval<IIntersectable> | undefined;
-    pixelSnapRadius: aval<number>;
-    active: aval<boolean>;
-    handlers: ReadonlyArray<EventHandlers>;
-  }) {
+  // ---------------- Phase 1 — render-state -----------------------------
+
+  /** Innermost depth-test mode. Defaults to `"less"`. */
+  readonly depthTest: aval<DepthCompare>;
+  /** Innermost depth-write mask. Defaults to `true`. */
+  readonly depthMask: aval<boolean>;
+  /** Innermost depth-bias triple, or `undefined` for no bias. */
+  readonly depthBias: aval<DepthBiasValue> | undefined;
+  /** Unclipped depth (override). Defaults to `false`. */
+  readonly depthClamp: aval<boolean>;
+  /** Cull mode (override). Defaults to `"none"`. */
+  readonly cullMode: aval<CullValue>;
+  /** Front-face winding (override). Defaults to `"ccw"`. */
+  readonly frontFace: aval<FrontFaceValue>;
+  /** Fill mode (override). Defaults to `"fill"`. */
+  readonly fillMode: aval<FillModeValue>;
+  /** Multisample enable (override). Defaults to `true`. */
+  readonly multisample: aval<boolean>;
+  /** Per-pass blend constant, or `undefined` if unset. */
+  readonly blendConstant: aval<BlendConstantValue> | undefined;
+  /** Per-attachment color-write masks (innermost wins). */
+  readonly colorMask: aval<HashMap<string, ColorMaskValue>>;
+  /** Stencil mode, or `undefined` if disabled. */
+  readonly stencilMode: aval<StencilModeValue> | undefined;
+  /** Render-pass ordinal (innermost wins). Defaults to `RenderPass.main` (0). */
+  readonly renderPass: number;
+
+  // ---------------- Phase 2 — geometry attribute scopes ----------------
+
+  readonly vertexAttributes: aval<HashMap<string, aval<BufferView>>>;
+  readonly instanceAttributes: aval<HashMap<string, aval<BufferView>>>;
+  readonly index: aval<BufferView | undefined>;
+  readonly mode: aval<ModeValue>;
+
+  // ---------------- Phase 3 — misc scopes ------------------------------
+
+  /** When true, descendants skip pick-chain registration. */
+  readonly noEvents: aval<boolean>;
+  /** When true, descendants opt out of BVH ray fall-through. */
+  readonly forcePixelPicking: aval<boolean>;
+  /** When true, this scope is a focus target. */
+  readonly canFocus: aval<boolean>;
+  /** Per-frame time clock (Phase 7). Defaults to a constant initial-load timestamp. */
+  readonly time: aval<number>;
+
+  private constructor(spec: TraversalSpec) {
     this.model = spec.model;
     this.view = spec.view;
     this.proj = spec.proj;
@@ -191,6 +234,26 @@ export class TraversalState {
     this.pixelSnapRadius = spec.pixelSnapRadius;
     this.active = spec.active;
     this.handlers = spec.handlers;
+    this.depthTest = spec.depthTest;
+    this.depthMask = spec.depthMask;
+    this.depthBias = spec.depthBias;
+    this.depthClamp = spec.depthClamp;
+    this.cullMode = spec.cullMode;
+    this.frontFace = spec.frontFace;
+    this.fillMode = spec.fillMode;
+    this.multisample = spec.multisample;
+    this.blendConstant = spec.blendConstant;
+    this.colorMask = spec.colorMask;
+    this.stencilMode = spec.stencilMode;
+    this.renderPass = spec.renderPass;
+    this.vertexAttributes = spec.vertexAttributes;
+    this.instanceAttributes = spec.instanceAttributes;
+    this.index = spec.index;
+    this.mode = spec.mode;
+    this.noEvents = spec.noEvents;
+    this.forcePixelPicking = spec.forcePixelPicking;
+    this.canFocus = spec.canFocus;
+    this.time = spec.time;
   }
 
   /** Empty initial state — identity transforms, no shader, no uniforms, active=true. */
@@ -208,6 +271,26 @@ export class TraversalState {
     pixelSnapRadius: AVal.constant(1),
     active: AVal.constant(true),
     handlers: [],
+    depthTest: AVal.constant<DepthCompare>("less"),
+    depthMask: AVal.constant(true),
+    depthBias: undefined,
+    depthClamp: AVal.constant(false),
+    cullMode: AVal.constant<CullValue>("none"),
+    frontFace: AVal.constant<FrontFaceValue>("ccw"),
+    fillMode: AVal.constant<FillModeValue>("fill"),
+    multisample: AVal.constant(true),
+    blendConstant: undefined,
+    colorMask: AVal.constant(HashMap.empty<string, ColorMaskValue>()),
+    stencilMode: undefined,
+    renderPass: 0,
+    vertexAttributes: AVal.constant(HashMap.empty<string, aval<BufferView>>()),
+    instanceAttributes: AVal.constant(HashMap.empty<string, aval<BufferView>>()),
+    index: AVal.constant<BufferView | undefined>(undefined),
+    mode: AVal.constant<ModeValue>("triangle-list"),
+    noEvents: AVal.constant(false),
+    forcePixelPicking: AVal.constant(false),
+    canFocus: AVal.constant(false),
+    time: AVal.constant(0),
   });
 
   // ---------------------------------------------------------------------------
@@ -283,25 +366,58 @@ export class TraversalState {
     return this.with({ viewport });
   }
 
+  // ---------------- Phase 1 — render-state pushers ---------------------
+
+  pushDepthTest(mode: aval<DepthCompare>): TraversalState { return this.with({ depthTest: mode }); }
+  pushDepthMask(write: aval<boolean>): TraversalState { return this.with({ depthMask: write }); }
+  pushDepthBias(bias: aval<DepthBiasValue>): TraversalState { return this.with({ depthBias: bias }); }
+  pushDepthClamp(clamp: aval<boolean>): TraversalState { return this.with({ depthClamp: clamp }); }
+  pushCullMode(mode: aval<CullValue>): TraversalState { return this.with({ cullMode: mode }); }
+  pushFrontFace(mode: aval<FrontFaceValue>): TraversalState { return this.with({ frontFace: mode }); }
+  pushFillMode(mode: aval<FillModeValue>): TraversalState { return this.with({ fillMode: mode }); }
+  pushMultisample(enabled: aval<boolean>): TraversalState { return this.with({ multisample: enabled }); }
+  pushBlendConstant(value: aval<BlendConstantValue>): TraversalState { return this.with({ blendConstant: value }); }
+  pushColorMask(mask: aval<HashMap<string, ColorMaskValue>>): TraversalState { return this.with({ colorMask: mask }); }
+  pushStencilMode(mode: aval<StencilModeValue>): TraversalState { return this.with({ stencilMode: mode }); }
+  pushRenderPass(pass: number): TraversalState { return this.with({ renderPass: pass }); }
+
+  // ---------------- Phase 2 — geometry attribute pushers ---------------
+
+  /** `<Sg VertexAttributes={…}>`: COMPOSE per-key (inner-wins on conflict). */
+  pushVertexAttributes(attrs: aval<HashMap<string, aval<BufferView>>>): TraversalState {
+    const merged = AVal.zip(this.vertexAttributes, attrs).map((outer, inner) => {
+      let m = outer;
+      for (const [k, v] of inner) m = m.add(k, v);
+      return m;
+    });
+    return this.with({ vertexAttributes: merged });
+  }
+
+  pushInstanceAttributes(attrs: aval<HashMap<string, aval<BufferView>>>): TraversalState {
+    const merged = AVal.zip(this.instanceAttributes, attrs).map((outer, inner) => {
+      let m = outer;
+      for (const [k, v] of inner) m = m.add(k, v);
+      return m;
+    });
+    return this.with({ instanceAttributes: merged });
+  }
+
+  pushIndex(index: aval<BufferView | undefined>): TraversalState { return this.with({ index }); }
+  pushMode(mode: aval<ModeValue>): TraversalState { return this.with({ mode }); }
+
+  // ---------------- Phase 3 — misc scope pushers -----------------------
+
+  pushNoEvents(value: aval<boolean>): TraversalState { return this.with({ noEvents: value }); }
+  pushForcePixelPicking(value: aval<boolean>): TraversalState { return this.with({ forcePixelPicking: value }); }
+  pushCanFocus(value: aval<boolean>): TraversalState { return this.with({ canFocus: value }); }
+  /** `<RenderControl>` populates this with the global frame clock. */
+  withTime(time: aval<number>): TraversalState { return this.with({ time }); }
+
   // ---------------------------------------------------------------------------
   // Internal helper — copy with patched fields.
   // ---------------------------------------------------------------------------
 
-  private with(patch: Partial<{
-    model: aval<Trafo3d>;
-    view: aval<Trafo3d>;
-    proj: aval<Trafo3d>;
-    viewport: aval<{ width: number; height: number }>;
-    shader: Effect | undefined;
-    uniforms: HashMap<string, aval<unknown>>;
-    blendMode: BlendState | undefined;
-    cursor: aval<string> | undefined;
-    pickThrough: boolean;
-    intersectable: aval<IIntersectable> | undefined;
-    pixelSnapRadius: aval<number>;
-    active: aval<boolean>;
-    handlers: ReadonlyArray<EventHandlers>;
-  }>): TraversalState {
+  private with(patch: Partial<TraversalSpec>): TraversalState {
     return new TraversalState({
       model: patch.model ?? this.model,
       view: patch.view ?? this.view,
@@ -316,6 +432,62 @@ export class TraversalState {
       pixelSnapRadius: patch.pixelSnapRadius ?? this.pixelSnapRadius,
       active: patch.active ?? this.active,
       handlers: patch.handlers ?? this.handlers,
+      depthTest: patch.depthTest ?? this.depthTest,
+      depthMask: patch.depthMask ?? this.depthMask,
+      depthBias: "depthBias" in patch ? patch.depthBias : this.depthBias,
+      depthClamp: patch.depthClamp ?? this.depthClamp,
+      cullMode: patch.cullMode ?? this.cullMode,
+      frontFace: patch.frontFace ?? this.frontFace,
+      fillMode: patch.fillMode ?? this.fillMode,
+      multisample: patch.multisample ?? this.multisample,
+      blendConstant: "blendConstant" in patch ? patch.blendConstant : this.blendConstant,
+      colorMask: patch.colorMask ?? this.colorMask,
+      stencilMode: "stencilMode" in patch ? patch.stencilMode : this.stencilMode,
+      renderPass: patch.renderPass ?? this.renderPass,
+      vertexAttributes: patch.vertexAttributes ?? this.vertexAttributes,
+      instanceAttributes: patch.instanceAttributes ?? this.instanceAttributes,
+      index: patch.index ?? this.index,
+      mode: patch.mode ?? this.mode,
+      noEvents: patch.noEvents ?? this.noEvents,
+      forcePixelPicking: patch.forcePixelPicking ?? this.forcePixelPicking,
+      canFocus: patch.canFocus ?? this.canFocus,
+      time: patch.time ?? this.time,
     });
   }
+}
+
+interface TraversalSpec {
+  model: aval<Trafo3d>;
+  view: aval<Trafo3d>;
+  proj: aval<Trafo3d>;
+  viewport: aval<{ width: number; height: number }>;
+  shader: Effect | undefined;
+  uniforms: HashMap<string, aval<unknown>>;
+  blendMode: BlendState | undefined;
+  cursor: aval<string> | undefined;
+  pickThrough: boolean;
+  intersectable: aval<IIntersectable> | undefined;
+  pixelSnapRadius: aval<number>;
+  active: aval<boolean>;
+  handlers: ReadonlyArray<EventHandlers>;
+  depthTest: aval<DepthCompare>;
+  depthMask: aval<boolean>;
+  depthBias: aval<DepthBiasValue> | undefined;
+  depthClamp: aval<boolean>;
+  cullMode: aval<CullValue>;
+  frontFace: aval<FrontFaceValue>;
+  fillMode: aval<FillModeValue>;
+  multisample: aval<boolean>;
+  blendConstant: aval<BlendConstantValue> | undefined;
+  colorMask: aval<HashMap<string, ColorMaskValue>>;
+  stencilMode: aval<StencilModeValue> | undefined;
+  renderPass: number;
+  vertexAttributes: aval<HashMap<string, aval<BufferView>>>;
+  instanceAttributes: aval<HashMap<string, aval<BufferView>>>;
+  index: aval<BufferView | undefined>;
+  mode: aval<ModeValue>;
+  noEvents: aval<boolean>;
+  forcePixelPicking: aval<boolean>;
+  canFocus: aval<boolean>;
+  time: aval<number>;
 }

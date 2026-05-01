@@ -30,7 +30,7 @@
 // "no lastOver update while captured"). Releasing fires a synthetic
 // pointermove using the last cursor position to re-establish hover.
 
-import { AVal } from "@aardworx/wombat.adaptive";
+import { AVal, avalAddCallback } from "@aardworx/wombat.adaptive";
 import { Ray3d, Trafo3d, V3d, V4d } from "@aardworx/wombat.base";
 
 import type { LeafPickScope, PickRegistry } from "./registry.js";
@@ -56,6 +56,8 @@ export const DOUBLE_TAP_GAP_MS = 300;
 export const DOUBLE_TAP_MOVE_PX = 20;
 /** A pointerdown held still for this long fires OnLongPress (ms). */
 export const LONG_PRESS_MS = 500;
+/** Distance moved (CSS px) past which a press becomes a drag. Mirrors Aardvark's drag threshold. */
+export const DRAG_THRESHOLD_PX = 5;
 
 /**
  * Reader for the 33×33 pick region centred on `(x, y)` in device
@@ -117,6 +119,10 @@ interface PressState {
   longPressTimer: ReturnType<typeof setTimeout> | undefined;
   consumed: boolean;
   movedTooFar: boolean;
+  /** Phase 6 — drag-state machine. Once `dragging`, the press routes
+   * pointermove events as `OnDrag` to `dragScopeId`. */
+  dragging: boolean;
+  dragScopeId: number;
 }
 
 /** Trailing-tap state for double-tap detection. */
@@ -181,7 +187,17 @@ export class PickDispatcher implements SceneEventDispatch {
     const onMove   = (e: PointerEvent): void => handle(e, "OnPointerMove");
     const onClick  = (e: PointerEvent): void => handle(e, "OnClick");
     const onEnter  = (e: PointerEvent): void => handle(e, "OnPointerEnter");
-    const onCancel = (e: PointerEvent): void => { this.cancelPress(e.pointerId); };
+    const onCancel = (e: PointerEvent): void => {
+      // Phase 6 — fire OnDragEnd if a drag was active. We don't have
+      // fresh cursor coords, so reuse the press's original down pos.
+      const press = this.presses.get(e.pointerId);
+      if (press !== undefined && press.dragging) {
+        const scope = this.registry.lookup(press.dragScopeId);
+        if (scope !== undefined) this.dispatchDrag("OnDragEnd", e, press.downX, press.downY, scope, press);
+        press.dragging = false;
+      }
+      this.cancelPress(e.pointerId);
+    };
     const onLeave  = (e: PointerEvent): void => {
       if (this.lastHit !== 0) {
         const scope = this.registry.lookup(this.lastHit);
@@ -211,6 +227,94 @@ export class PickDispatcher implements SceneEventDispatch {
     canvas.addEventListener("pointerenter", onEnter, opts);
     canvas.addEventListener("pointerleave", onLeave, opts);
 
+    // Phase 4 — wheel events. Read pixel under cursor (same spiral
+    // as pointer events), then dispatch via capture/bubble through
+    // the hit's path. Non-passive so handlers can preventDefault().
+    const onWheel = (ev: WheelEvent): void => {
+      const seq = ++this.seq;
+      const rect = this.getCanvasRect();
+      const cssX = ev.clientX - rect.left;
+      const cssY = ev.clientY - rect.top;
+      const sx = rect.width  > 0 ? canvas.width  / rect.width  : 1;
+      const sy = rect.height > 0 ? canvas.height / rect.height : 1;
+      const devX = Math.floor(cssX * sx);
+      const devY = Math.floor(cssY * sy);
+      void readRegion(devX, devY).then((region) => {
+        if (seq < this.lastSettledSeq) return;
+        this.lastSettledSeq = seq;
+        const hit = region !== undefined ? this.spiralResolve(region, devX, devY) : undefined;
+        const bvhFall = hit === undefined ? this.bvhFallthrough(devX, devY, rect, sx, sy) : undefined;
+        this.dispatchWheel(ev, cssX, cssY, hit, rect, sx, sy, bvhFall);
+      });
+    };
+    canvas.addEventListener("wheel", onWheel as unknown as EventListener, opts);
+
+    // Phase 5 — keyboard. Routed to focused scope's handler chain.
+    // The canvas needs to be focusable for a real DOM `focus` to
+    // direct keys to it; the renderControl sets `tabindex=0`.
+    const onKey = (kind: SceneEventKind) => (ev: KeyboardEvent): void => {
+      const focused = AVal.force(this.registry.focusedPickId);
+      if (focused === undefined) return;
+      const scope = this.registry.lookup(focused);
+      if (scope === undefined) return;
+      if (!AVal.force(scope.active)) return;
+      const sceneEv = new SceneEvent({
+        kind,
+        clientX: 0, clientY: 0,
+        pickId: scope.pickId,
+        modeB: false,
+        pointerId: 0, pointerType: "",
+        raw: ev,
+        key: ev.key, code: ev.code, repeat: ev.repeat,
+        ctrlKey: ev.ctrlKey, shiftKey: ev.shiftKey, altKey: ev.altKey, metaKey: ev.metaKey,
+        scope, dispatch: this,
+      });
+      this.runCaptureBubble(scope.handlers, sceneEv);
+    };
+    const onKeyDown  = onKey("OnKeyDown");
+    const onKeyUp    = onKey("OnKeyUp");
+    const onKeyPress = onKey("OnKeyPress");
+    canvas.addEventListener("keydown",  onKeyDown  as EventListener, opts);
+    canvas.addEventListener("keyup",    onKeyUp    as EventListener, opts);
+    canvas.addEventListener("keypress", onKeyPress as EventListener, opts);
+
+    // Phase 5 — focus subscription: when focusedPickId changes,
+    // dispatch OnBlur on the old scope's path then OnFocus on the
+    // new one's. Both fire capture+bubble together (like enter/leave).
+    let prevFocus: number | undefined;
+    const focusUnsub = avalAddCallback(this.registry.focusedPickId, (next) => {
+      const old = prevFocus;
+      prevFocus = next;
+      if (old !== undefined) {
+        const oldScope = this.registry.lookup(old);
+        if (oldScope !== undefined) {
+          const blur = new SceneEvent({
+            kind: "OnBlur", clientX: 0, clientY: 0,
+            pickId: oldScope.pickId, modeB: false,
+            pointerId: 0, pointerType: "",
+            raw: new Event("blur") as FocusEvent,
+            ...(next !== undefined ? { relatedTarget: next } : {}),
+            scope: oldScope, dispatch: this,
+          });
+          this.runUpAll(oldScope.handlers, [], blur);
+        }
+      }
+      if (next !== undefined) {
+        const newScope = this.registry.lookup(next);
+        if (newScope !== undefined) {
+          const focus = new SceneEvent({
+            kind: "OnFocus", clientX: 0, clientY: 0,
+            pickId: newScope.pickId, modeB: false,
+            pointerId: 0, pointerType: "",
+            raw: new Event("focus") as FocusEvent,
+            ...(old !== undefined ? { relatedTarget: old } : {}),
+            scope: newScope, dispatch: this,
+          });
+          this.runDownAll(newScope.handlers, [], focus);
+        }
+      }
+    });
+
     return () => {
       canvas.removeEventListener("pointerdown", onDown);
       canvas.removeEventListener("pointerup", onUp);
@@ -219,9 +323,64 @@ export class PickDispatcher implements SceneEventDispatch {
       canvas.removeEventListener("click", onClick as unknown as EventListener);
       canvas.removeEventListener("pointerenter", onEnter);
       canvas.removeEventListener("pointerleave", onLeave);
+      canvas.removeEventListener("wheel", onWheel as unknown as EventListener);
+      canvas.removeEventListener("keydown",  onKeyDown  as EventListener);
+      canvas.removeEventListener("keyup",    onKeyUp    as EventListener);
+      canvas.removeEventListener("keypress", onKeyPress as EventListener);
+      focusUnsub.dispose();
       // Cancel any pending long-press timers so the disposer is clean.
       for (const id of [...this.presses.keys()]) this.cancelPress(id);
     };
+  }
+
+  private dispatchWheel(
+    ev: WheelEvent,
+    cssX: number,
+    cssY: number,
+    hit: SpiralHit | undefined,
+    rect: DOMRect,
+    sx: number,
+    sy: number,
+    bvhFall: BvhFallthrough | undefined,
+  ): void {
+    let scope: LeafPickScope | undefined;
+    let viewPos: V3d | undefined;
+    let viewNormal: V3d | undefined;
+    let modeB = false;
+    if (hit !== undefined) {
+      scope = hit.scope;
+      modeB = hit.decoded.modeB;
+      viewPos = this.viewPosFor(scope, hit, rect, sx, sy);
+    } else if (bvhFall !== undefined) {
+      scope = bvhFall.scope;
+      const v = AVal.force(scope.view);
+      const p4 = v.forward.transform(new V4d(bvhFall.worldPoint.x, bvhFall.worldPoint.y, bvhFall.worldPoint.z, 1));
+      const pw = p4.w !== 0 ? p4.w : 1;
+      viewPos = new V3d(p4.x / pw, p4.y / pw, p4.z / pw);
+      const n4 = v.forward.transform(new V4d(bvhFall.worldNormal.x, bvhFall.worldNormal.y, bvhFall.worldNormal.z, 0));
+      viewNormal = new V3d(n4.x, n4.y, n4.z);
+    }
+    if (scope === undefined) return;
+    const sceneEv = new SceneEvent({
+      kind: "OnWheel",
+      clientX: cssX,
+      clientY: cssY,
+      pickId: scope.pickId,
+      modeB,
+      ...(viewPos !== undefined ? { viewPos } : {}),
+      ...(viewNormal !== undefined ? { viewNormal } : {}),
+      pointerId: 0,
+      pointerType: "",
+      raw: ev,
+      deltaX: ev.deltaX,
+      deltaY: ev.deltaY,
+      deltaZ: ev.deltaZ,
+      deltaMode: (ev.deltaMode as 0 | 1 | 2),
+      ctrlKey: ev.ctrlKey, shiftKey: ev.shiftKey, altKey: ev.altKey, metaKey: ev.metaKey,
+      scope,
+      dispatch: this,
+    });
+    this.runCaptureBubble(scope.handlers, sceneEv);
   }
 
   // --- tap / long-press synthesis -----------------------------------------
@@ -410,7 +569,18 @@ export class PickDispatcher implements SceneEventDispatch {
       // that drifted off-target (movement check below). Pointerdown /
       // pointerup with no hit can't synthesise a tap (no scope to
       // dispatch to), so we just return.
-      if (kind === "OnPointerMove") this.checkPressMove(pointerId, cssX, cssY);
+      if (kind === "OnPointerMove") {
+        this.checkPressMove(pointerId, cssX, cssY);
+        // A drag in progress still gets OnDrag fired on its press scope
+        // even if the cursor leaves the geometry — Aardvark / DOM
+        // semantics.
+        this.maybeDispatchDrag(pointerId, ev, cssX, cssY);
+      }
+      if (kind === "OnPointerUp") {
+        this.maybeFinishDrag(pointerId, ev, cssX, cssY);
+      }
+      // A click landing on no scope clears focus.
+      if (kind === "OnClick") this.registry.clearFocus();
       return;
     }
 
@@ -420,6 +590,18 @@ export class PickDispatcher implements SceneEventDispatch {
     const modeB = hit?.decoded.modeB ?? false;
     const sceneEv = this.makeEvent(kind, ev, cssX, cssY, hitScope, hitScope.pickId, modeB, viewPos, bvhViewNormal);
     this.runCaptureBubble(hitScope.handlers, sceneEv);
+
+    // Phase 5 — auto-focus on click. Mirrors DOM mousedown→focus
+    // behaviour but on `OnClick` (primary button) so it composes with
+    // the existing tap/double-tap logic. CanFocus=true scopes win
+    // focus; clicks outside any focusable scope clear it.
+    if (kind === "OnClick") {
+      if (hitScope.canFocus !== undefined && AVal.force(hitScope.canFocus)) {
+        this.registry.setFocus(hitScope.pickId);
+      } else {
+        this.registry.clearFocus();
+      }
+    }
 
     // ---- tap / long-press synthesis -------------------------------------
     if (kind === "OnPointerDown") {
@@ -435,6 +617,8 @@ export class PickDispatcher implements SceneEventDispatch {
         longPressTimer: undefined,
         consumed: false,
         movedTooFar: false,
+        dragging: false,
+        dragScopeId: hitScope.pickId,
       };
       press.longPressTimer = setTimeout(() => {
         const cur = this.presses.get(pointerId);
@@ -451,11 +635,16 @@ export class PickDispatcher implements SceneEventDispatch {
       this.presses.set(pointerId, press);
     } else if (kind === "OnPointerMove") {
       this.checkPressMove(pointerId, cssX, cssY);
+      this.maybeDispatchDrag(pointerId, ev, cssX, cssY);
     } else if (kind === "OnPointerUp") {
+      // Phase 6 — DragEnd suppresses any trailing tap. We finalise
+      // drag state here, BEFORE the tap detection below.
+      const wasDrag = this.maybeFinishDrag(pointerId, ev, cssX, cssY);
       const press = this.presses.get(pointerId);
       this.cancelPress(pointerId);
       if (press === undefined) return;
       if (press.consumed) return; // long-press already fired
+      if (wasDrag) return;
       if (press.movedTooFar) return;
       const dt = Date.now() - press.downAt;
       if (dt > TAP_MAX_DURATION_MS) return;
@@ -488,6 +677,75 @@ export class PickDispatcher implements SceneEventDispatch {
       }
       this.lastTap = { at: now, x: press.downX, y: press.downY, pickId: hitScope.pickId };
     }
+  }
+
+  /**
+   * Fire OnDragStart (once) / OnDrag (subsequent) on the press scope
+   * if movement past `DRAG_THRESHOLD_PX` was reached. Drag dispatches
+   * route to the press scope, NOT the current hover.
+   */
+  private maybeDispatchDrag(pointerId: number, ev: PointerEvent, cssX: number, cssY: number): void {
+    const press = this.presses.get(pointerId);
+    if (press === undefined) return;
+    const scope = this.registry.lookup(press.dragScopeId);
+    if (scope === undefined) return;
+    const dx = cssX - press.downX;
+    const dy = cssY - press.downY;
+    const d2 = dx * dx + dy * dy;
+    if (!press.dragging) {
+      if (d2 < DRAG_THRESHOLD_PX * DRAG_THRESHOLD_PX) return;
+      press.dragging = true;
+      // Cancel pending long-press — drag wins.
+      if (press.longPressTimer !== undefined) {
+        clearTimeout(press.longPressTimer);
+        press.longPressTimer = undefined;
+      }
+      this.dispatchDrag("OnDragStart", ev, cssX, cssY, scope, press);
+      return;
+    }
+    this.dispatchDrag("OnDrag", ev, cssX, cssY, scope, press);
+  }
+
+  /**
+   * If a drag is in progress for this pointer, fire OnDragEnd on the
+   * press scope. Returns whether a drag had been active (caller uses
+   * this to suppress trailing OnTap).
+   */
+  private maybeFinishDrag(pointerId: number, ev: PointerEvent, cssX: number, cssY: number): boolean {
+    const press = this.presses.get(pointerId);
+    if (press === undefined || !press.dragging) return false;
+    const scope = this.registry.lookup(press.dragScopeId);
+    if (scope !== undefined) {
+      this.dispatchDrag("OnDragEnd", ev, cssX, cssY, scope, press);
+    }
+    press.dragging = false;
+    return true;
+  }
+
+  private dispatchDrag(
+    kind: SceneEventKind,
+    ev: PointerEvent,
+    cssX: number,
+    cssY: number,
+    scope: LeafPickScope,
+    press: PressState,
+  ): void {
+    const sceneEv = new SceneEvent({
+      kind,
+      clientX: cssX,
+      clientY: cssY,
+      pickId: scope.pickId,
+      modeB: false,
+      ...(ev.button !== undefined ? { button: ev.button } : {}),
+      ...(ev.buttons !== undefined ? { buttons: ev.buttons } : {}),
+      pointerId: ev.pointerId ?? 0,
+      pointerType: ev.pointerType ?? "",
+      raw: ev,
+      dragStartX: press.downX,
+      dragStartY: press.downY,
+      scope, dispatch: this,
+    });
+    this.runCaptureBubble(scope.handlers, sceneEv);
   }
 
   private checkPressMove(pointerId: number, cssX: number, cssY: number): void {
@@ -603,6 +861,8 @@ export class PickDispatcher implements SceneEventDispatch {
       const scope = this.registry.lookup(key);
       if (scope === undefined || scope.pickThrough) return undefined;
       if (!AVal.force(scope.active)) return undefined;
+      // ForcePixelPicking opts a scope out of BVH ray fall-through.
+      if (scope.forcePixelPicking !== undefined && AVal.force(scope.forcePixelPicking)) return undefined;
       return value.intersects(ray, 0, Number.POSITIVE_INFINITY);
     });
     if (hit === undefined) return undefined;

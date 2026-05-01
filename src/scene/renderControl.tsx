@@ -23,7 +23,8 @@
 // runs in a `ref` callback on canvas mount and is asynchronous —
 // the first frame appears one rAF after the device is ready.
 
-import { AVal, type aval } from "@aardworx/wombat.adaptive";
+import { AVal, cval, transact, type aval } from "@aardworx/wombat.adaptive";
+import type { cval as Cval } from "@aardworx/wombat.adaptive";
 import { Trafo3d } from "@aardworx/wombat.base";
 import {
   Runtime, attachCanvas, runFrame,
@@ -142,7 +143,35 @@ export interface RenderControlReadyInfo {
   readonly view: aval<Trafo3d>;
   /** The proj aval used for picking. */
   readonly proj: aval<Trafo3d>;
+  /** Per-frame `performance.now()` clock; ticks once per rAF. Phase 7. */
+  readonly time: aval<number>;
 }
+
+// ---------------------------------------------------------------------------
+// Phase 7 — global time clock. Lazy-init on first read; ticked from
+// every active RenderControl's frame loop. Exposed both as `RenderControl.time`
+// and via `info.time` from `onReady`.
+// ---------------------------------------------------------------------------
+
+let _globalTime: Cval<number> | undefined;
+let _globalSubs = 0;
+let _globalRaf: number | undefined;
+
+function getGlobalTime(): Cval<number> {
+  if (_globalTime === undefined) {
+    _globalTime = cval(performance.now());
+  }
+  return _globalTime;
+}
+
+function tickGlobalTime(): void {
+  if (_globalTime === undefined) return;
+  transact(() => { _globalTime!.value = performance.now(); });
+}
+
+// (rAF loop is unused for now — we tick from each control's
+// `runFrame` callback. Kept-references suppressed below.)
+void _globalSubs; void _globalRaf;
 
 // ---------------------------------------------------------------------------
 // Component
@@ -182,6 +211,11 @@ export function RenderControl(props: RenderControlProps): import("../vnode.js").
   void device; void runtime; void attach;
   void format; void depthFormat; void sampleCount;
   void onReady; void picking;
+
+  // Phase 5 — when no tabindex is supplied, set tabindex=0 so the
+  // canvas can receive keyboard focus (otherwise key events do not
+  // route to it). User-supplied tabindex wins.
+  if (htmlProps.tabIndex === undefined) (htmlProps as { tabIndex?: number }).tabIndex = 0;
 
   // Default styles defend against the browser eating pointer
   // events that should reach the controller:
@@ -281,7 +315,8 @@ async function initialise(
   // Initial traversal state — viewport + camera populated up front.
   const initial = TraversalState.empty
     .withViewport(attachment.size)
-    .withCamera(view, proj);
+    .withCamera(view, proj)
+    .withTime(getGlobalTime());
 
   // Picking: when enabled, allocate a combined FB (canvas color +
   // pickId + canvas depth), feed that to compileScene, and wire a
@@ -330,6 +365,10 @@ async function initialise(
   const runResolve = pickFb?.maybeRunResolve;
   const loop = runFrame(attachment, (token) => {
     if (scope.isDisposed) return;
+    // Phase 7 — tick the global clock once per frame so any
+    // animated avals subscribed to `RenderControl.time` see the new
+    // timestamp BEFORE the frame's task runs.
+    tickGlobalTime();
     task.run(token);
     if (runResolve !== undefined) {
       const enc = device.createCommandEncoder({ label: "pick.resolve.frame" });
@@ -346,8 +385,24 @@ async function initialise(
     canvas, device, runtime,
     viewport: attachment.size,
     view, proj,
+    time: getGlobalTime(),
   });
 }
+
+/**
+ * Static accessor for the global per-frame time clock. Lazy-init on
+ * first read; tied to every active RenderControl's frame loop. While
+ * a control is mounted its rAF tick advances `time`; without one,
+ * the value freezes at the last render's timestamp.
+ */
+Object.defineProperty(RenderControl, "time", {
+  configurable: true,
+  enumerable: true,
+  get(): aval<number> { return getGlobalTime(); },
+});
+
+/** Manually tick the global clock — useful for tests with fake timers. */
+export function _tickRenderControlTime(): void { tickGlobalTime(); }
 
 // ---------------------------------------------------------------------------
 // Sniff View / Proj from the scene's outermost scopes.

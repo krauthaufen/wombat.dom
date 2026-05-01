@@ -62,7 +62,29 @@ export type SgNode =
   | SgActive
   | SgView
   | SgProj
-  | SgDelay;
+  | SgDelay
+  // Phase 1 — render-state scopes (override semantics)
+  | SgDepthTest
+  | SgDepthMask
+  | SgDepthBias
+  | SgDepthClamp
+  | SgCullMode
+  | SgFrontFace
+  | SgFillMode
+  | SgMultisample
+  | SgBlendConstant
+  | SgColorMask
+  | SgStencilMode
+  | SgPass
+  // Phase 2 — geometry-attribute scopes
+  | SgVertexAttributes
+  | SgInstanceAttributes
+  | SgIndex
+  | SgMode
+  // Phase 3 — misc scopes
+  | SgNoEvents
+  | SgForcePixelPicking
+  | SgCanFocus;
 
 export interface SgEmpty {
   readonly kind: "Empty";
@@ -262,4 +284,199 @@ export interface SgProj {
 export interface SgDelay {
   readonly kind: "Delay";
   readonly create: (state: import("./traversalState.js").TraversalState) => SgNode;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1 — render-state scopes
+// ---------------------------------------------------------------------------
+
+/** Depth-compare function. Mirrors WebGPU `GPUCompareFunction`. */
+export type DepthCompare =
+  | "never" | "less" | "equal" | "less-equal"
+  | "greater" | "not-equal" | "greater-equal" | "always";
+
+export interface SgDepthTest {
+  readonly kind: "DepthTest";
+  readonly mode: aval<DepthCompare>;
+  readonly child: SgNode;
+}
+
+export interface SgDepthMask {
+  readonly kind: "DepthMask";
+  readonly write: aval<boolean>;
+  readonly child: SgNode;
+}
+
+export interface DepthBiasValue {
+  readonly constant: number;
+  readonly slopeScale: number;
+  readonly clamp: number;
+}
+
+export interface SgDepthBias {
+  readonly kind: "DepthBias";
+  readonly bias: aval<DepthBiasValue>;
+  readonly child: SgNode;
+}
+
+export interface SgDepthClamp {
+  readonly kind: "DepthClamp";
+  readonly clamp: aval<boolean>;
+  readonly child: SgNode;
+}
+
+export type CullValue = "none" | "front" | "back";
+
+export interface SgCullMode {
+  readonly kind: "CullMode";
+  readonly mode: aval<CullValue>;
+  readonly child: SgNode;
+}
+
+export type FrontFaceValue = "ccw" | "cw";
+
+export interface SgFrontFace {
+  readonly kind: "FrontFace";
+  readonly mode: aval<FrontFaceValue>;
+  readonly child: SgNode;
+}
+
+export type FillModeValue = "fill" | "line" | "point";
+
+export interface SgFillMode {
+  readonly kind: "FillMode";
+  readonly mode: aval<FillModeValue>;
+  readonly child: SgNode;
+}
+
+export interface SgMultisample {
+  readonly kind: "Multisample";
+  readonly enabled: aval<boolean>;
+  readonly child: SgNode;
+}
+
+export interface BlendConstantValue {
+  readonly r: number;
+  readonly g: number;
+  readonly b: number;
+  readonly a: number;
+}
+
+export interface SgBlendConstant {
+  readonly kind: "BlendConstant";
+  readonly value: aval<BlendConstantValue>;
+  readonly child: SgNode;
+}
+
+/** Per-channel write mask. */
+export interface ColorMaskValue {
+  readonly r: boolean;
+  readonly g: boolean;
+  readonly b: boolean;
+  readonly a: boolean;
+}
+
+export interface SgColorMask {
+  readonly kind: "ColorMask";
+  /** Per-attachment-name; default-key "color" matches the single-attachment path. */
+  readonly mask: aval<HashMap<string, ColorMaskValue>>;
+  readonly child: SgNode;
+}
+
+export type StencilOpValue =
+  | "keep" | "zero" | "replace" | "invert"
+  | "increment-clamp" | "decrement-clamp"
+  | "increment-wrap" | "decrement-wrap";
+
+export interface StencilFace {
+  readonly compare: DepthCompare;
+  readonly fail: StencilOpValue;
+  readonly depthFail: StencilOpValue;
+  readonly pass: StencilOpValue;
+}
+
+export interface StencilModeValue {
+  readonly enabled: boolean;
+  readonly reference: number;
+  readonly readMask: number;
+  readonly writeMask: number;
+  readonly front: StencilFace;
+  readonly back: StencilFace;
+}
+
+export interface SgStencilMode {
+  readonly kind: "StencilMode";
+  readonly mode: aval<StencilModeValue>;
+  readonly child: SgNode;
+}
+
+/**
+ * Render-pass ordinal. Lower passes are drawn before higher passes;
+ * within a pass, scene-graph order is preserved.
+ */
+export const RenderPass = {
+  main: 0,
+  transparent: 1000,
+  overlay: 2000,
+} as const;
+
+export interface SgPass {
+  readonly kind: "Pass";
+  readonly pass: number;
+  readonly child: SgNode;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 — geometry-attribute scopes
+// ---------------------------------------------------------------------------
+
+export interface SgVertexAttributes {
+  readonly kind: "VertexAttributes";
+  readonly attributes: aval<HashMap<string, aval<BufferView>>>;
+  readonly child: SgNode;
+}
+
+export interface SgInstanceAttributes {
+  readonly kind: "InstanceAttributes";
+  readonly attributes: aval<HashMap<string, aval<BufferView>>>;
+  readonly child: SgNode;
+}
+
+export interface SgIndex {
+  readonly kind: "Index";
+  readonly index: aval<BufferView | undefined>;
+  readonly child: SgNode;
+}
+
+export type ModeValue =
+  | "triangle-list" | "triangle-strip"
+  | "line-list" | "line-strip"
+  | "point-list";
+
+export interface SgMode {
+  readonly kind: "Mode";
+  readonly mode: aval<ModeValue>;
+  readonly child: SgNode;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 — misc scopes
+// ---------------------------------------------------------------------------
+
+export interface SgNoEvents {
+  readonly kind: "NoEvents";
+  readonly value: aval<boolean>;
+  readonly child: SgNode;
+}
+
+export interface SgForcePixelPicking {
+  readonly kind: "ForcePixelPicking";
+  readonly value: aval<boolean>;
+  readonly child: SgNode;
+}
+
+export interface SgCanFocus {
+  readonly kind: "CanFocus";
+  readonly value: aval<boolean>;
+  readonly child: SgNode;
 }
