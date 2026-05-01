@@ -13,9 +13,10 @@ describe("primitives", () => {
     it("has a_position + a_color attributes, 36 indices", () => {
       const leaf = box();
       expect(leaf.kind).toBe("Leaf");
-      expect(leaf.vertexAttributes.tryFind("a_position")).toBeDefined();
-      expect(leaf.vertexAttributes.tryFind("a_color")).toBeDefined();
-      const idx = AVal.force(leaf.indices!);
+      const va = leaf.vertexAttributes;
+      expect(va.tryFind("a_position")).toBeDefined();
+      expect(va.tryFind("a_color")).toBeDefined();
+      const idx = AVal.force(leaf.indices!)!;
       expect(idx.count).toBe(36);
       const dc = AVal.force(leaf.drawCall);
       expect(dc.kind).toBe("indexed");
@@ -42,7 +43,7 @@ describe("primitives", () => {
   describe("quad", () => {
     it("has 4 vertices, 6 indices", () => {
       const leaf = quad();
-      const idx = AVal.force(leaf.indices!);
+      const idx = AVal.force(leaf.indices!)!;
       expect(idx.count).toBe(6);
       const pos = AVal.force(leaf.vertexAttributes.tryFind("a_position")!);
       expect(pos.count).toBe(4);

@@ -1,7 +1,16 @@
-// Guard: derivePipelineState in src/scene/compile.ts must not call
-// `.force()` on render-state avals. The pipeline-state aval shape
-// flows through to wombat.rendering's PreparedRenderObject without
-// a single AVal.force on the render path.
+// Audit: `src/scene/compile.ts` MUST NOT call `.force()` on the live
+// render path. The few remaining forces are construction-boundary
+// (compile-scene time) or operate on constants — they are explicitly
+// allowlisted by line-prefix here. Each entry is paired with a
+// "Why force here:" comment in the source.
+//
+// The rule: a frame's render walk (resolve / record) must never
+// reach a `.force()`. The forces below run ONCE at `compileScene`
+// time when the SG tree shape is being lowered to a `RenderTree`.
+//
+// `dispatcher.ts` legitimately forces inside pointer event handlers
+// (the dispatcher runs OUTSIDE adaptive context — pointer events are
+// not adaptive computations). It is NOT scanned here.
 
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
@@ -11,27 +20,53 @@ import { dirname, resolve } from "node:path";
 const here = dirname(fileURLToPath(import.meta.url));
 const compileTs = resolve(here, "..", "src", "scene", "compile.ts");
 
-describe("compile.ts — no force on render-state avals", () => {
-  it("derivePipelineState does not call AVal.force / .force()", () => {
+/**
+ * Allowlisted force sites in compile.ts. Each entry is a substring of
+ * the source line that contains the `.force(`. Keep tight — adding
+ * to this list demands a "Why force here:" justification in the
+ * source comment immediately preceding the line.
+ */
+const ALLOWLIST: readonly string[] = [
+  // sceneUsesPassStatic — STATIC structural pre-pass, runs once at
+  // compileScene time to decide whether to bucket-by-pass.
+  "for (const c of node.children.content.force()) if (sceneUsesPassStatic(c)) return true;",
+  "case \"AdaptiveGroup\": return sceneUsesPassStatic(node.child.force());",
+  // collectByPass — STATIC pass-bucketing fallback (see lowerByPass
+  // doc for tradeoff). Bucket contents are reactive via lowerLeaf.
+  "for (const c of node.children.content.force()) collectByPass(c, state, opts, buckets);",
+  "collectByPass(node.child.force(), state, opts, buckets);",
+  // Uniform key-set static snapshot at the bucketing boundary.
+  "const entries = node.bag.kind === \"Static\" ? node.bag.entries : node.bag.entries.content.force();",
+  // NoEvents → STATIC at compile time (registry-side-effect rationale).
+  "const noEvents = state.noEvents.force();",
+  // state.active.isConstant fast path — force on a constant aval has
+  // no upstream dependency to lose; collapses RenderTree at compile.
+  "return state.active.force() ? baseTree : RenderTree.empty;",
+];
+
+describe("compile.ts — zero force on the live render path", () => {
+  it("every `.force(` call site is on the documented allowlist", () => {
     const file = readFileSync(compileTs, "utf8");
-    // Locate the function and slice out its body (between the
-    // function-open brace and the first matching close at column 0).
-    const startMatch = /^function derivePipelineState\b/m.exec(file);
-    expect(startMatch, "derivePipelineState not found").not.toBeNull();
-    const start = startMatch!.index;
-    // Walk braces.
-    let depth = 0;
-    let end = -1;
-    let i = start;
-    while (i < file.length) {
-      const c = file[i]!;
-      if (c === "{") depth++;
-      else if (c === "}") { depth--; if (depth === 0) { end = i + 1; break; } }
-      i++;
+    const offenders: string[] = [];
+    const lines = file.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const ln = lines[i]!;
+      if (!/\.force\(|AVal\.force/.test(ln)) continue;
+      // Skip comments — line begins with `//` or `*` after whitespace.
+      const trimmed = ln.trimStart();
+      if (trimmed.startsWith("//") || trimmed.startsWith("*")) continue;
+      const trimmedFull = ln.trim();
+      if (ALLOWLIST.some(allowed => trimmedFull.includes(allowed))) continue;
+      offenders.push(`${i + 1}: ${trimmedFull}`);
     }
-    expect(end, "could not bracket derivePipelineState body").toBeGreaterThan(start);
-    const body = file.slice(start, end);
-    expect(body).not.toMatch(/AVal\.force\b/);
-    expect(body).not.toMatch(/\.force\(/);
+    expect(
+      offenders,
+      `unexpected .force() in compile.ts — add "Why force here:" comment and append to ALLOWLIST:\n${offenders.join("\n")}`,
+    ).toEqual([]);
+  });
+
+  it("no AVal.force(...) anywhere in compile.ts (only `.force()` method calls remain in the allowlist)", () => {
+    const file = readFileSync(compileTs, "utf8");
+    expect(file).not.toMatch(/AVal\.force\b/);
   });
 });

@@ -204,8 +204,8 @@ export class TraversalState {
 
   // ---------------- Phase 2 — geometry attribute scopes ----------------
 
-  readonly vertexAttributes: aval<HashMap<string, aval<BufferView>>>;
-  readonly instanceAttributes: aval<HashMap<string, aval<BufferView>>>;
+  readonly vertexAttributes: HashMap<string, aval<BufferView>>;
+  readonly instanceAttributes: HashMap<string, aval<BufferView>>;
   readonly index: aval<BufferView | undefined>;
   readonly mode: aval<ModeValue>;
 
@@ -283,8 +283,8 @@ export class TraversalState {
     colorMask: AVal.constant(HashMap.empty<string, ColorMaskValue>()),
     stencilMode: undefined,
     renderPass: 0,
-    vertexAttributes: AVal.constant(HashMap.empty<string, aval<BufferView>>()),
-    instanceAttributes: AVal.constant(HashMap.empty<string, aval<BufferView>>()),
+    vertexAttributes: HashMap.empty<string, aval<BufferView>>(),
+    instanceAttributes: HashMap.empty<string, aval<BufferView>>(),
     index: AVal.constant<BufferView | undefined>(undefined),
     mode: AVal.constant<ModeValue>("triangle-list"),
     noEvents: AVal.constant(false),
@@ -384,21 +384,15 @@ export class TraversalState {
   // ---------------- Phase 2 — geometry attribute pushers ---------------
 
   /** `<Sg VertexAttributes={…}>`: COMPOSE per-key (inner-wins on conflict). */
-  pushVertexAttributes(attrs: aval<HashMap<string, aval<BufferView>>>): TraversalState {
-    const merged = AVal.zip(this.vertexAttributes, attrs).map((outer, inner) => {
-      let m = outer;
-      for (const [k, v] of inner) m = m.add(k, v);
-      return m;
-    });
+  pushVertexAttributes(attrs: HashMap<string, aval<BufferView>>): TraversalState {
+    let merged = this.vertexAttributes;
+    for (const [k, v] of attrs) merged = merged.add(k, v);
     return this.with({ vertexAttributes: merged });
   }
 
-  pushInstanceAttributes(attrs: aval<HashMap<string, aval<BufferView>>>): TraversalState {
-    const merged = AVal.zip(this.instanceAttributes, attrs).map((outer, inner) => {
-      let m = outer;
-      for (const [k, v] of inner) m = m.add(k, v);
-      return m;
-    });
+  pushInstanceAttributes(attrs: HashMap<string, aval<BufferView>>): TraversalState {
+    let merged = this.instanceAttributes;
+    for (const [k, v] of attrs) merged = merged.add(k, v);
     return this.with({ instanceAttributes: merged });
   }
 
@@ -482,8 +476,8 @@ interface TraversalSpec {
   colorMask: aval<HashMap<string, ColorMaskValue>>;
   stencilMode: aval<StencilModeValue> | undefined;
   renderPass: number;
-  vertexAttributes: aval<HashMap<string, aval<BufferView>>>;
-  instanceAttributes: aval<HashMap<string, aval<BufferView>>>;
+  vertexAttributes: HashMap<string, aval<BufferView>>;
+  instanceAttributes: HashMap<string, aval<BufferView>>;
   index: aval<BufferView | undefined>;
   mode: aval<ModeValue>;
   noEvents: aval<boolean>;

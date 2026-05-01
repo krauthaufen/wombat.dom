@@ -119,9 +119,15 @@ export interface SgAdaptiveGroup {
  */
 export interface SgLeaf {
   readonly kind: "Leaf";
+  /**
+   * Vertex-attribute set: the key set is fixed structurally; only the
+   * per-attribute BufferView avals are reactive. The compile path
+   * threads this through to `RenderObject.vertexAttributes` without
+   * forcing.
+   */
   readonly vertexAttributes: HashMap<string, aval<BufferView>>;
   readonly instanceAttributes?: HashMap<string, aval<BufferView>>;
-  readonly indices?: aval<BufferView>;
+  readonly indices?: aval<BufferView | undefined>;
   readonly drawCall: aval<DrawCall>;
 }
 
@@ -432,13 +438,13 @@ export interface SgPass {
 
 export interface SgVertexAttributes {
   readonly kind: "VertexAttributes";
-  readonly attributes: aval<HashMap<string, aval<BufferView>>>;
+  readonly attributes: HashMap<string, aval<BufferView>>;
   readonly child: SgNode;
 }
 
 export interface SgInstanceAttributes {
   readonly kind: "InstanceAttributes";
-  readonly attributes: aval<HashMap<string, aval<BufferView>>>;
+  readonly attributes: HashMap<string, aval<BufferView>>;
   readonly child: SgNode;
 }
 

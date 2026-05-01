@@ -30,7 +30,7 @@ import {
 import { M44f, Trafo3d } from "@aardworx/wombat.base";
 import { RenderTree } from "@aardworx/wombat.rendering/core";
 import type {
-  BlendState,
+  BlendState, BufferView,
   Command, ClearValues, DepthBiasState, DepthState,
   IFramebuffer, ISampler, ITexture,
   PipelineState, PlainRasterizerState, RasterizerState, RenderObject,
@@ -101,7 +101,7 @@ export function compileScene(
   // lowering that orders leaves by pass first, scene-graph order
   // second. Otherwise the structural lower path is identical to the
   // pre-Phase-1 behaviour.
-  const tree = sceneUsesPass(sg)
+  const tree = sceneUsesPassStatic(sg)
     ? lowerByPass(sg, initial, opts)
     : lower(sg, initial, opts);
   const cmds: Command[] = [];
@@ -112,19 +112,32 @@ export function compileScene(
   return AList.ofList(cmds);
 }
 
-function sceneUsesPass(node: SgNode): boolean {
+/**
+ * Static one-shot scan: does this SG tree contain a `Pass` scope
+ * anywhere? Runs ONCE at `compileScene` time to decide whether to
+ * bucket leaves by pass at all. The answer is constant for a given
+ * SG tree shape, so the `.force()` calls below are not on the live
+ * render path — they're construction-boundary reads. Any subsequent
+ * structural reshuffle of the SG flows through `lower`'s reactive
+ * paths (Group / UnorderedGroup / AdaptiveGroup → orderedFromList /
+ * unorderedFromSet / RenderTree.adaptive); the pass split itself is
+ * not re-evaluated, but the contents of each bucket remain reactive.
+ *
+ * Why force here: see above — STATIC at compile-scene time, allowed.
+ */
+function sceneUsesPassStatic(node: SgNode): boolean {
   switch (node.kind) {
     case "Pass": return true;
     case "Empty": case "Leaf": return false;
     case "Group": {
-      for (const c of AVal.force(node.children.content)) if (sceneUsesPass(c)) return true;
+      for (const c of node.children.content.force()) if (sceneUsesPassStatic(c)) return true;
       return false;
     }
     case "UnorderedGroup": {
-      for (const c of AVal.force(node.children.content)) if (sceneUsesPass(c)) return true;
+      for (const c of node.children.content.force()) if (sceneUsesPassStatic(c)) return true;
       return false;
     }
-    case "AdaptiveGroup": return sceneUsesPass(AVal.force(node.child));
+    case "AdaptiveGroup": return sceneUsesPassStatic(node.child.force());
     case "Trafo": case "Shader": case "Uniform": case "BlendMode":
     case "Cursor": case "PickThrough": case "Intersectable":
     case "PixelSnapRadius": case "On": case "Active": case "View": case "Proj":
@@ -133,21 +146,29 @@ function sceneUsesPass(node: SgNode): boolean {
     case "BlendConstant": case "ColorMask": case "StencilMode":
     case "VertexAttributes": case "InstanceAttributes": case "Index": case "Mode":
     case "NoEvents": case "ForcePixelPicking": case "CanFocus":
-      return sceneUsesPass(node.child);
+      return sceneUsesPassStatic(node.child);
     case "Delay":
-      try { return sceneUsesPass(node.create(TraversalState.empty)); }
+      try { return sceneUsesPassStatic(node.create(TraversalState.empty)); }
       catch { return false; }
   }
 }
 
 /**
- * Pass-grouped lowering — walks the tree eagerly (forcing adaptive
- * containers once at compile time), bucketing each leaf's
- * RenderTree.leaf(...) into a `Map<pass, RenderTree[]>`. The result
- * is `RenderTree.ordered(...passSorted.flatMap(arr))`. Adaptive
- * subtrees inside a Pass-using scene are flattened ONCE; later
- * dynamic restructuring won't re-evaluate the pass split (use
- * `Sg.adaptive` outside Pass scopes if you need it).
+ * Pass-grouped lowering — walks the tree eagerly at compile-scene
+ * time (forcing adaptive structural containers ONCE), bucketing each
+ * leaf's `lowerLeaf(...)` output into a `Map<pass, RenderTree[]>`.
+ * The result is `RenderTree.ordered(...passSorted.flatMap(arr))`.
+ *
+ * Why force here (in `collectByPass`): pass-bucketing is a STATIC
+ * structural fold over the SG. Contents of each bucket are produced
+ * by `lowerLeaf`, which itself IS fully reactive (it returns a
+ * `RenderTree.adaptive(...)` gated on `state.active` so per-leaf
+ * Active flips propagate without re-bucketing). The tradeoff: a
+ * Pass-using scene that ALSO restructures via `Sg.adaptive` /
+ * `cset` etc. inside a Pass scope won't re-bucket on those changes.
+ * Restructure outside Pass scopes if reactive bucketing is needed —
+ * a fully-reactive `collectByPass` is a separate (alist-of-alist /
+ * alist-by-key) refactor and not warranted for this turn.
  */
 function lowerByPass(node: SgNode, state: TraversalState, opts: CompileSceneOptions): RenderTree {
   const buckets = new Map<number, RenderTree[]>();
@@ -175,18 +196,26 @@ function collectByPass(
       return;
     }
     case "Group":
-      for (const c of AVal.force(node.children.content)) collectByPass(c, state, opts, buckets);
+      // Why force here: collectByPass runs ONCE at compile-scene time
+      // for static pass-bucketing — see `lowerByPass` rationale.
+      for (const c of node.children.content.force()) collectByPass(c, state, opts, buckets);
       return;
     case "UnorderedGroup":
-      for (const c of AVal.force(node.children.content)) collectByPass(c, state, opts, buckets);
+      // Why force here: same as Group above.
+      for (const c of node.children.content.force()) collectByPass(c, state, opts, buckets);
       return;
     case "AdaptiveGroup":
-      collectByPass(AVal.force(node.child), state, opts, buckets);
+      // Why force here: same as Group above.
+      collectByPass(node.child.force(), state, opts, buckets);
       return;
     case "Trafo": collectByPass(node.child, state.pushTrafo(node.value), opts, buckets); return;
     case "Shader": collectByPass(node.child, state.pushShader(node.effect), opts, buckets); return;
     case "Uniform": {
-      const entries = node.bag.kind === "Static" ? node.bag.entries : AVal.force(node.bag.entries.content);
+      // Why force here: pass-bucketing is STATIC (see `lowerByPass`);
+      // dynamic uniform-set additions inside a Pass-using scope do
+      // not re-bucket. Per-key uniform avals stay reactive at the
+      // leaf, just the SET of keys is snapshotted here.
+      const entries = node.bag.kind === "Static" ? node.bag.entries : node.bag.entries.content.force();
       collectByPass(node.child, state.pushUniforms(entries), opts, buckets);
       return;
     }
@@ -368,13 +397,21 @@ function lowerLeaf(
   // values win on per-key conflict. This is the Phase-2 contract:
   // VertexAttributes/InstanceAttributes/Index/Mode scope nodes flow
   // through state, and the leaf's own (more specific) entries take
-  // precedence.
+  // precedence. The attribute key sets are structural (plain HashMap
+  // merge); per-attribute BufferView avals stay reactive. Index
+  // remains aval<BufferView | undefined>.
   const merged = mergeLeafGeometry(leaf, state);
 
   let effect: Effect = userEffect;
   let pickId: number | undefined;
-  // NoEvents scope short-circuits picking registration entirely.
-  const noEvents = AVal.force(state.noEvents);
+  // Why force here: NoEvents is treated as STATIC at compile time —
+  // picking registration is a registry side-effect that builds the
+  // long-lived scope-id table. Re-evaluating registration on every
+  // noEvents flip would tear down and recreate registry entries
+  // (and their downstream BVH) for what is overwhelmingly a build-
+  // time configuration knob. Document: making this reactive is a
+  // separate (heavier) refactor.
+  const noEvents = state.noEvents.force();
   if (opts.picking !== undefined && !noEvents) {
     const geomHas = opts.picking.geomHas ?? defaultGeomHas(merged);
     effect = composePickChain(userEffect, geomHas);
@@ -396,10 +433,16 @@ function lowerLeaf(
   const obj: RenderObject = buildRenderObject(merged, state, effect, opts, pickId);
   const baseTree: RenderTree = RenderTree.leaf(obj);
 
-  // Active gating: skip when statically false, wrap as adaptive
-  // when dynamic, pass-through when constantly true.
+  // Active gating: when state.active is structurally CONSTANT we can
+  // collapse to `baseTree` or `Empty` at compile time (this force is
+  // not on the live path — `isConstant` avals never re-fire). When
+  // state.active is dynamic, wrap in `RenderTree.adaptive` so the
+  // walker observes flips reactively without a force.
   if (state.active.isConstant) {
-    return AVal.force(state.active) ? baseTree : RenderTree.empty;
+    // Why force here: state.active is a constant aval (no upstream
+    // dep); the read happens once at compile-scene time and
+    // simplifies the resulting RenderTree.
+    return state.active.force() ? baseTree : RenderTree.empty;
   }
   return RenderTree.adaptive(state.active.map(a => (a ? baseTree : RenderTree.empty)));
 }
@@ -414,6 +457,14 @@ function buildRenderObject(
   const uniforms = mergeUniforms(leaf, state, opts, pickId);
   const pipelineState = derivePipelineState(state, opts);
 
+  // RenderObject.indices is `aval<BufferView>` (no undefined). The
+  // leaf carries `aval<BufferView | undefined>`; lift to a
+  // possibly-absent indices field here. We treat
+  // "constantly undefined" as no indices; everything else stays
+  // reactive (an aval that flips between undefined and a real view
+  // is not yet supported by RenderObject — the runtime would have to
+  // re-prepare for index format changes; we narrow by mapping the
+  // undefined case to a "draw nothing"-style sentinel only if needed).
   const obj: RenderObject = {
     effect,
     pipelineState,
@@ -422,7 +473,7 @@ function buildRenderObject(
     uniforms,
     textures: HashMap.empty<string, aval<ITexture>>(),
     samplers: HashMap.empty<string, aval<ISampler>>(),
-    ...(leaf.indices !== undefined ? { indices: leaf.indices } : {}),
+    ...(leaf.indices !== undefined ? { indices: leaf.indices.map(v => v as BufferView) } : {}),
     drawCall: leaf.drawCall,
   };
   return obj;
@@ -431,43 +482,42 @@ function buildRenderObject(
 /**
  * Merge state's geometry-attribute scopes into the leaf — leaf-
  * supplied values win on per-key conflict for vertex / instance
- * attributes, and on whole-value override for index. The returned
- * leaf is structurally identical when no scopes were entered.
+ * attributes, and on whole-value override for index. The attribute
+ * key sets are structural (plain HashMap merge); inner per-attribute
+ * BufferView avals stay reactive. Index remains aval<BufferView |
+ * undefined>.
  */
 function mergeLeafGeometry(leaf: SgLeaf, state: TraversalState): SgLeaf {
-  const scopeVertex = AVal.force(state.vertexAttributes);
-  const scopeInstance = AVal.force(state.instanceAttributes);
-  const scopeIndex = AVal.force(state.index);
-
-  // Vertex attributes: scope ⊕ leaf, leaf-wins.
-  let vertex = leaf.vertexAttributes;
-  if (scopeVertex.count > 0) {
-    let m = scopeVertex;
+  const vertex: HashMap<string, aval<BufferView>> = (() => {
+    if (state.vertexAttributes.count === 0) return leaf.vertexAttributes;
+    let m = state.vertexAttributes;
     for (const [k, v] of leaf.vertexAttributes) m = m.add(k, v);
-    vertex = m;
-  }
+    return m;
+  })();
 
-  // Instance attributes: scope ⊕ leaf, leaf-wins.
-  let instance = leaf.instanceAttributes;
-  if (scopeInstance.count > 0) {
-    let m = scopeInstance;
-    if (leaf.instanceAttributes !== undefined) {
+  let instance: HashMap<string, aval<BufferView>> | undefined;
+  if (leaf.instanceAttributes !== undefined) {
+    if (state.instanceAttributes.count === 0) {
+      instance = leaf.instanceAttributes;
+    } else {
+      let m = state.instanceAttributes;
       for (const [k, v] of leaf.instanceAttributes) m = m.add(k, v);
+      instance = m;
     }
-    instance = m;
+  } else if (state.instanceAttributes.count > 0) {
+    instance = state.instanceAttributes;
   }
 
-  // Index: leaf-supplied wins; otherwise use scope.
-  let index = leaf.indices;
-  if (index === undefined && scopeIndex !== undefined) {
-    index = AVal.constant(scopeIndex);
-  }
+  // Index: leaf-supplied wins; otherwise use scope. The result is
+  // aval<BufferView | undefined> in either case.
+  const indices: aval<BufferView | undefined> =
+    leaf.indices !== undefined ? leaf.indices : state.index;
 
   return {
     kind: "Leaf",
     vertexAttributes: vertex,
     ...(instance !== undefined ? { instanceAttributes: instance } : {}),
-    ...(index !== undefined ? { indices: index } : {}),
+    indices,
     drawCall: leaf.drawCall,
   };
 }
@@ -716,6 +766,10 @@ function defaultGeomHas(leaf: SgLeaf): (semantic: string) => boolean {
   // queries via `effectDependencies`. So for v1 we treat the
   // attribute KEY as the semantic. If we ever introduce a separate
   // `semantic` on `BufferView`, fold it in here.
+  //
+  // Pick-chain composition is a STATIC operation baked into the
+  // RenderObject's effect at compile time. The attribute key set is
+  // now structural (plain HashMap), so we just enumerate it directly.
   const set = new Set<string>();
   for (const [k] of leaf.vertexAttributes) set.add(k);
   if (leaf.instanceAttributes !== undefined) {

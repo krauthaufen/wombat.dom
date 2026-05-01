@@ -66,14 +66,14 @@ const empty: SgNode = { kind: "Empty" };
 function leaf(spec: {
   vertexAttributes: HashMap<string, aval<BufferView>>;
   instanceAttributes?: HashMap<string, aval<BufferView>>;
-  indices?: aval<BufferView>;
+  indices?: aval<BufferView> | aval<BufferView | undefined>;
   drawCall: aval<DrawCall>;
 }): SgLeaf {
   return {
     kind: "Leaf",
     vertexAttributes: spec.vertexAttributes,
     ...(spec.instanceAttributes !== undefined ? { instanceAttributes: spec.instanceAttributes } : {}),
-    ...(spec.indices !== undefined ? { indices: spec.indices } : {}),
+    ...(spec.indices !== undefined ? { indices: spec.indices as aval<BufferView | undefined> } : {}),
     drawCall: spec.drawCall,
   };
 }
@@ -263,20 +263,14 @@ function pass(value: number, child: SgNode): SgNode {
 // ---------------------------------------------------------------------------
 
 function vertexAttributes(
-  attrs: HashMap<string, aval<BufferView>> | aval<HashMap<string, aval<BufferView>>>,
+  attrs: HashMap<string, aval<BufferView>>,
 ): (child: SgNode) => SgNode {
-  const a: aval<HashMap<string, aval<BufferView>>> = isAValRuntime(attrs)
-    ? (attrs as aval<HashMap<string, aval<BufferView>>>)
-    : AVal.constant(attrs as HashMap<string, aval<BufferView>>);
-  return (child: SgNode): SgNode => ({ kind: "VertexAttributes", attributes: a, child });
+  return (child: SgNode): SgNode => ({ kind: "VertexAttributes", attributes: attrs, child });
 }
 function instanceAttributes(
-  attrs: HashMap<string, aval<BufferView>> | aval<HashMap<string, aval<BufferView>>>,
+  attrs: HashMap<string, aval<BufferView>>,
 ): (child: SgNode) => SgNode {
-  const a: aval<HashMap<string, aval<BufferView>>> = isAValRuntime(attrs)
-    ? (attrs as aval<HashMap<string, aval<BufferView>>>)
-    : AVal.constant(attrs as HashMap<string, aval<BufferView>>);
-  return (child: SgNode): SgNode => ({ kind: "InstanceAttributes", attributes: a, child });
+  return (child: SgNode): SgNode => ({ kind: "InstanceAttributes", attributes: attrs, child });
 }
 function index(idx: BufferView | undefined | aval<BufferView | undefined>): (child: SgNode) => SgNode {
   const i: aval<BufferView | undefined> = isAValRuntime(idx)
@@ -383,8 +377,8 @@ export interface SgScopeProps {
   Pass?: number;
 
   // Phase 2 — geometry attribute scopes
-  VertexAttributes?: HashMap<string, aval<BufferView>> | aval<HashMap<string, aval<BufferView>>>;
-  InstanceAttributes?: HashMap<string, aval<BufferView>> | aval<HashMap<string, aval<BufferView>>>;
+  VertexAttributes?: HashMap<string, aval<BufferView>>;
+  InstanceAttributes?: HashMap<string, aval<BufferView>>;
   Index?: BufferView | undefined | aval<BufferView | undefined>;
   Mode?: ModeValue | aval<ModeValue>;
 

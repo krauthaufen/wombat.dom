@@ -114,7 +114,7 @@ describe("Phase 2 — geometry-attribute scopes", () => {
     const inst: HashMap<string, AVal<BufferView>> = HashMap.empty<string, AVal<BufferView>>().add("inst-color", AVal.constant(bv("inst")));
     const tree = Sg.instanceAttributes(inst)(minimalLeaf());
     const [obj] = compile(tree);
-    expect(obj!.instanceAttributes?.tryFind("inst-color")).toBeDefined();
+    expect(obj!.instanceAttributes!.tryFind("inst-color")).toBeDefined();
   });
 
   it("Mode scope flows into pipelineState.rasterizer.topology", () => {
