@@ -45,6 +45,7 @@ import { PickRegistry } from "./picking/registry.js";
 import { createPickFramebuffer } from "./picking/pickFramebuffer.js";
 import { PickDispatcher, type TapThresholds } from "./picking/dispatcher.js";
 import { readPickRegion, type PickRegion } from "./picking/readback.js";
+import { setAmbient, clearAmbient } from "./ambient.js";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -378,6 +379,12 @@ async function initialise(
 
   if (ownsRuntime) scope.onDispose(() => runtime.disposeAll());
   if (ownsDevice)  scope.onDispose(() => device.destroy());
+
+  // Publish this control's avals as the ambient context so callers
+  // can read `viewport` / `view` / `proj` / `time` from
+  // `@aardworx/wombat.dom/scene/ambient` without threading state.
+  setAmbient({ viewport: attachment.size, view, proj, time: getGlobalTime() });
+  scope.onDispose(() => clearAmbient());
 
   props.onReady?.({
     canvas, device, runtime,

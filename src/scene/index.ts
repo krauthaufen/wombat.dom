@@ -109,6 +109,18 @@ export {
   basic,
 } from "./defaultSurfaces.js";
 
+// Ambient avals — drop-in references to the active RenderControl's
+// viewport / view / proj / time. Reads anywhere without threading
+// the surrounding `TraversalState`. See `./ambient.ts`.
+export {
+  viewport as ambientViewport,
+  view as ambientView,
+  proj as ambientProj,
+  time as ambientTime,
+  setAmbient, clearAmbient,
+  type AmbientContext,
+} from "./ambient.js";
+
 export {
   n24DecodeI32, n24EncodeI32,
   n24DecodeF32, n24EncodeF32,

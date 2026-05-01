@@ -14,6 +14,7 @@ import {
   OrbitController,
   RenderControl,
   Sg,
+  ambientViewport,
   aspectFromViewport,
   perspective,
 } from "@aardworx/wombat.dom/scene";
@@ -78,39 +79,33 @@ mount(root, (
       status.textContent = "ready — drag to rotate, wheel to zoom, double-tap to fly";
     }}
   >
-    <Sg View={ctl.view} Shader={DefaultSurfaces.basic()}>
-      {/* Function-child = ambient `TraversalState`. The
-          `<RenderControl>` shell pre-populates `viewport` / `view` /
-          `proj` / `time`, so a viewport-tracking perspective drops in
-          without an explicit `Sg.delay`. */}
-      {state => (
-        <Sg
-          Proj={perspective({
-            fovInRadians: Math.PI / 3,
-            aspect: aspectFromViewport(state.viewport),
-            near: 0.1,
-            far: 100,
-          })}
-          OnDoubleTap={flyTarget}
-        >
-          {/* Cube A — picked via the rgba32f pickId attachment. */}
-          <Sg Trafo={Sg.translate(new V3d(-1.5, 0, 0))}>
-            <Sg.Box />
-          </Sg>
-          {/* Cube B — picked geometrically via an Intersectable. The
-              intersectable is local to its scope (bbox `[-1,1]³`); the
-              enclosing Trafo translates it to (+1.5, 0, 0) and the
-              dispatcher transforms the world-space pick ray into local
-              space before testing — no global pre-computed world bbox
-              needed. */}
-          <Sg
-            Trafo={Sg.translate(new V3d(1.5, 0, 0))}
-            Intersectable={Intersectable.box(Box3d.fromMinMax(new V3d(-1, -1, -1), new V3d(1, 1, 1)))}
-          >
-            <Sg.Box />
-          </Sg>
-        </Sg>
-      )}
+    <Sg
+      View={ctl.view}
+      Shader={DefaultSurfaces.basic()}
+      Proj={perspective({
+        fovInRadians: Math.PI / 3,
+        aspect: aspectFromViewport(ambientViewport),
+        near: 0.1,
+        far: 100,
+      })}
+      OnDoubleTap={flyTarget}
+    >
+      {/* Cube A — picked via the rgba32f pickId attachment. */}
+      <Sg Trafo={Sg.translate(new V3d(-1.5, 0, 0))}>
+        <Sg.Box />
+      </Sg>
+      {/* Cube B — picked geometrically via an Intersectable. The
+          intersectable is local to its scope (bbox `[-1,1]³`); the
+          enclosing Trafo translates it to (+1.5, 0, 0) and the
+          dispatcher transforms the world-space pick ray into local
+          space before testing — no global pre-computed world bbox
+          needed. */}
+      <Sg
+        Trafo={Sg.translate(new V3d(1.5, 0, 0))}
+        Intersectable={Intersectable.box(Box3d.fromMinMax(new V3d(-1, -1, -1), new V3d(1, 1, 1)))}
+      >
+        <Sg.Box />
+      </Sg>
     </Sg>
   </RenderControl>
 ));
