@@ -57,10 +57,8 @@ const ctl = OrbitController.create({
 // Double-tap on the cube re-centres the orbit on the actual pick
 // point and zooms in / out with the Tanh easing. `e.worldPos` is the
 // canonical world-space hit position from the SceneEventLocation.
-let near = false;
 const flyTarget = (e: SceneEvent): void => {
-  near = !near;
-  ctl.flyTo(e.worldPos, near ? 2.2 : 5.5);
+  ctl.flyTo(e.worldPos);
 };
 
 // Clear the framebuffer to a dark grey before rendering each frame.

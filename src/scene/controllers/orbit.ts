@@ -421,7 +421,6 @@ export class OrbitController {
    */
   flyTo(
     center: V3d,
-    radius?: number,
     kind: AnimationKind = Anim.Tanh,
     durationMs = 600,
   ): void {
@@ -431,15 +430,10 @@ export class OrbitController {
         kind, startTimeMs: now, stopTimeMs: now + durationMs,
         startValue: s.center, stopValue: center,
       };
-      const next: OrbitState = {
+      return {
         ...s, userModifiedCenter: true, panAnimation: undefined,
         centerAnimation: centerAnim, locationAnimation: undefined, lastRenderMs: undefined,
       };
-      if (radius !== undefined) {
-        const r = clamp(s.config.radiusRange.x, s.config.radiusRange.y, radius);
-        return { ...next, targetRadius: r };
-      }
-      return next;
     });
   }
 
