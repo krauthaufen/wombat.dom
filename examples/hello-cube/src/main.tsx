@@ -91,21 +91,17 @@ mount(root, (
       OnDoubleTap={flyTarget}
     >
       {/* Cube A — picked via the rgba32f pickId attachment. */}
-      <Sg Trafo={Sg.translate(new V3d(-1.5, 0, 0))}>
-        <Sg.Box />
-      </Sg>
+      <Sg.Box Trafo={Sg.translate(new V3d(-1.5, 0, 0))} />
       {/* Cube B — picked geometrically via an Intersectable. The
           intersectable is local to its scope (bbox `[-1,1]³`); the
           enclosing Trafo translates it to (+1.5, 0, 0) and the
           dispatcher transforms the world-space pick ray into local
           space before testing — no global pre-computed world bbox
           needed. */}
-      <Sg
+      <Sg.Box
         Trafo={Sg.translate(new V3d(1.5, 0, 0))}
         Intersectable={Intersectable.box(Box3d.fromMinMax(new V3d(-1, -1, -1), new V3d(1, 1, 1)))}
-      >
-        <Sg.Box />
-      </Sg>
+      />
     </Sg>
   </RenderControl>
 ));

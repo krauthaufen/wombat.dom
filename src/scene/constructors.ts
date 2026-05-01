@@ -562,12 +562,30 @@ function SgAdaptive(props: { value: aval<SgNode> }): VNode {
   return sgVNode(adaptive(props.value));
 }
 
-function SgBox(props: BoxOptions = {}): VNode {
-  return sgVNode(boxLeaf(props));
+// Leaf JSX components accept the BoxOptions/QuadOptions shape AND
+// every SgScopeProps attribute (Trafo, Shader, OnClick, ...). The
+// scope attrs are applied AROUND the primitive leaf, so
+// `<Sg.Box Trafo={…} OnClick={…} size={…} />` is equivalent to
+// `<Sg Trafo={…} OnClick={…}><Sg.Box size={…} /></Sg>`.
+//
+// `props.children` are ignored on leaves (a primitive has no scene-
+// graph children); SgScope is the right component for that case.
+type SgBoxProps  = BoxOptions  & SgScopeProps;
+type SgQuadProps = QuadOptions & SgScopeProps;
+
+function SgBox(props: SgBoxProps = {}): VNode {
+  const { size, ...scope } = props;
+  const leaf = boxLeaf(size !== undefined ? { size } : {});
+  return sgVNode(applyScopeAttrs(leaf, scope as SgScopeProps));
 }
 
-function SgQuad(props: QuadOptions = {}): VNode {
-  return sgVNode(quadLeaf(props));
+function SgQuad(props: SgQuadProps = {}): VNode {
+  const { width, height, ...scope } = props;
+  const leaf = quadLeaf({
+    ...(width  !== undefined ? { width }  : {}),
+    ...(height !== undefined ? { height } : {}),
+  });
+  return sgVNode(applyScopeAttrs(leaf, scope as SgScopeProps));
 }
 
 // ---------------------------------------------------------------------------
