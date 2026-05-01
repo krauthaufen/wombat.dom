@@ -26,3 +26,10 @@ export {
   type PickFinalTag,
   type PickChainChoice,
 } from "./pickChain.js";
+
+export {
+  PickRegistry,
+  PICK_ID_MAX,
+  type PickId,
+  type LeafPickScope,
+} from "./registry.js";

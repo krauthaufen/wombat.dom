@@ -37,6 +37,8 @@ import type { Effect } from "@aardworx/wombat.shader";
 
 import type { SgLeaf, SgNode } from "./sg.js";
 import { TraversalState } from "./traversalState.js";
+import { composePickChain } from "./picking/pickChain.js";
+import type { PickRegistry } from "./picking/registry.js";
 
 // ---------------------------------------------------------------------------
 // Options + entry point
@@ -58,6 +60,22 @@ export interface CompileSceneOptions {
   readonly rasterizer?: RasterizerState;
   /** Whether to inject `ModelTrafo` / `ViewTrafo` / `ProjTrafo` / `ViewProjTrafo` uniforms. Default `true`. */
   readonly autoUniforms?: boolean;
+  /**
+   * If present, every leaf is wrapped with the pick chain (see
+   * `picking/pickChain.ts`) and registered with `picking.registry`.
+   * Absent ⇒ zero pick overhead, identical output to before.
+   */
+  readonly picking?: PickingOptions;
+}
+
+export interface PickingOptions {
+  readonly registry: PickRegistry;
+  /**
+   * Predicate over geometry semantics, called per leaf. When omitted
+   * we fall back to a per-leaf set built from the leaf's vertex- /
+   * instance-attribute keys (see `defaultGeomHas`).
+   */
+  readonly geomHas?: (semantic: string) => boolean;
 }
 
 /**
@@ -173,8 +191,8 @@ function lowerLeaf(
   state: TraversalState,
   opts: CompileSceneOptions,
 ): RenderTree {
-  const effect = state.shader ?? opts.defaultEffect;
-  if (effect === undefined) {
+  const userEffect = state.shader ?? opts.defaultEffect;
+  if (userEffect === undefined) {
     // No shader at scope and no default — nothing to draw. Silent
     // drop matches Aardvark.Dom's "DirectDrawNode requires a
     // surface" rule: explicit setup failures rather than implicit
@@ -182,7 +200,23 @@ function lowerLeaf(
     return RenderTree.empty;
   }
 
-  const obj: RenderObject = buildRenderObject(leaf, state, effect, opts);
+  let effect: Effect = userEffect;
+  let pickId: number | undefined;
+  if (opts.picking !== undefined) {
+    const geomHas = opts.picking.geomHas ?? defaultGeomHas(leaf);
+    effect = composePickChain(userEffect, geomHas);
+    pickId = opts.picking.registry.acquire({
+      handlers: state.handlers,
+      cursor: state.cursor,
+      pickThrough: state.pickThrough,
+      active: state.active,
+      view: state.view,
+      proj: state.proj,
+      model: state.model,
+    });
+  }
+
+  const obj: RenderObject = buildRenderObject(leaf, state, effect, opts, pickId);
   const baseTree: RenderTree = RenderTree.leaf(obj);
 
   // Active gating: skip when statically false, wrap as adaptive
@@ -198,8 +232,9 @@ function buildRenderObject(
   state: TraversalState,
   effect: Effect,
   opts: CompileSceneOptions,
+  pickId: number | undefined,
 ): RenderObject {
-  const uniforms = mergeUniforms(leaf, state, opts);
+  const uniforms = mergeUniforms(leaf, state, opts, pickId);
   const pipelineState = derivePipelineState(state, opts);
 
   const obj: RenderObject = {
@@ -229,11 +264,16 @@ function mergeUniforms(
   _leaf: SgLeaf,
   state: TraversalState,
   opts: CompileSceneOptions,
+  pickId: number | undefined,
 ): HashMap<string, aval<unknown>> {
   const auto = (opts.autoUniforms ?? true) ? autoInjectedUniforms(state) : HashMap.empty<string, aval<unknown>>();
   // Inner-wins: state.uniforms entries override auto.
   let merged = auto;
   for (const [k, v] of state.uniforms) merged = merged.add(k, v);
+  // PickId is per-leaf and supplied last — never an auto-uniform
+  // and never something the user can override at scope (the chain
+  // shader binds it as the leaf's identity).
+  if (pickId !== undefined) merged = merged.add("PickId", AVal.constant(pickId));
   // Adapt non-GPU-bindable values (Trafo3d → M44f) for the runtime
   // UBO packer, which expects `{ _data: Float32Array }` sources.
   // Done as a per-value lazy `.map` so the user-facing semantic of
@@ -295,6 +335,26 @@ function derivePipelineState(state: TraversalState, opts: CompileSceneOptions): 
       : {}),
   };
   return ps;
+}
+
+// ---------------------------------------------------------------------------
+// Default geomHas — pick-chain dependency probe over leaf attributes
+// ---------------------------------------------------------------------------
+
+function defaultGeomHas(leaf: SgLeaf): (semantic: string) => boolean {
+  // Why: `BufferView` doesn't currently carry an explicit `semantic`
+  // — wombat.dom binds vertex / instance attributes by their map
+  // key directly to the shader's input by NAME (`Positions`,
+  // `Normals`, ...), and that name is also what the pick chooser
+  // queries via `effectDependencies`. So for v1 we treat the
+  // attribute KEY as the semantic. If we ever introduce a separate
+  // `semantic` on `BufferView`, fold it in here.
+  const set = new Set<string>();
+  for (const [k] of leaf.vertexAttributes) set.add(k);
+  if (leaf.instanceAttributes !== undefined) {
+    for (const [k] of leaf.instanceAttributes) set.add(k);
+  }
+  return (sem) => set.has(sem);
 }
 
 // Avoid unused-import warning while ASet is reserved for the

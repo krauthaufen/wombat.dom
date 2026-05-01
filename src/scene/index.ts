@@ -105,4 +105,8 @@ export {
   composePickChain,
   type PickFinalTag,
   type PickChainChoice,
+  PickRegistry,
+  PICK_ID_MAX,
+  type PickId,
+  type LeafPickScope,
 } from "./picking/index.js";
