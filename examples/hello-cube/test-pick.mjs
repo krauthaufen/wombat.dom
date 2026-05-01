@@ -1,0 +1,10 @@
+import { DefaultSurfaces, composePickChain, chooseChain } from "@aardworx/wombat.dom/scene";
+const userEff = DefaultSurfaces.basic();
+const cubeAttrs = new Set(["a_position", "a_color"]);
+const geomHas = n => cubeAttrs.has(n);
+console.log("choice:", chooseChain(userEff, geomHas));
+const composed = composePickChain(userEff, geomHas);
+const layout = { locations: new Map([["outColor", 0], ["pickId", 1]]) };
+const compiled = composed.compile({ target: "wgsl", fragmentOutputLayout: layout });
+console.log("\n--- FS ---");
+console.log(compiled.stages.find(s => s.stage === "fragment")?.source);
