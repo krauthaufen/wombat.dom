@@ -15,6 +15,8 @@ Tracking deferred work and stretch ideas. Living document — entries get crosse
 - [ ] BVH + IIntersectable in wombat.base + BVH-based fall-through after pixel pickThrough.
 - [x] PointerCapture release on scope unmount (dispatcher invalidates capture when registry lookup no longer matches).
 - [x] Configurable tap / long-press thresholds at the RenderControl level (`<RenderControl tapThresholds={…}>`).
+- [x] Implicit picking: `<RenderControl>` always allocates a per-instance `PickRegistry` and pickId attachment; the registry is exposed via `onReady({ picking })`. (Previously gated on a `picking` prop.)
+- [ ] Per-scope `local2World` in capture/bubble: push the scope's accumulated model trafo onto the SceneEventLocation's `local2World` as the event walks the path so handlers see `e.position` / `e.normal` / `e.pickRay` in their own local frame. Currently `local2World = Trafo3d.identity` everywhere — handlers see world-space values via `e.position`. Matching F#'s "matrix walks down the path" requires the registry to capture each scope-node's `state.model` and the dispatcher's runDownAll/runUpAll/runCaptureBubble walks to thread `event.transformed(scope.local2World)` through.
 
 ## Scene graph
 - [x] OnDragStart / OnDrag / OnDragEnd synthesis (Phase 6 — pointerdown → move past `DRAG_THRESHOLD_PX` → up; suppresses trailing tap).

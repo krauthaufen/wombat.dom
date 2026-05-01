@@ -20,6 +20,7 @@ import {
 import { HashMap } from "@aardworx/wombat.adaptive";
 import { V4f } from "@aardworx/wombat.base";
 import type { ClearValues } from "@aardworx/wombat.rendering/core";
+import type { SceneEvent } from "@aardworx/wombat.dom/scene";
 
 const root = document.getElementById("app")!;
 const status = document.getElementById("status")!;
@@ -53,6 +54,15 @@ const ctl = OrbitController.create({
   theta: 0.4,
 });
 
+// Double-tap on the cube re-centres the orbit on the actual pick
+// point and zooms in / out with the Tanh easing. `e.worldPos` is the
+// canonical world-space hit position from the SceneEventLocation.
+let near = false;
+const flyTarget = (e: SceneEvent): void => {
+  near = !near;
+  ctl.flyTo(e.worldPos, near ? 2.2 : 5.5);
+};
+
 // Clear the framebuffer to a dark grey before rendering each frame.
 // Attachment name matches the canvas signature configured by
 // `<RenderControl>` (which uses `colorAttachmentName: "outColor"`
@@ -64,11 +74,10 @@ const clear: ClearValues = {
 
 mount(root, (
   <RenderControl
-    sampleCount={4}
     clear={clear}
     onReady={({ canvas, time }) => {
       ctl.attach(canvas, time);
-      status.textContent = "ready — drag to rotate, wheel to zoom";
+      status.textContent = "ready — drag to rotate, wheel to zoom, double-tap to fly";
     }}
   >
     <Sg View={ctl.view} Shader={DefaultSurfaces.basic()}>
@@ -84,7 +93,9 @@ mount(root, (
             near: 0.1,
             far: 100,
           }),
-          Sg.box(),
+          <Sg OnDoubleTap={flyTarget}>
+            {Sg.box()}
+          </Sg>,
         ),
       )}
     </Sg>

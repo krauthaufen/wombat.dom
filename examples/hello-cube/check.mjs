@@ -28,7 +28,7 @@ const consoleLog = [];
 page.on("console", m => consoleLog.push(`[${m.type()}] ${m.text()}`));
 page.on("pageerror", e => consoleLog.push(`[pageerror] ${e.message}`));
 
-await page.goto("http://localhost:5180/", { waitUntil: "networkidle" });
+await page.goto("http://localhost:5175/", { waitUntil: "networkidle" });
 await page.waitForTimeout(2000);  // let a few rAF ticks happen
 
 // Save the canvas bytes (bypasses the compositor / screenshot path).

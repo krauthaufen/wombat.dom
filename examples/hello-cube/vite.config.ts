@@ -12,7 +12,7 @@ export default defineConfig({
     // Permit Tailscale-issued hostnames + LAN access. Vite's
     // default host-allowlist refuses requests that come in
     // through a reverse proxy under a different name.
-    allowedHosts: [".ts.net", "localhost"],
+    allowedHosts: [".ts.net", ".loca.lt", "localhost"],
   },
   esbuild: {
     jsx: "automatic",

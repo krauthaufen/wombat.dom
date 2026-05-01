@@ -414,6 +414,35 @@ export class OrbitController {
     });
   }
 
+  /**
+   * Animate to a new center (and optionally radius) using the given
+   * easing. Default `Tanh` over 600ms, matching the F# orbit
+   * controller's "snap" feel.
+   */
+  flyTo(
+    center: V3d,
+    radius?: number,
+    kind: AnimationKind = Anim.Tanh,
+    durationMs = 600,
+  ): void {
+    this.update(s => {
+      const now = performance.now();
+      const centerAnim: Animation<V3d> = {
+        kind, startTimeMs: now, stopTimeMs: now + durationMs,
+        startValue: s.center, stopValue: center,
+      };
+      const next: OrbitState = {
+        ...s, userModifiedCenter: true, panAnimation: undefined,
+        centerAnimation: centerAnim, locationAnimation: undefined, lastRenderMs: undefined,
+      };
+      if (radius !== undefined) {
+        const r = clamp(s.config.radiusRange.x, s.config.radiusRange.y, radius);
+        return { ...next, targetRadius: r };
+      }
+      return next;
+    });
+  }
+
   /** Manually advance integration. Tests pass synthetic `nowMs`. */
   tick(nowMs?: number): void {
     const t = nowMs ?? performance.now();

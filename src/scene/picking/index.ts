@@ -41,6 +41,8 @@ export {
   type SceneEventDispatch,
 } from "./sceneEvent.js";
 
+export { SceneEventLocation } from "./sceneEventLocation.js";
+
 export type { EventHandlers, SceneEventHandler } from "../sg.js";
 
 export {

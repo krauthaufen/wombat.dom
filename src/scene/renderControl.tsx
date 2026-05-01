@@ -112,21 +112,9 @@ export interface RenderControlProps {
   readonly onReady?: (info: RenderControlReadyInfo) => void;
 
   /**
-   * When set, every leaf is wrapped with the pick chain (see
-   * `picking/pickChain.ts`) and registered with this registry; an
-   * additional rgba32float `pickId` color attachment is allocated
-   * alongside the canvas color, and pointer events on the canvas
-   * trigger 1-pixel readbacks for handler dispatch. The component
-   * does NOT take ownership of the registry — pass the same one
-   * across re-mounts to keep externally cached `PickId`s stable.
-   * Absent ⇒ no pick attachment, no listeners, no overhead.
-   */
-  readonly picking?: PickRegistry;
-
-  /**
    * Per-instance overrides for the tap / long-press / double-tap /
    * drag / hover thresholds. Any unset field falls back to the module
-   * default. Picking must be enabled for these to take effect.
+   * default.
    */
   readonly tapThresholds?: TapThresholds;
 
@@ -152,6 +140,12 @@ export interface RenderControlReadyInfo {
   readonly proj: aval<Trafo3d>;
   /** Per-frame `performance.now()` clock; ticks once per rAF. Phase 7. */
   readonly time: aval<number>;
+  /**
+   * The internal `PickRegistry`. Picking is always-on; callers can use
+   * this to drive `setFocus`, query scope membership, etc. Mirrors
+   * Aardvark.Dom's `IEventHandler` surface.
+   */
+  readonly picking: PickRegistry;
 }
 
 // ---------------------------------------------------------------------------
@@ -212,12 +206,12 @@ export function RenderControl(props: RenderControlProps): import("../vnode.js").
   // attribute binder.
   const { scene, children, view, proj, defaultEffect, clear,
           device, runtime, attach, format, depthFormat, sampleCount,
-          onReady, picking, tapThresholds, style: userStyle,
+          onReady, tapThresholds, style: userStyle,
           ...htmlProps } = props;
   void scene; void children; void view; void proj; void defaultEffect; void clear;
   void device; void runtime; void attach;
   void format; void depthFormat; void sampleCount;
-  void onReady; void picking; void tapThresholds;
+  void onReady; void tapThresholds;
 
   // Phase 5 — when no tabindex is supplied, set tabindex=0 so the
   // canvas can receive keyboard focus (otherwise key events do not
@@ -325,44 +319,40 @@ async function initialise(
     .withCamera(view, proj)
     .withTime(getGlobalTime());
 
-  // Picking: when enabled, allocate a combined FB (canvas color +
+  // Picking is always-on. Allocate a combined FB (canvas color +
   // pickId + canvas depth), feed that to compileScene, and wire a
   // PickDispatcher to the canvas. Handlers fire on cursor events
-  // after a 1-pixel readback decodes a registered pickId.
-  let outputFb: typeof attachment.framebuffer = attachment.framebuffer;
-  let pickFb: ReturnType<typeof createPickFramebuffer> | undefined;
-  if (props.picking !== undefined) {
-    pickFb = createPickFramebuffer(device, attachment, { colorAttachmentName: "outColor" });
-    outputFb = pickFb.pickFramebuffer;
-    scope.onDispose(() => pickFb!.dispose());
-  }
+  // after a 1-pixel readback decodes a registered pickId. The
+  // registry is created internally per RenderControl instance and
+  // exposed back via `onReady`.
+  const registry = new PickRegistry();
+  const pickFb = createPickFramebuffer(device, attachment, { colorAttachmentName: "outColor" });
+  const outputFb = pickFb.pickFramebuffer;
+  scope.onDispose(() => pickFb.dispose());
 
   // Lower the scene; compile into the runtime; drive the loop.
   const commands = compileScene(sceneTree, outputFb, {
     initialState: initial,
     ...(props.defaultEffect !== undefined ? { defaultEffect: props.defaultEffect } : {}),
     ...(props.clear !== undefined ? { clear: props.clear } : {}),
-    ...(props.picking !== undefined ? { picking: { registry: props.picking } } : {}),
+    picking: { registry },
   });
   const task = runtime.compile(commands);
   scope.onDispose(() => task.dispose());
 
-  if (pickFb !== undefined && props.picking !== undefined) {
-    const registry = props.picking;
-    const dispatcher = new PickDispatcher(
-      registry,
-      () => AVal.force(view),
-      () => AVal.force(proj),
-      () => canvas.getBoundingClientRect(),
-      props.tapThresholds,
-    );
-    const readRegion = async (x: number, y: number): Promise<PickRegion | undefined> => {
-      const tex = AVal.force(pickFb!.readbackPickTexture);
-      return readPickRegion(device, tex, x, y);
-    };
-    const detach = dispatcher.attach(canvas, readRegion);
-    scope.onDispose(detach);
-  }
+  const dispatcher = new PickDispatcher(
+    registry,
+    () => AVal.force(view),
+    () => AVal.force(proj),
+    () => canvas.getBoundingClientRect(),
+    props.tapThresholds,
+  );
+  const readRegion = async (x: number, y: number): Promise<PickRegion | undefined> => {
+    const tex = AVal.force(pickFb.readbackPickTexture);
+    return readPickRegion(device, tex, x, y);
+  };
+  const detach = dispatcher.attach(canvas, readRegion);
+  scope.onDispose(detach);
 
   // For MSAA picking we need a custom resolve compute pass after the
   // render pass. wombat.rendering's `runFrame` does not expose its
@@ -370,7 +360,7 @@ async function initialise(
   // after `task.run`. This adds one queue submission per frame; an
   // upstream hook for piggy-backing on the render encoder would be
   // cleaner (see docs/FUTURE.md).
-  const runResolve = pickFb?.maybeRunResolve;
+  const runResolve = pickFb.maybeRunResolve;
   const loop = runFrame(attachment, (token) => {
     if (scope.isDisposed) return;
     // Phase 7 — tick the global clock once per frame so any
@@ -394,6 +384,7 @@ async function initialise(
     viewport: attachment.size,
     view, proj,
     time: getGlobalTime(),
+    picking: registry,
   });
 }
 

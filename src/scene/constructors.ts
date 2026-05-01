@@ -99,12 +99,27 @@ function adaptive(child: aval<SgNode>): SgNode {
   return { kind: "AdaptiveGroup", child };
 }
 
-function trafo(value: TrafoValue, child: SgNode): SgNode {
-  return { kind: "Trafo", value, child };
+/**
+ * Coerce a heterogeneous JSX/SgNode child value into a single
+ * `SgNode`. Centralised here so the imperative builders (`Sg.trafo`,
+ * `Sg.proj`, ...) can accept the same children-shape that
+ * `<Sg ...>` accepts as JSX children — including `<Sg ...>` /
+ * `<Sg.Box/>` carrier VNodes. Without this, passing a JSX VNode to
+ * an imperative builder produced an `SgNode` whose `child` was a
+ * VNode (`{kind: undefined}`), surfacing as a "tree.kind: undefined"
+ * runtime error during compileScene.
+ */
+type SgChild = SgNode | Child | ReadonlyArray<Child | SgNode>;
+function coerceChild(child: SgChild): SgNode {
+  return isRawSgNode(child) ? child : collectSgChildren(child);
 }
 
-function shader(effect: Effect, child: SgNode): SgNode {
-  return { kind: "Shader", effect, child };
+function trafo(value: TrafoValue, child: SgChild): SgNode {
+  return { kind: "Trafo", value, child: coerceChild(child) };
+}
+
+function shader(effect: Effect, child: SgChild): SgNode {
+  return { kind: "Shader", effect, child: coerceChild(child) };
 }
 
 function uniformBag(entries: Record<string, unknown | aval<unknown>>): UniformBag {
@@ -115,29 +130,30 @@ function uniformBag(entries: Record<string, unknown | aval<unknown>>): UniformBa
   return { kind: "Static", entries: map };
 }
 
-function uniform(entries: Record<string, unknown | aval<unknown>>, child: SgNode): SgNode;
-function uniform(entries: amap<string, aval<unknown>>, child: SgNode): SgNode;
-function uniform(entries: Record<string, unknown> | amap<string, aval<unknown>>, child: SgNode): SgNode {
+function uniform(entries: Record<string, unknown | aval<unknown>>, child: SgChild): SgNode;
+function uniform(entries: amap<string, aval<unknown>>, child: SgChild): SgNode;
+function uniform(entries: Record<string, unknown> | amap<string, aval<unknown>>, child: SgChild): SgNode {
+  const c = coerceChild(child);
   if ((entries as amap<string, aval<unknown>>).content !== undefined) {
     return {
       kind: "Uniform",
       bag: { kind: "Dynamic", entries: entries as amap<string, aval<unknown>> },
-      child,
+      child: c,
     };
   }
-  return { kind: "Uniform", bag: uniformBag(entries as Record<string, unknown>), child };
+  return { kind: "Uniform", bag: uniformBag(entries as Record<string, unknown>), child: c };
 }
 
-function blendMode(mode: BlendState, child: SgNode): SgNode {
-  return { kind: "BlendMode", mode, child };
+function blendMode(mode: BlendState, child: SgChild): SgNode {
+  return { kind: "BlendMode", mode, child: coerceChild(child) };
 }
 
-function cursor(value: string | aval<string>, child: SgNode): SgNode {
-  return { kind: "Cursor", cursor: value, child };
+function cursor(value: string | aval<string>, child: SgChild): SgNode {
+  return { kind: "Cursor", cursor: value, child: coerceChild(child) };
 }
 
-function pickThrough(value: boolean, child: SgNode): SgNode {
-  return { kind: "PickThrough", value, child };
+function pickThrough(value: boolean, child: SgChild): SgNode {
+  return { kind: "PickThrough", value, child: coerceChild(child) };
 }
 
 function intersectable(value: IIntersectable | aval<IIntersectable>): (child: SgNode) => SgNode {
@@ -154,35 +170,35 @@ function pixelSnapRadius(radius: number | aval<number>): (child: SgNode) => SgNo
   return (child: SgNode): SgNode => ({ kind: "PixelSnapRadius", radius: r, child });
 }
 
-function on(handlers: EventHandlers, child: SgNode): SgNode {
-  return { kind: "On", handlers, child };
+function on(handlers: EventHandlers, child: SgChild): SgNode {
+  return { kind: "On", handlers, child: coerceChild(child) };
 }
 
 /** Curried convenience: bubble-only single-event SgOn. */
-function onEvent(kind: SceneEventKind, fn: SceneEventHandler): (child: SgNode) => SgNode {
+function onEvent(kind: SceneEventKind, fn: SceneEventHandler): (child: SgChild) => SgNode {
   return (child) => on({ bubble: { [kind]: fn } }, child);
 }
 
-const onClick      = (fn: SceneEventHandler): ((child: SgNode) => SgNode) => onEvent("OnClick", fn);
-const onPointerDown  = (fn: SceneEventHandler): ((child: SgNode) => SgNode) => onEvent("OnPointerDown", fn);
-const onPointerUp    = (fn: SceneEventHandler): ((child: SgNode) => SgNode) => onEvent("OnPointerUp", fn);
-const onPointerMove  = (fn: SceneEventHandler): ((child: SgNode) => SgNode) => onEvent("OnPointerMove", fn);
-const onPointerEnter = (fn: SceneEventHandler): ((child: SgNode) => SgNode) => onEvent("OnPointerEnter", fn);
-const onPointerLeave = (fn: SceneEventHandler): ((child: SgNode) => SgNode) => onEvent("OnPointerLeave", fn);
+const onClick      = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnClick", fn);
+const onPointerDown  = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnPointerDown", fn);
+const onPointerUp    = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnPointerUp", fn);
+const onPointerMove  = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnPointerMove", fn);
+const onPointerEnter = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnPointerEnter", fn);
+const onPointerLeave = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnPointerLeave", fn);
 
-function active(value: aval<boolean>, child: SgNode): SgNode {
-  return { kind: "Active", active: value, child };
+function active(value: aval<boolean>, child: SgChild): SgNode {
+  return { kind: "Active", active: value, child: coerceChild(child) };
 }
 
-function viewScope(view: aval<Trafo3d>, child: SgNode): SgNode {
-  return { kind: "View", view, child };
+function viewScope(view: aval<Trafo3d>, child: SgChild): SgNode {
+  return { kind: "View", view, child: coerceChild(child) };
 }
 
-function projScope(proj: aval<Trafo3d>, child: SgNode): SgNode {
-  return { kind: "Proj", proj, child };
+function projScope(proj: aval<Trafo3d>, child: SgChild): SgNode {
+  return { kind: "Proj", proj, child: coerceChild(child) };
 }
 
-function camera(view: aval<Trafo3d>, proj: aval<Trafo3d>, child: SgNode): SgNode {
+function camera(view: aval<Trafo3d>, proj: aval<Trafo3d>, child: SgChild): SgNode {
   return viewScope(view, projScope(proj, child));
 }
 

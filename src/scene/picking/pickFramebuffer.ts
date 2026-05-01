@@ -82,7 +82,9 @@ export function createPickFramebuffer(
   // lifetime of the framebuffer (only sizes change). Pipelines key
   // off `signature`, so it has to be a stable object across reads.
   let combinedColors: Record<string, GPUTextureFormat> = {};
-  for (const [name, fmt] of attachment.signature.colors) {
+  for (const name of attachment.signature.colorNames) {
+    const fmt = attachment.signature.colors.tryFind(name);
+    if (fmt === undefined) continue;
     combinedColors[name] = fmt;
   }
   combinedColors[PICK_NAME] = PICK_FORMAT;

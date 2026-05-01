@@ -162,7 +162,7 @@ describe("PickDispatcher BVH fall-through", () => {
     // A is non-pickThrough at the cursor pixel. B has a near box that
     // would otherwise win the ray, but the spiral hit on A short-
     // circuits before BVH is touched.
-    const idA = acquire(reg, [{ OnPointerDown: (e) => calls.push({ ...(e as object), pickId: e.pickId } as SceneEvent) }], {
+    const idA = acquire(reg, [{ OnPointerDown: (e) => calls.push(e) }], {
       intersectable: boxB, // doesn't matter — non-pickThrough wins via spiral
     });
 
@@ -175,8 +175,11 @@ describe("PickDispatcher BVH fall-through", () => {
 
     expect(calls.length).toBe(1);
     expect(calls[0]!.pickId).toBe(idA);
-    // Pixel-pick path leaves viewNormal undefined.
-    expect(calls[0]!.viewNormal).toBeUndefined();
+    // Pixel-pick path leaves viewNormal at its synthetic zero default
+    // — there is no per-fragment normal in Mode-A pick output.
+    expect(calls[0]!.viewNormal.x).toBe(0);
+    expect(calls[0]!.viewNormal.y).toBe(0);
+    expect(calls[0]!.viewNormal.z).toBe(0);
     detach();
   });
 

@@ -205,23 +205,21 @@ export function pickFinalAEffect(): Effect {
 
   const source = `
     function fsMain(input: {
-      Color: V4f;
+      outColor: V4f;
       ViewSpaceNormal: V3f;
       PickPartIndex: i32;
-      Depth: f32;
-    }): { outColor: V4f; pickId: V4f; Depth: f32 } {
+    }, b: FragmentBuiltinIn): { outColor: V4f; pickId: V4f; Depth: f32 } {
       const n24 = n24Encode(input.ViewSpaceNormal.normalize());
-      const d = 2.0 * input.Depth - 1.0;
+      const d = 2.0 * b.fragCoord.z - 1.0;
       const id = new V4f(PickId as f32, n24, d, input.PickPartIndex as f32);
-      return { outColor: input.Color, pickId: id, Depth: d };
+      return { outColor: input.outColor, pickId: id, Depth: d };
     }
   `;
 
   pickFinalACache = buildFinal(source, "fsMain", [
-    { name: "Color",           type: Tvec4f, semantic: "Color",           decorations: [{ kind: "Location", value: 0 }] },
+    { name: "outColor", type: Tvec4f, semantic: "Color",           decorations: [{ kind: "Location", value: 0 }] },
     { name: "ViewSpaceNormal", type: Tvec3f, semantic: "ViewSpaceNormal", decorations: [{ kind: "Location", value: 1 }] },
     { name: "PickPartIndex",   type: Tf32,   semantic: "PickPartIndex",   decorations: [{ kind: "Location", value: 2 }] },
-    { name: "Depth",           type: Tf32,   semantic: "Depth",           decorations: [{ kind: "Location", value: 3 }] },
   ], true);
   return pickFinalACache;
 }
@@ -237,21 +235,19 @@ export function pickFinalANoPiEffect(): Effect {
 
   const source = `
     function fsMain(input: {
-      Color: V4f;
+      outColor: V4f;
       ViewSpaceNormal: V3f;
-      Depth: f32;
-    }): { outColor: V4f; pickId: V4f; Depth: f32 } {
+    }, b: FragmentBuiltinIn): { outColor: V4f; pickId: V4f; Depth: f32 } {
       const n24 = n24Encode(input.ViewSpaceNormal.normalize());
-      const d = 2.0 * input.Depth - 1.0;
+      const d = 2.0 * b.fragCoord.z - 1.0;
       const id = new V4f(PickId as f32, n24, d, 0.0);
-      return { outColor: input.Color, pickId: id, Depth: d };
+      return { outColor: input.outColor, pickId: id, Depth: d };
     }
   `;
 
   pickFinalANoPiCache = buildFinal(source, "fsMain", [
-    { name: "Color",           type: Tvec4f, semantic: "Color",           decorations: [{ kind: "Location", value: 0 }] },
+    { name: "outColor", type: Tvec4f, semantic: "Color",           decorations: [{ kind: "Location", value: 0 }] },
     { name: "ViewSpaceNormal", type: Tvec3f, semantic: "ViewSpaceNormal", decorations: [{ kind: "Location", value: 1 }] },
-    { name: "Depth",           type: Tf32,   semantic: "Depth",           decorations: [{ kind: "Location", value: 2 }] },
   ], true);
   return pickFinalANoPiCache;
 }
@@ -268,20 +264,18 @@ export function pickFinalANoNormalEffect(): Effect {
 
   const source = `
     function fsMain(input: {
-      Color: V4f;
+      outColor: V4f;
       PickPartIndex: i32;
-      Depth: f32;
-    }): { outColor: V4f; pickId: V4f; Depth: f32 } {
-      const d = 2.0 * input.Depth - 1.0;
+    }, b: FragmentBuiltinIn): { outColor: V4f; pickId: V4f; Depth: f32 } {
+      const d = 2.0 * b.fragCoord.z - 1.0;
       const id = new V4f(PickId as f32, 0.0, d, input.PickPartIndex as f32);
-      return { outColor: input.Color, pickId: id, Depth: d };
+      return { outColor: input.outColor, pickId: id, Depth: d };
     }
   `;
 
   pickFinalANoNormalCache = buildFinal(source, "fsMain", [
-    { name: "Color",         type: Tvec4f, semantic: "Color",         decorations: [{ kind: "Location", value: 0 }] },
+    { name: "outColor", type: Tvec4f, semantic: "Color",         decorations: [{ kind: "Location", value: 0 }] },
     { name: "PickPartIndex", type: Tf32,   semantic: "PickPartIndex", decorations: [{ kind: "Location", value: 1 }] },
-    { name: "Depth",         type: Tf32,   semantic: "Depth",         decorations: [{ kind: "Location", value: 2 }] },
   ], true);
   return pickFinalANoNormalCache;
 }
@@ -297,18 +291,16 @@ export function pickFinalANoNormalNoPiEffect(): Effect {
 
   const source = `
     function fsMain(input: {
-      Color: V4f;
-      Depth: f32;
-    }): { outColor: V4f; pickId: V4f; Depth: f32 } {
-      const d = 2.0 * input.Depth - 1.0;
+      outColor: V4f;
+    }, b: FragmentBuiltinIn): { outColor: V4f; pickId: V4f; Depth: f32 } {
+      const d = 2.0 * b.fragCoord.z - 1.0;
       const id = new V4f(PickId as f32, 0.0, d, 0.0);
-      return { outColor: input.Color, pickId: id, Depth: d };
+      return { outColor: input.outColor, pickId: id, Depth: d };
     }
   `;
 
   pickFinalANoNormalNoPiCache = buildFinal(source, "fsMain", [
-    { name: "Color", type: Tvec4f, semantic: "Color", decorations: [{ kind: "Location", value: 0 }] },
-    { name: "Depth", type: Tf32,   semantic: "Depth", decorations: [{ kind: "Location", value: 1 }] },
+    { name: "outColor", type: Tvec4f, semantic: "Color", decorations: [{ kind: "Location", value: 0 }] },
   ], true);
   return pickFinalANoNormalNoPiCache;
 }
@@ -328,16 +320,16 @@ export function pickFinalBEffect(): Effect {
 
   const source = `
     function fsMain(input: {
-      Color: V4f;
+      outColor: V4f;
       PickViewPosition: V3f;
     }): { outColor: V4f; pickId: V4f } {
       const id = new V4f(-(PickId as f32), input.PickViewPosition.x, input.PickViewPosition.y, input.PickViewPosition.z);
-      return { outColor: input.Color, pickId: id };
+      return { outColor: input.outColor, pickId: id };
     }
   `;
 
   pickFinalBCache = buildFinal(source, "fsMain", [
-    { name: "Color",            type: Tvec4f, semantic: "Color",            decorations: [{ kind: "Location", value: 0 }] },
+    { name: "outColor", type: Tvec4f, semantic: "Color",            decorations: [{ kind: "Location", value: 0 }] },
     { name: "PickViewPosition", type: Tvec3f, semantic: "PickViewPosition", decorations: [{ kind: "Location", value: 1 }] },
   ], false);
   return pickFinalBCache;

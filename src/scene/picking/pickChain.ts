@@ -124,8 +124,8 @@ export function composePickChain(
   const choice = chooseChain(eff, geomHas);
   const stages: Effect[] = [];
   if (choice.injectVsn) stages.push(viewSpaceNormalVertexEffect());
-  stages.push(pickDepthBeforeEffect());
   stages.push(eff);
   stages.push(finalEffect(choice.final));
+  void pickDepthBeforeEffect;
   return effect(...stages);
 }

@@ -129,4 +129,9 @@ export {
   PICK_ID_MAX,
   type PickId,
   type LeafPickScope,
+  SceneEvent,
+  SceneEventLocation,
+  type SceneEventKind,
+  type SceneEventInit,
+  type SceneEventDispatch,
 } from "./picking/index.js";

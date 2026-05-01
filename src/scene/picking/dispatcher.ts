@@ -31,7 +31,7 @@
 // pointermove using the last cursor position to re-establish hover.
 
 import { AVal, avalAddCallback } from "@aardworx/wombat.adaptive";
-import { Ray3d, Trafo3d, V3d, V4d } from "@aardworx/wombat.base";
+import { Ray3d, Trafo3d, V2d, V2i, V3d, V4d } from "@aardworx/wombat.base";
 
 import type { LeafPickScope, PickRegistry } from "./registry.js";
 import { decodePick, readSlotsAt, type DecodedPick, type PickRegion } from "./readback.js";
@@ -40,6 +40,7 @@ import {
   type SceneEventDispatch,
   type SceneEventKind,
 } from "./sceneEvent.js";
+import { SceneEventLocation } from "./sceneEventLocation.js";
 import { SNAP_OFFSETS, SNAP_RADIUS_MAX } from "./snapOffsets.js";
 
 // --- Tap / long-press / double-tap detection thresholds ----------------
@@ -196,6 +197,9 @@ export class PickDispatcher implements SceneEventDispatch {
   private readonly tDragThreshold: number;
   private readonly tHoverDelay: number;
 
+  /** Canvas backing-store size in device pixels — used as `viewportSize` when building the SceneEventLocation. Set on `attach`. */
+  private canvasSize: () => V2i = () => V2i.zero;
+
   constructor(
     private readonly registry: PickRegistry,
     /** Used by BVH ray fall-through to construct the world-space cursor ray. */
@@ -217,6 +221,7 @@ export class PickDispatcher implements SceneEventDispatch {
    * Wire pointer listeners to the canvas. Returns a disposer.
    */
   attach(canvas: HTMLCanvasElement, readRegion: ReadRegion): () => void {
+    this.canvasSize = () => new V2i(canvas.width, canvas.height);
     const handle = (ev: PointerEvent, kind: SceneEventKind): void => {
       const seq = ++this.seq;
       const rect = this.getCanvasRect();
@@ -316,13 +321,11 @@ export class PickDispatcher implements SceneEventDispatch {
       if (!AVal.force(scope.active)) return;
       const sceneEv = new SceneEvent({
         kind,
-        clientX: 0, clientY: 0,
+        location: this.buildEmptyLocation(scope),
         pickId: scope.pickId,
-        modeB: false,
-        pointerId: 0, pointerType: "",
         raw: ev,
         key: ev.key, code: ev.code, repeat: ev.repeat,
-        ctrlKey: ev.ctrlKey, shiftKey: ev.shiftKey, altKey: ev.altKey, metaKey: ev.metaKey,
+        ctrl: ev.ctrlKey, shift: ev.shiftKey, alt: ev.altKey, meta: ev.metaKey,
         scope, dispatch: this,
       });
       this.runCaptureBubble(scope.handlers, sceneEv);
@@ -345,9 +348,9 @@ export class PickDispatcher implements SceneEventDispatch {
         const oldScope = this.registry.lookup(old);
         if (oldScope !== undefined) {
           const blur = new SceneEvent({
-            kind: "OnBlur", clientX: 0, clientY: 0,
-            pickId: oldScope.pickId, modeB: false,
-            pointerId: 0, pointerType: "",
+            kind: "OnBlur",
+            location: this.buildEmptyLocation(oldScope),
+            pickId: oldScope.pickId,
             raw: new Event("blur") as FocusEvent,
             ...(next !== undefined ? { relatedTarget: next } : {}),
             scope: oldScope, dispatch: this,
@@ -359,9 +362,9 @@ export class PickDispatcher implements SceneEventDispatch {
         const newScope = this.registry.lookup(next);
         if (newScope !== undefined) {
           const focus = new SceneEvent({
-            kind: "OnFocus", clientX: 0, clientY: 0,
-            pickId: newScope.pickId, modeB: false,
-            pointerId: 0, pointerType: "",
+            kind: "OnFocus",
+            location: this.buildEmptyLocation(newScope),
+            pickId: newScope.pickId,
             raw: new Event("focus") as FocusEvent,
             ...(old !== undefined ? { relatedTarget: old } : {}),
             scope: newScope, dispatch: this,
@@ -418,22 +421,24 @@ export class PickDispatcher implements SceneEventDispatch {
       viewNormal = new V3d(n4.x, n4.y, n4.z);
     }
     if (scope === undefined) return;
+    const partIndex = (hit !== undefined && !hit.decoded.modeB) ? Math.round(hit.decoded.raw.slot3) | 0 : 0;
+    const location = this.buildLocation(
+      scope, cssX, cssY,
+      viewPos ?? V3d.zero,
+      viewNormal ?? V3d.zero,
+      partIndex,
+    );
     const sceneEv = new SceneEvent({
       kind: "OnWheel",
-      clientX: cssX,
-      clientY: cssY,
+      location,
       pickId: scope.pickId,
       modeB,
-      ...(viewPos !== undefined ? { viewPos } : {}),
-      ...(viewNormal !== undefined ? { viewNormal } : {}),
-      pointerId: 0,
-      pointerType: "",
       raw: ev,
       deltaX: ev.deltaX,
       deltaY: ev.deltaY,
       deltaZ: ev.deltaZ,
       deltaMode: (ev.deltaMode as 0 | 1 | 2),
-      ctrlKey: ev.ctrlKey, shiftKey: ev.shiftKey, altKey: ev.altKey, metaKey: ev.metaKey,
+      ctrl: ev.ctrlKey, shift: ev.shiftKey, alt: ev.altKey, meta: ev.metaKey,
       scope,
       dispatch: this,
     });
@@ -845,12 +850,11 @@ export class PickDispatcher implements SceneEventDispatch {
     scope: LeafPickScope,
     press: PressState,
   ): void {
+    const location = this.buildLocation(scope, cssX, cssY, V3d.zero, V3d.zero, 0);
     const sceneEv = new SceneEvent({
       kind,
-      clientX: cssX,
-      clientY: cssY,
+      location,
       pickId: scope.pickId,
-      modeB: false,
       ...(ev.button !== undefined ? { button: ev.button } : {}),
       ...(ev.buttons !== undefined ? { buttons: ev.buttons } : {}),
       pointerId: ev.pointerId ?? 0,
@@ -1038,29 +1042,84 @@ export class PickDispatcher implements SceneEventDispatch {
     return new V3d(viewSpace.x / w, viewSpace.y / w, viewSpace.z / w);
   }
 
+  /**
+   * Build a `SceneEventLocation` for a hit-bearing event. `viewPos` /
+   * `viewNormal` come from the spiral hit (`viewPosFor`) or the BVH
+   * fall-through; `partIndex` from the decoded pick slot's slot3
+   * channel (Mode-A only — BVH / Mode-B / synthetic hits use 0).
+   *
+   * Why `AVal.force` here: dispatcher runs in a non-adaptive event
+   * handler — the forces don't enter any reader's dependency set.
+   */
+  private buildLocation(
+    scope: LeafPickScope | undefined,
+    cssX: number,
+    cssY: number,
+    viewPos: V3d,
+    viewNormal: V3d,
+    partIndex: number,
+  ): SceneEventLocation {
+    const view = scope !== undefined ? AVal.force(scope.view) : Trafo3d.identity;
+    const proj = scope !== undefined ? AVal.force(scope.proj) : Trafo3d.identity;
+    const model = scope?.model ?? AVal.constant(Trafo3d.identity);
+    // Convert CSS-px cursor coords to device pixels using the live
+    // canvas rect — keeps `pixel/viewportSize` in the same unit space
+    // for the NDC math inside SceneEventLocation.
+    const rect = this.getCanvasRect();
+    const size = this.canvasSize();
+    const sx = rect.width  > 0 ? size.x / rect.width  : 1;
+    const sy = rect.height > 0 ? size.y / rect.height : 1;
+    const pixel = new V2d(cssX * sx, cssY * sy);
+    return new SceneEventLocation(
+      model,
+      Trafo3d.identity,
+      view,
+      proj,
+      pixel,
+      size,
+      viewPos,
+      viewNormal,
+      partIndex,
+    );
+  }
+
+  /**
+   * Build a non-spatial location used for keyboard / focus / "no
+   * hit" synthetic events. View/proj come from the scope when one
+   * exists (so `worldPos` etc. are still well-typed), and viewPos /
+   * viewNormal are zero. Handlers checking `e.depth` on a key event
+   * get `0` — they shouldn't be reading it. (See "Why" in step 4 of
+   * the SceneEventLocation refactor brief.)
+   */
+  private buildEmptyLocation(scope: LeafPickScope | undefined): SceneEventLocation {
+    return this.buildLocation(scope, 0, 0, V3d.zero, V3d.zero, 0);
+  }
+
   private makeEvent(
     kind: SceneEventKind,
     ev: PointerEvent,
-    cssX: number,
-    cssY: number,
+    devX: number,
+    devY: number,
     scope: LeafPickScope,
     pickId: number,
     modeB: boolean,
     viewPos: V3d | undefined,
     viewNormal?: V3d,
+    partIndex: number = 0,
   ): SceneEvent {
+    const vp = viewPos ?? V3d.zero;
+    const vn = viewNormal ?? V3d.zero;
+    const location = this.buildLocation(scope, devX, devY, vp, vn, partIndex);
     return new SceneEvent({
       kind,
-      clientX: cssX,
-      clientY: cssY,
+      location,
       pickId,
       modeB,
       ...(ev.button !== undefined ? { button: ev.button } : {}),
       ...(ev.buttons !== undefined ? { buttons: ev.buttons } : {}),
-      ...(viewPos !== undefined ? { viewPos } : {}),
-      ...(viewNormal !== undefined ? { viewNormal } : {}),
       pointerId: ev.pointerId ?? 0,
       pointerType: ev.pointerType ?? "",
+      ctrl: ev.ctrlKey, shift: ev.shiftKey, alt: ev.altKey, meta: ev.metaKey,
       raw: ev,
       scope,
       dispatch: this,
@@ -1104,18 +1163,20 @@ export class PickDispatcher implements SceneEventDispatch {
     for (const p of arr) { cx += p.x; cy += p.y; }
     cx /= arr.length; cy /= arr.length;
 
+    const gestureLocation = (): SceneEventLocation =>
+      this.buildLocation(scope, cx, cy, V3d.zero, V3d.zero, 0);
     if (this.gestureLastDist !== undefined && this.gestureLastDist > 0) {
       const scale = newDist / this.gestureLastDist;
       if (Math.abs(scale - 1) > 1e-6) {
         const ev = new SceneEvent({
           kind: "OnPinch",
-          clientX: cx, clientY: cy,
-          pickId: scope.pickId, modeB: false,
+          location: gestureLocation(),
+          pickId: scope.pickId,
           pointerId: raw.pointerId ?? 0,
           pointerType: raw.pointerType ?? "",
           raw,
           pinchScale: scale,
-          pinchCenter: { x: cx, y: cy },
+          pinchCenter: new V2d(cx, cy),
           scope, dispatch: this,
         });
         this.runCaptureBubble(scope.handlers, ev);
@@ -1127,8 +1188,8 @@ export class PickDispatcher implements SceneEventDispatch {
       if (dx !== 0 || dy !== 0) {
         const ev = new SceneEvent({
           kind: "OnTwoFingerPan",
-          clientX: cx, clientY: cy,
-          pickId: scope.pickId, modeB: false,
+          location: gestureLocation(),
+          pickId: scope.pickId,
           pointerId: raw.pointerId ?? 0,
           pointerType: raw.pointerType ?? "",
           raw,
@@ -1145,8 +1206,8 @@ export class PickDispatcher implements SceneEventDispatch {
       if (Math.abs(dA) > 1e-6) {
         const ev = new SceneEvent({
           kind: "OnTwoFingerRotate",
-          clientX: cx, clientY: cy,
-          pickId: scope.pickId, modeB: false,
+          location: gestureLocation(),
+          pickId: scope.pickId,
           pointerId: raw.pointerId ?? 0,
           pointerType: raw.pointerType ?? "",
           raw,
@@ -1183,8 +1244,8 @@ export class PickDispatcher implements SceneEventDispatch {
       if (!AVal.force(scope.active)) return;
       const ev = new SceneEvent({
         kind: "OnHover",
-        clientX: cssX, clientY: cssY,
-        pickId: scope.pickId, modeB: false,
+        location: this.buildLocation(scope, cssX, cssY, V3d.zero, V3d.zero, 0),
+        pickId: scope.pickId,
         pointerId: raw.pointerId ?? 0,
         pointerType: raw.pointerType ?? "",
         raw,
