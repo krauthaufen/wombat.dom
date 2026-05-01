@@ -33,3 +33,37 @@ export {
   type PickId,
   type LeafPickScope,
 } from "./registry.js";
+
+export {
+  type SceneEvent,
+  type SceneEventKind,
+  type SceneEventViewPos,
+} from "./sceneEvent.js";
+
+export {
+  readPickPixel,
+  readPickRegion,
+  readSlotsAt,
+  decodePick,
+  type PickPixel,
+  type DecodedPick,
+  type PickRegion,
+} from "./readback.js";
+
+export {
+  SNAP_OFFSETS,
+  SNAP_RADIUS_MAX,
+  SNAP_REGION_SIZE,
+  type SnapOffset,
+} from "./snapOffsets.js";
+
+export {
+  createPickFramebuffer,
+  type PickFramebuffer,
+  type CanvasLikeAttachment,
+} from "./pickFramebuffer.js";
+
+export {
+  PickDispatcher,
+  type ReadRegion,
+} from "./dispatcher.js";

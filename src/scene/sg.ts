@@ -17,6 +17,11 @@
 //   - BlendMode:   overrides
 //   - Cursor:      overrides
 //   - PickThrough: overrides
+//   - PixelSnapRadius: overrides — innermost wins
+//       Why: matches Aardvark.Dom's `PixelSnapRadius` attribute,
+//       which is a `Set` (override) on TraversalState, not an
+//       AND/AVG composition. Pickers walking inside-out shouldn't
+//       see a tighter outer radius mask a more permissive inner.
 //   - Active:      AND across nesting (any false ⇒ inactive)
 
 import type {
@@ -46,6 +51,7 @@ export type SgNode =
   | SgBlendMode
   | SgCursor
   | SgPickThrough
+  | SgPixelSnapRadius
   | SgOn
   | SgActive
   | SgView
@@ -146,6 +152,18 @@ export interface SgCursor {
 export interface SgPickThrough {
   readonly kind: "PickThrough";
   readonly value: boolean;
+  readonly child: SgNode;
+}
+
+/**
+ * Pixel-snap-radius scope. Sets the radius (in device pixels) of
+ * the disc the pick dispatcher searches around the cursor. Inner
+ * scope wins on conflict. Hard-capped at `SNAP_RADIUS_MAX = 16`
+ * inside the dispatcher (matches Aardvark.Dom's `PickSnap.radius`).
+ */
+export interface SgPixelSnapRadius {
+  readonly kind: "PixelSnapRadius";
+  readonly radius: aval<number>;
   readonly child: SgNode;
 }
 

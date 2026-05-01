@@ -40,6 +40,10 @@ import { Sg, collectSgChildren } from "./constructors.js";
 import { compileScene } from "./compile.js";
 import type { SgNode } from "./sg.js";
 import { TraversalState } from "./traversalState.js";
+import { PickRegistry } from "./picking/registry.js";
+import { createPickFramebuffer } from "./picking/pickFramebuffer.js";
+import { PickDispatcher } from "./picking/dispatcher.js";
+import { readPickRegion, type PickRegion } from "./picking/readback.js";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -106,6 +110,18 @@ export interface RenderControlProps {
    */
   readonly onReady?: (info: RenderControlReadyInfo) => void;
 
+  /**
+   * When set, every leaf is wrapped with the pick chain (see
+   * `picking/pickChain.ts`) and registered with this registry; an
+   * additional rgba32float `pickId` color attachment is allocated
+   * alongside the canvas color, and pointer events on the canvas
+   * trigger 1-pixel readbacks for handler dispatch. The component
+   * does NOT take ownership of the registry — pass the same one
+   * across re-mounts to keep externally cached `PickId`s stable.
+   * Absent ⇒ no pick attachment, no listeners, no overhead.
+   */
+  readonly picking?: PickRegistry;
+
   // HTML pass-through props (canvas attributes). Kept loose so
   // callers can pass anything the canvas DOM element accepts; the
   // wombat.dom attribute binder routes by attribute kind.
@@ -160,12 +176,12 @@ export function RenderControl(props: RenderControlProps): import("../vnode.js").
   // attribute binder.
   const { scene, children, view, proj, defaultEffect, clear,
           device, runtime, attach, format, depthFormat, sampleCount,
-          onReady, style: userStyle,
+          onReady, picking, style: userStyle,
           ...htmlProps } = props;
   void scene; void children; void view; void proj; void defaultEffect; void clear;
   void device; void runtime; void attach;
   void format; void depthFormat; void sampleCount;
-  void onReady;
+  void onReady; void picking;
 
   // Default styles defend against the browser eating pointer
   // events that should reach the controller:
@@ -267,14 +283,43 @@ async function initialise(
     .withViewport(attachment.size)
     .withCamera(view, proj);
 
+  // Picking: when enabled, allocate a combined FB (canvas color +
+  // pickId + canvas depth), feed that to compileScene, and wire a
+  // PickDispatcher to the canvas. Handlers fire on cursor events
+  // after a 1-pixel readback decodes a registered pickId.
+  let outputFb: typeof attachment.framebuffer = attachment.framebuffer;
+  let pickFb: ReturnType<typeof createPickFramebuffer> | undefined;
+  if (props.picking !== undefined) {
+    pickFb = createPickFramebuffer(device, attachment, { colorAttachmentName: "outColor" });
+    outputFb = pickFb.pickFramebuffer;
+    scope.onDispose(() => pickFb!.dispose());
+  }
+
   // Lower the scene; compile into the runtime; drive the loop.
-  const commands = compileScene(sceneTree, attachment.framebuffer, {
+  const commands = compileScene(sceneTree, outputFb, {
     initialState: initial,
     ...(props.defaultEffect !== undefined ? { defaultEffect: props.defaultEffect } : {}),
     ...(props.clear !== undefined ? { clear: props.clear } : {}),
+    ...(props.picking !== undefined ? { picking: { registry: props.picking } } : {}),
   });
   const task = runtime.compile(commands);
   scope.onDispose(() => task.dispose());
+
+  if (pickFb !== undefined && props.picking !== undefined) {
+    const registry = props.picking;
+    const dispatcher = new PickDispatcher(
+      registry,
+      () => AVal.force(view),
+      () => AVal.force(proj),
+      () => canvas.getBoundingClientRect(),
+    );
+    const readRegion = async (x: number, y: number): Promise<PickRegion | undefined> => {
+      const tex = AVal.force(pickFb!.pickTexture);
+      return readPickRegion(device, tex, x, y);
+    };
+    const detach = dispatcher.attach(canvas, readRegion);
+    scope.onDispose(detach);
+  }
 
   const loop = runFrame(attachment, (token) => {
     if (scope.isDisposed) return;
@@ -331,6 +376,7 @@ function sniffViewProj(node: SgNode): SniffResult {
       case "BlendMode":
       case "Cursor":
       case "PickThrough":
+      case "PixelSnapRadius":
       case "On":
       case "Active":
         cur = cur.child;

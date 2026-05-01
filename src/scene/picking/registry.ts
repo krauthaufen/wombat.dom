@@ -39,6 +39,12 @@ export interface LeafPickScope {
   readonly view: aval<Trafo3d>;
   readonly proj: aval<Trafo3d>;
   readonly model: aval<Trafo3d>;
+  /**
+   * Pixel-snap-radius (device pixels) for the spiral hit-test.
+   * Clamped to `[0, SNAP_RADIUS_MAX]` at dispatch time. Default
+   * (when no `<Sg PixelSnapRadius>` scope was entered) is 1.
+   */
+  readonly pixelSnapRadius: aval<number>;
 }
 
 /**

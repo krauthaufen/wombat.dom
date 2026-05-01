@@ -21,6 +21,7 @@
 //   blendMode:   overrides
 //   cursor:      overrides
 //   pickThrough: overrides
+//   pixelSnapRadius: overrides
 //   active:      AND-composes
 //
 // ---------------------------------------------------------------
@@ -140,6 +141,11 @@ export class TraversalState {
   readonly cursor: aval<string> | undefined;
   /** Innermost pick-through value; defaults to `false`. */
   readonly pickThrough: boolean;
+  /**
+   * Innermost pixel-snap-radius (device pixels). Defaults to
+   * `AVal.constant(1)`. The dispatcher clamps to `[0, 16]`.
+   */
+  readonly pixelSnapRadius: aval<number>;
   /** Active conjunction across all enclosing Active scopes. Defaults to `true`. */
   readonly active: aval<boolean>;
   /**
@@ -160,6 +166,7 @@ export class TraversalState {
     blendMode: BlendState | undefined;
     cursor: aval<string> | undefined;
     pickThrough: boolean;
+    pixelSnapRadius: aval<number>;
     active: aval<boolean>;
     handlers: ReadonlyArray<EventHandlers>;
   }) {
@@ -172,6 +179,7 @@ export class TraversalState {
     this.blendMode = spec.blendMode;
     this.cursor = spec.cursor;
     this.pickThrough = spec.pickThrough;
+    this.pixelSnapRadius = spec.pixelSnapRadius;
     this.active = spec.active;
     this.handlers = spec.handlers;
   }
@@ -187,6 +195,7 @@ export class TraversalState {
     blendMode: undefined,
     cursor: undefined,
     pickThrough: false,
+    pixelSnapRadius: AVal.constant(1),
     active: AVal.constant(true),
     handlers: [],
   });
@@ -232,6 +241,11 @@ export class TraversalState {
     return this.with({ pickThrough: value });
   }
 
+  /** `<Sg PixelSnapRadius={r}>`: override. */
+  pushPixelSnapRadius(radius: aval<number>): TraversalState {
+    return this.with({ pixelSnapRadius: radius });
+  }
+
   /** `<Sg.Active value={a}>`: AND-compose across nesting. */
   pushActive(active: aval<boolean>): TraversalState {
     return this.with({
@@ -268,6 +282,7 @@ export class TraversalState {
     blendMode: BlendState | undefined;
     cursor: aval<string> | undefined;
     pickThrough: boolean;
+    pixelSnapRadius: aval<number>;
     active: aval<boolean>;
     handlers: ReadonlyArray<EventHandlers>;
   }>): TraversalState {
@@ -281,6 +296,7 @@ export class TraversalState {
       blendMode: "blendMode" in patch ? patch.blendMode : this.blendMode,
       cursor: "cursor" in patch ? patch.cursor : this.cursor,
       pickThrough: patch.pickThrough ?? this.pickThrough,
+      pixelSnapRadius: patch.pixelSnapRadius ?? this.pixelSnapRadius,
       active: patch.active ?? this.active,
       handlers: patch.handlers ?? this.handlers,
     });

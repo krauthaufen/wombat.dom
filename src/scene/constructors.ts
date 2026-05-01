@@ -128,6 +128,13 @@ function pickThrough(value: boolean, child: SgNode): SgNode {
   return { kind: "PickThrough", value, child };
 }
 
+function pixelSnapRadius(radius: number | aval<number>): (child: SgNode) => SgNode {
+  const r: aval<number> = isAValRuntime(radius)
+    ? radius as aval<number>
+    : AVal.constant(radius as number);
+  return (child: SgNode): SgNode => ({ kind: "PixelSnapRadius", radius: r, child });
+}
+
 function on(handlers: EventHandlers, child: SgNode): SgNode {
   return { kind: "On", handlers, child };
 }
@@ -206,6 +213,7 @@ export interface SgScopeProps {
   BlendMode?:   BlendState;
   Cursor?:      string | aval<string>;
   PickThrough?: boolean;
+  PixelSnapRadius?: number | aval<number>;
 
   // Camera scopes — also sniffable from outside the scene.
   View?: aval<Trafo3d>;
@@ -243,6 +251,7 @@ function applyScopeAttrs(node: SgNode, props: SgScopeProps): SgNode {
   if (props.View !== undefined)        n = viewScope(props.View, n);
   if (props.Active !== undefined)      n = active(props.Active, n);
   if (props.PickThrough !== undefined) n = pickThrough(props.PickThrough, n);
+  if (props.PixelSnapRadius !== undefined) n = pixelSnapRadius(props.PixelSnapRadius)(n);
   if (props.Cursor !== undefined)      n = cursor(props.Cursor, n);
   if (props.BlendMode !== undefined)   n = blendMode(props.BlendMode, n);
   if (props.Shader !== undefined)      n = shader(props.Shader, n);
@@ -368,6 +377,7 @@ interface SgNamespace {
   blendMode:   typeof blendMode;
   cursor:      typeof cursor;
   pickThrough: typeof pickThrough;
+  pixelSnapRadius: typeof pixelSnapRadius;
   on:          typeof on;
   active:      typeof active;
   view:        typeof viewScope;
@@ -404,6 +414,7 @@ export const Sg: SgNamespace = (() => {
   fn.blendMode   = blendMode;
   fn.cursor      = cursor;
   fn.pickThrough = pickThrough;
+  fn.pixelSnapRadius = pixelSnapRadius;
   fn.on          = on;
   fn.active      = active;
   fn.view        = viewScope;

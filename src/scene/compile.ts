@@ -161,6 +161,9 @@ function lower(
     case "PickThrough":
       return lower(node.child, state.pushPickThrough(node.value), opts);
 
+    case "PixelSnapRadius":
+      return lower(node.child, state.pushPixelSnapRadius(node.radius), opts);
+
     case "On":
       return lower(node.child, state.pushHandlers(node.handlers), opts);
 
@@ -213,6 +216,7 @@ function lowerLeaf(
       view: state.view,
       proj: state.proj,
       model: state.model,
+      pixelSnapRadius: state.pixelSnapRadius,
     });
   }
 
