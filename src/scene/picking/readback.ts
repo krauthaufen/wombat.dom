@@ -10,7 +10,8 @@
 // staging buffer. For one readback per pointer event that's fine;
 // for sustained pointer-move under load we'd want a 2-3 buffer ring.
 
-import type { SceneEventViewPos } from "./sceneEvent.js";
+import { V3d } from "@aardworx/wombat.base";
+
 import { SNAP_RADIUS_MAX, SNAP_REGION_SIZE } from "./snapOffsets.js";
 
 export interface PickPixel {
@@ -31,7 +32,7 @@ export interface DecodedPick {
    * needs the hit scope's view/proj, which the decoder doesn't see.
    * The dispatcher applies the unprojection.
    */
-  readonly viewPos?: SceneEventViewPos;
+  readonly viewPos?: V3d;
   /** Raw decoded slot values, exposed for code that needs Mode-A's NDC depth (slot2) and normal/part (slot1, slot3). */
   readonly raw: PickPixel;
 }
@@ -217,7 +218,7 @@ export function decodePick(pixel: PickPixel): DecodedPick {
     return {
       pickId,
       modeB: true,
-      viewPos: { x: pixel.slot1, y: pixel.slot2, z: pixel.slot3 },
+      viewPos: new V3d(pixel.slot1, pixel.slot2, pixel.slot3),
       raw: pixel,
     };
   }

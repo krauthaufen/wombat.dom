@@ -12,6 +12,8 @@
 // `preventDefault()`. PointerCapture is exposed as instance methods
 // that delegate to the dispatcher (see `dispatcher.ts`).
 
+import { V3d } from "@aardworx/wombat.base";
+
 import type { LeafPickScope } from "./registry.js";
 
 export type SceneEventKind =
@@ -20,13 +22,10 @@ export type SceneEventKind =
   | "OnPointerUp"
   | "OnPointerMove"
   | "OnPointerEnter"
-  | "OnPointerLeave";
-
-export interface SceneEventViewPos {
-  readonly x: number;
-  readonly y: number;
-  readonly z: number;
-}
+  | "OnPointerLeave"
+  | "OnTap"
+  | "OnDoubleTap"
+  | "OnLongPress";
 
 /**
  * Dispatcher hook the SceneEvent uses to delegate pointer-capture
@@ -48,7 +47,7 @@ export interface SceneEventInit {
   readonly modeB: boolean;
   readonly button?: number;
   readonly buttons?: number;
-  readonly viewPos?: SceneEventViewPos;
+  readonly viewPos?: V3d;
   readonly pointerId: number;
   readonly pointerType: string;
   readonly raw: PointerEvent;
@@ -75,7 +74,7 @@ export class SceneEvent {
    * requires unprojection from NDC depth using the hit scope's view /
    * proj — implemented in the dispatcher.
    */
-  readonly viewPos?: SceneEventViewPos;
+  readonly viewPos?: V3d;
   /** Forwarded from PointerEvent.pointerId. */
   readonly pointerId: number;
   /** Forwarded from PointerEvent.pointerType. */
@@ -111,11 +110,36 @@ export class SceneEvent {
   /** True once a handler has called `stopPropagation()`. Capture/bubble loops poll this after every handler. */
   get propagationStopped(): boolean { return this._propagationStopped; }
 
-  stopPropagation(): void { this._propagationStopped = true; }
+  /**
+   * Halts further capture/bubble dispatch on the SceneEvent and ALSO
+   * stops the underlying DOM PointerEvent from propagating. The DOM-
+   * side stop only matters when the SceneEvent handler runs
+   * synchronously inside the originating DOM listener (which is
+   * always the case for raw pointer events — we dispatch inline
+   * inside the canvas listener — and also for Tap / DoubleTap /
+   * LongPress, which we synthesise + dispatch inline before the
+   * originating listener returns).
+   */
+  stopPropagation(): void {
+    this._propagationStopped = true;
+    this.raw.stopPropagation();
+    this.raw.stopImmediatePropagation();
+  }
 
   get defaultPrevented(): boolean { return this._defaultPrevented; }
 
-  preventDefault(): void { this._defaultPrevented = true; }
+  /**
+   * Sets `defaultPrevented` AND calls `preventDefault()` on the
+   * underlying PointerEvent. Same synchronous-listener caveat as
+   * `stopPropagation`: the DOM-side preventDefault is best-effort
+   * for synthesised events, but works for all of our current call
+   * sites (we synthesise + dispatch inline at pointerup /
+   * pointerdown / inside the long-press timer).
+   */
+  preventDefault(): void {
+    this._defaultPrevented = true;
+    this.raw.preventDefault();
+  }
 
   // ---- PointerCapture --------------------------------------------------
 

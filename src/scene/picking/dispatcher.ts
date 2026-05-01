@@ -31,7 +31,7 @@
 // pointermove using the last cursor position to re-establish hover.
 
 import { AVal } from "@aardworx/wombat.adaptive";
-import { Trafo3d, V4d } from "@aardworx/wombat.base";
+import { Trafo3d, V3d, V4d } from "@aardworx/wombat.base";
 
 import type { LeafPickScope, PickRegistry } from "./registry.js";
 import { decodePick, readSlotsAt, type DecodedPick, type PickRegion } from "./readback.js";
@@ -39,9 +39,23 @@ import {
   SceneEvent,
   type SceneEventDispatch,
   type SceneEventKind,
-  type SceneEventViewPos,
 } from "./sceneEvent.js";
 import { SNAP_OFFSETS, SNAP_RADIUS_MAX } from "./snapOffsets.js";
+
+// --- Tap / long-press / double-tap detection thresholds ----------------
+// Sensible defaults. Exported so callers can read or — eventually —
+// override them at the RenderControl level (see docs/FUTURE.md).
+
+/** Max pointerdown→pointerup duration to count as a tap (ms). */
+export const TAP_MAX_DURATION_MS = 250;
+/** Max total movement during the press, in CSS pixels. */
+export const TAP_MAX_MOVE_PX = 10;
+/** Max gap between consecutive taps' pointerup times (ms). */
+export const DOUBLE_TAP_GAP_MS = 300;
+/** Max distance between the two taps' down positions (CSS px). */
+export const DOUBLE_TAP_MOVE_PX = 20;
+/** A pointerdown held still for this long fires OnLongPress (ms). */
+export const LONG_PRESS_MS = 500;
 
 /**
  * Reader for the 33×33 pick region centred on `(x, y)` in device
@@ -73,6 +87,33 @@ interface LastMoveInfo {
   readonly hit: SpiralHit | undefined;
 }
 
+/**
+ * Per-pointer state tracked from pointerdown onward, used to
+ * synthesise OnTap / OnLongPress. Cleared on pointerup, pointercancel,
+ * or when movement breaks the tap-distance threshold.
+ *
+ * `consumed` flips true when OnLongPress fires — the trailing
+ * pointerup then suppresses OnTap.
+ */
+interface PressState {
+  readonly downAt: number;
+  readonly downX: number;
+  readonly downY: number;
+  /** Resolved at pointerdown via spiral readback. May be 0 (no hit). */
+  readonly hitPickId: number;
+  longPressTimer: ReturnType<typeof setTimeout> | undefined;
+  consumed: boolean;
+  movedTooFar: boolean;
+}
+
+/** Trailing-tap state for double-tap detection. */
+interface LastTapInfo {
+  readonly at: number;
+  readonly x: number;
+  readonly y: number;
+  readonly pickId: number;
+}
+
 export class PickDispatcher implements SceneEventDispatch {
   private lastHit: number = 0;
   private lastPath: ReadonlyArray<import("../sg.js").EventHandlers> = [];
@@ -81,6 +122,14 @@ export class PickDispatcher implements SceneEventDispatch {
 
   private readonly capturedScopes: Map<number, LeafPickScope> = new Map();
   private lastMove: LastMoveInfo | undefined;
+
+  // Tap / long-press synthesis. Per-pointer press state created on
+  // pointerdown, finalised at pointerup (or cancelled on big move /
+  // pointercancel). `lastTap` is shared across pointers — double-tap
+  // is only fired when the second tap lands on the SAME pickId, so a
+  // multi-touch second finger on a different scope won't match.
+  private readonly presses: Map<number, PressState> = new Map();
+  private lastTap: LastTapInfo | undefined;
 
   constructor(
     private readonly registry: PickRegistry,
@@ -120,6 +169,7 @@ export class PickDispatcher implements SceneEventDispatch {
     const onMove   = (e: PointerEvent): void => handle(e, "OnPointerMove");
     const onClick  = (e: PointerEvent): void => handle(e, "OnClick");
     const onEnter  = (e: PointerEvent): void => handle(e, "OnPointerEnter");
+    const onCancel = (e: PointerEvent): void => { this.cancelPress(e.pointerId); };
     const onLeave  = (e: PointerEvent): void => {
       if (this.lastHit !== 0) {
         const scope = this.registry.lookup(this.lastHit);
@@ -135,21 +185,60 @@ export class PickDispatcher implements SceneEventDispatch {
       }
     };
 
-    canvas.addEventListener("pointerdown", onDown);
-    canvas.addEventListener("pointerup", onUp);
-    canvas.addEventListener("pointermove", onMove);
-    canvas.addEventListener("click", onClick as unknown as EventListener);
-    canvas.addEventListener("pointerenter", onEnter);
-    canvas.addEventListener("pointerleave", onLeave);
+    // Why { passive: false }: SceneEvent.preventDefault() / stopPropagation()
+    // delegate to the underlying PointerEvent. Passive listeners can't
+    // call preventDefault — and the browser default is `passive: true`
+    // for touchmove / wheel on a canvas. Force non-passive so handlers
+    // actually take effect.
+    const opts: AddEventListenerOptions = { passive: false };
+    canvas.addEventListener("pointerdown", onDown, opts);
+    canvas.addEventListener("pointerup", onUp, opts);
+    canvas.addEventListener("pointermove", onMove, opts);
+    canvas.addEventListener("pointercancel", onCancel as unknown as EventListener, opts);
+    canvas.addEventListener("click", onClick as unknown as EventListener, opts);
+    canvas.addEventListener("pointerenter", onEnter, opts);
+    canvas.addEventListener("pointerleave", onLeave, opts);
 
     return () => {
       canvas.removeEventListener("pointerdown", onDown);
       canvas.removeEventListener("pointerup", onUp);
       canvas.removeEventListener("pointermove", onMove);
+      canvas.removeEventListener("pointercancel", onCancel as unknown as EventListener);
       canvas.removeEventListener("click", onClick as unknown as EventListener);
       canvas.removeEventListener("pointerenter", onEnter);
       canvas.removeEventListener("pointerleave", onLeave);
+      // Cancel any pending long-press timers so the disposer is clean.
+      for (const id of [...this.presses.keys()]) this.cancelPress(id);
     };
+  }
+
+  // --- tap / long-press synthesis -----------------------------------------
+
+  private cancelPress(pointerId: number): void {
+    const p = this.presses.get(pointerId);
+    if (p === undefined) return;
+    if (p.longPressTimer !== undefined) clearTimeout(p.longPressTimer);
+    this.presses.delete(pointerId);
+  }
+
+  /**
+   * Dispatch a synthesised SceneEvent through the same capture/bubble
+   * pipeline as a real pointer event. `kind` ∈ {OnTap, OnDoubleTap,
+   * OnLongPress}. `raw` is the originating pointer event (pointerup
+   * for tap/double-tap, pointerdown for long-press).
+   */
+  private dispatchSynthetic(
+    kind: SceneEventKind,
+    raw: PointerEvent,
+    cssX: number,
+    cssY: number,
+    scope: LeafPickScope,
+    modeB: boolean,
+    viewPos: V3d | undefined,
+  ): SceneEvent {
+    const sceneEv = this.makeEvent(kind, raw, cssX, cssY, scope, scope.pickId, modeB, viewPos);
+    this.runCaptureBubble(scope.handlers, sceneEv);
+    return sceneEv;
   }
 
   // --- pointer capture API -------------------------------------------------
@@ -280,11 +369,100 @@ export class PickDispatcher implements SceneEventDispatch {
       this.lastPath = newPath;
     }
 
-    if (hitScope === undefined || hit === undefined) return;
+    if (hitScope === undefined || hit === undefined) {
+      // No scope under cursor: still let pointermove cancel a press
+      // that drifted off-target (movement check below). Pointerdown /
+      // pointerup with no hit can't synthesise a tap (no scope to
+      // dispatch to), so we just return.
+      if (kind === "OnPointerMove") this.checkPressMove(pointerId, cssX, cssY);
+      return;
+    }
 
     const viewPos = this.viewPosFor(hitScope, hit, rect, sx, sy);
     const sceneEv = this.makeEvent(kind, ev, cssX, cssY, hitScope, hitScope.pickId, hit.decoded.modeB, viewPos);
     this.runCaptureBubble(hitScope.handlers, sceneEv);
+
+    // ---- tap / long-press synthesis -------------------------------------
+    if (kind === "OnPointerDown") {
+      // Replace any stale press for this pointer (extremely rare: a
+      // missed pointerup / cancel).
+      this.cancelPress(pointerId);
+      const downAt = Date.now();
+      const press: PressState = {
+        downAt,
+        downX: cssX,
+        downY: cssY,
+        hitPickId: hitScope.pickId,
+        longPressTimer: undefined,
+        consumed: false,
+        movedTooFar: false,
+      };
+      press.longPressTimer = setTimeout(() => {
+        const cur = this.presses.get(pointerId);
+        if (cur === undefined || cur !== press) return;
+        if (cur.movedTooFar) return;
+        cur.consumed = true;
+        cur.longPressTimer = undefined;
+        // Re-resolve the scope by pickId — it may have been released
+        // mid-press; if so, drop the long-press silently.
+        const lpScope = this.registry.lookup(cur.hitPickId);
+        if (lpScope === undefined || !AVal.force(lpScope.active) || lpScope.pickThrough) return;
+        this.dispatchSynthetic("OnLongPress", ev, cssX, cssY, lpScope, hit.decoded.modeB, viewPos);
+      }, LONG_PRESS_MS);
+      this.presses.set(pointerId, press);
+    } else if (kind === "OnPointerMove") {
+      this.checkPressMove(pointerId, cssX, cssY);
+    } else if (kind === "OnPointerUp") {
+      const press = this.presses.get(pointerId);
+      this.cancelPress(pointerId);
+      if (press === undefined) return;
+      if (press.consumed) return; // long-press already fired
+      if (press.movedTooFar) return;
+      const dt = Date.now() - press.downAt;
+      if (dt > TAP_MAX_DURATION_MS) return;
+      // Movement check on the up position too — we may not have had a
+      // pointermove between down and up.
+      const mdx = cssX - press.downX;
+      const mdy = cssY - press.downY;
+      if (mdx * mdx + mdy * mdy > TAP_MAX_MOVE_PX * TAP_MAX_MOVE_PX) return;
+      // Tap fires against the scope under the cursor at pointerup.
+      this.dispatchSynthetic("OnTap", ev, cssX, cssY, hitScope, hit.decoded.modeB, viewPos);
+
+      // Double-tap detection: SAME pickId, gap ≤ DOUBLE_TAP_GAP_MS,
+      // down-position move ≤ DOUBLE_TAP_MOVE_PX.
+      const now = Date.now();
+      const prev = this.lastTap;
+      if (
+        prev !== undefined
+        && prev.pickId === hitScope.pickId
+        && now - prev.at <= DOUBLE_TAP_GAP_MS
+      ) {
+        const dx = press.downX - prev.x;
+        const dy = press.downY - prev.y;
+        if (dx * dx + dy * dy <= DOUBLE_TAP_MOVE_PX * DOUBLE_TAP_MOVE_PX) {
+          this.dispatchSynthetic("OnDoubleTap", ev, cssX, cssY, hitScope, hit.decoded.modeB, viewPos);
+          // Consume — a third quick tap should not pair with this
+          // tap as the "previous" one.
+          this.lastTap = undefined;
+          return;
+        }
+      }
+      this.lastTap = { at: now, x: press.downX, y: press.downY, pickId: hitScope.pickId };
+    }
+  }
+
+  private checkPressMove(pointerId: number, cssX: number, cssY: number): void {
+    const press = this.presses.get(pointerId);
+    if (press === undefined || press.movedTooFar) return;
+    const dx = cssX - press.downX;
+    const dy = cssY - press.downY;
+    if (dx * dx + dy * dy > TAP_MAX_MOVE_PX * TAP_MAX_MOVE_PX) {
+      press.movedTooFar = true;
+      if (press.longPressTimer !== undefined) {
+        clearTimeout(press.longPressTimer);
+        press.longPressTimer = undefined;
+      }
+    }
   }
 
   // --- capture/bubble walk -------------------------------------------------
@@ -367,7 +545,7 @@ export class PickDispatcher implements SceneEventDispatch {
     rect: DOMRect,
     sx: number,
     sy: number,
-  ): SceneEventViewPos | undefined {
+  ): V3d | undefined {
     const decoded = hit.decoded;
     if (decoded.modeB) return decoded.viewPos;
     if (rect.width <= 0 || rect.height <= 0) return undefined;
@@ -382,7 +560,7 @@ export class PickDispatcher implements SceneEventDispatch {
     const v4 = new V4d(ndcX, ndcY, ndcZ, 1);
     const viewSpace = proj.backward.transform(v4);
     const w = viewSpace.w !== 0 ? viewSpace.w : 1;
-    return { x: viewSpace.x / w, y: viewSpace.y / w, z: viewSpace.z / w };
+    return new V3d(viewSpace.x / w, viewSpace.y / w, viewSpace.z / w);
   }
 
   private makeEvent(
@@ -393,7 +571,7 @@ export class PickDispatcher implements SceneEventDispatch {
     scope: LeafPickScope,
     pickId: number,
     modeB: boolean,
-    viewPos: SceneEventViewPos | undefined,
+    viewPos: V3d | undefined,
   ): SceneEvent {
     return new SceneEvent({
       kind,

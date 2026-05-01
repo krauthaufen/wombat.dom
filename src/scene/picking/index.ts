@@ -37,7 +37,6 @@ export {
 export {
   SceneEvent,
   type SceneEventKind,
-  type SceneEventViewPos,
   type SceneEventInit,
   type SceneEventDispatch,
 } from "./sceneEvent.js";

@@ -252,6 +252,12 @@ export interface SgScopeProps {
   OnCapturePointerUp?: SceneEventHandler;
   OnPointerMove?:     SceneEventHandler;
   OnCapturePointerMove?: SceneEventHandler;
+  OnTap?:             SceneEventHandler;
+  OnCaptureTap?:      SceneEventHandler;
+  OnDoubleTap?:       SceneEventHandler;
+  OnCaptureDoubleTap?: SceneEventHandler;
+  OnLongPress?:       SceneEventHandler;
+  OnCaptureLongPress?: SceneEventHandler;
 
   /**
    * Children: ordinary JSX (Sg components, fragments, arrays) plus
@@ -292,12 +298,18 @@ function collectEventHandlers(props: SgScopeProps): EventHandlers | undefined {
   if (props.OnPointerDown)  { bubble.OnPointerDown = props.OnPointerDown; any = true; }
   if (props.OnPointerUp)    { bubble.OnPointerUp = props.OnPointerUp; any = true; }
   if (props.OnPointerMove)  { bubble.OnPointerMove = props.OnPointerMove; any = true; }
+  if (props.OnTap)          { bubble.OnTap = props.OnTap; any = true; }
+  if (props.OnDoubleTap)    { bubble.OnDoubleTap = props.OnDoubleTap; any = true; }
+  if (props.OnLongPress)    { bubble.OnLongPress = props.OnLongPress; any = true; }
   if (props.OnCaptureClick)        { capture.OnClick = props.OnCaptureClick; any = true; }
   if (props.OnCapturePointerEnter) { capture.OnPointerEnter = props.OnCapturePointerEnter; any = true; }
   if (props.OnCapturePointerLeave) { capture.OnPointerLeave = props.OnCapturePointerLeave; any = true; }
   if (props.OnCapturePointerDown)  { capture.OnPointerDown = props.OnCapturePointerDown; any = true; }
   if (props.OnCapturePointerUp)    { capture.OnPointerUp = props.OnCapturePointerUp; any = true; }
   if (props.OnCapturePointerMove)  { capture.OnPointerMove = props.OnCapturePointerMove; any = true; }
+  if (props.OnCaptureTap)          { capture.OnTap = props.OnCaptureTap; any = true; }
+  if (props.OnCaptureDoubleTap)    { capture.OnDoubleTap = props.OnCaptureDoubleTap; any = true; }
+  if (props.OnCaptureLongPress)    { capture.OnLongPress = props.OnCaptureLongPress; any = true; }
   if (!any) return undefined;
   const out: { capture?: typeof capture; bubble?: typeof bubble } = {};
   if (Object.keys(capture).length > 0) out.capture = capture;
