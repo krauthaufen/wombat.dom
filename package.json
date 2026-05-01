@@ -1,24 +1,28 @@
 {
-  "name": "@aardworx/adaptive-ui",
-  "version": "0.1.2",
-  "description": "Direct-DOM JSX runtime over @aardworx/adaptive — adaptive props, alist children, amap attribute spreads, rAF-batched updates.",
+  "name": "@aardworx/wombat.dom",
+  "version": "0.2.0",
+  "description": "Adaptive DOM + 3D scene-graph DSL for the Wombat TypeScript stack — direct-DOM JSX over @aardworx/wombat.adaptive, with optional WebGPU scene-graph extensions.",
   "license": "MIT",
   "author": "krauthaufen",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/krauthaufen/adaptive-ui.git"
+    "url": "git+https://github.com/krauthaufen/wombat.dom.git"
   },
-  "homepage": "https://github.com/krauthaufen/adaptive-ui",
+  "homepage": "https://github.com/krauthaufen/wombat.dom",
   "publishConfig": {
     "access": "public"
   },
   "keywords": [
+    "wombat",
+    "aardvark",
     "adaptive",
     "incremental",
     "reactive",
     "jsx",
     "dom",
-    "ui"
+    "ui",
+    "scene-graph",
+    "webgpu"
   ],
   "type": "module",
   "sideEffects": false,
@@ -47,6 +51,10 @@
       "types": "./dist/jsx-dev-runtime.d.ts",
       "import": "./dist/jsx-dev-runtime.js"
     },
+    "./scene": {
+      "types": "./dist/scene/index.d.ts",
+      "import": "./dist/scene/index.js"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
@@ -59,7 +67,17 @@
     "prepublishOnly": "npm run typecheck && npm test && npm run build"
   },
   "dependencies": {
-    "@aardworx/adaptive": "^0.2.0"
+    "@aardworx/wombat.adaptive": "^0.2.0"
+  },
+  "peerDependencies": {
+    "@aardworx/wombat.base": "^0.3.0",
+    "@aardworx/wombat.rendering": "^0.1.0",
+    "@aardworx/wombat.shader": "^0.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@aardworx/wombat.base": { "optional": true },
+    "@aardworx/wombat.rendering": { "optional": true },
+    "@aardworx/wombat.shader": { "optional": true }
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

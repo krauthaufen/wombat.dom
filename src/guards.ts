@@ -8,7 +8,7 @@ import {
   type aset,
   type alist,
   type amap,
-} from "@aardworx/adaptive";
+} from "@aardworx/wombat.adaptive";
 
 export function isAVal<T = unknown>(x: unknown): x is aval<T> {
   return x instanceof AbstractVal || x instanceof ChangeableValue;

@@ -7,7 +7,7 @@
 // binding to flush — pulling current values / deltas under a fresh
 // AdaptiveToken.
 
-import { AdaptiveToken } from "@aardworx/adaptive";
+import { AdaptiveToken } from "@aardworx/wombat.adaptive";
 
 export interface Binding {
   /** Pull the latest from this binding's input and apply to the DOM. */

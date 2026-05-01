@@ -6,7 +6,7 @@ import {
   AdaptiveToken,
   type IDisposable,
   type aval,
-} from "@aardworx/adaptive";
+} from "@aardworx/wombat.adaptive";
 import type { Scope } from "../scope.js";
 import type { UIScheduler, Binding } from "../scheduler.js";
 import { mountInto } from "../mount.js";

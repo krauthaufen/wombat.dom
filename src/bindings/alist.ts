@@ -18,7 +18,7 @@ import {
   type IDisposable,
   type Index,
   type alist,
-} from "@aardworx/adaptive";
+} from "@aardworx/wombat.adaptive";
 import { Scope } from "../scope.js";
 import type { UIScheduler, Binding } from "../scheduler.js";
 import { mountChildValue } from "./text.js";

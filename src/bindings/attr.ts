@@ -10,7 +10,7 @@ import {
   AdaptiveToken,
   type IDisposable,
   type aval,
-} from "@aardworx/adaptive";
+} from "@aardworx/wombat.adaptive";
 import { isAVal } from "../guards.js";
 import type { Scope } from "../scope.js";
 import type { UIScheduler } from "../scheduler.js";

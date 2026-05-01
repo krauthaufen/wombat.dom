@@ -1,10 +1,10 @@
 // JSX namespace — TypeScript reads this when
-// `jsxImportSource: "@aardworx/adaptive-ui"` is set. We keep it
+// `jsxImportSource: "@aardworx/wombat.adaptive-ui"` is set. We keep it
 // permissive: every intrinsic element accepts any prop, but the prop
 // values can be either plain or `aval<plain>`. Children accept plain
 // values, avals, alists, or arrays/iterables.
 
-import type { aval, alist, amap } from "@aardworx/adaptive";
+import type { aval, alist, amap } from "@aardworx/wombat.adaptive";
 import type { VNode } from "./vnode.js";
 
 // `aval`/`alist` here are `any`-parameterized intentionally: the JSX

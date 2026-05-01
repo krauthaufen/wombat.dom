@@ -7,13 +7,13 @@ export default defineConfig({
   },
   esbuild: {
     jsx: "automatic",
-    jsxImportSource: "@aardworx/adaptive-ui",
+    jsxImportSource: "@aardworx/wombat.adaptive-ui",
   },
   resolve: {
     alias: {
-      "@aardworx/adaptive-ui/jsx-runtime": new URL("./src/jsx-runtime.ts", import.meta.url).pathname,
-      "@aardworx/adaptive-ui/jsx-dev-runtime": new URL("./src/jsx-dev-runtime.ts", import.meta.url).pathname,
-      "@aardworx/adaptive-ui": new URL("./src/index.ts", import.meta.url).pathname,
+      "@aardworx/wombat.adaptive-ui/jsx-runtime": new URL("./src/jsx-runtime.ts", import.meta.url).pathname,
+      "@aardworx/wombat.adaptive-ui/jsx-dev-runtime": new URL("./src/jsx-dev-runtime.ts", import.meta.url).pathname,
+      "@aardworx/wombat.adaptive-ui": new URL("./src/index.ts", import.meta.url).pathname,
     },
   },
 });
