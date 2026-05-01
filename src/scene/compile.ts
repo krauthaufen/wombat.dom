@@ -27,7 +27,7 @@ import {
   HashMap,
   type alist, type aset, type aval,
 } from "@aardworx/wombat.adaptive";
-import { Trafo3d } from "@aardworx/wombat.base";
+import { M44f, Trafo3d } from "@aardworx/wombat.base";
 import { RenderTree } from "@aardworx/wombat.rendering/core";
 import type {
   Command, ClearValues, IFramebuffer, ISampler, ITexture,
@@ -234,7 +234,22 @@ function mergeUniforms(
   // Inner-wins: state.uniforms entries override auto.
   let merged = auto;
   for (const [k, v] of state.uniforms) merged = merged.add(k, v);
-  return merged;
+  // Adapt non-GPU-bindable values (Trafo3d → M44f) for the runtime
+  // UBO packer, which expects `{ _data: Float32Array }` sources.
+  // Done as a per-value lazy `.map` so the user-facing semantic of
+  // `aval<Trafo3d>` for ModelTrafo / ViewTrafo / ProjTrafo etc.
+  // stays intact (state.uniforms is queried by code that wants the
+  // semantic Trafo3d; the GPU only sees the adapted form).
+  let out = HashMap.empty<string, aval<unknown>>();
+  for (const [k, v] of merged) out = out.add(k, adaptForGpu(v));
+  return out;
+}
+
+function adaptForGpu(v: aval<unknown>): aval<unknown> {
+  return v.map(value => {
+    if (value instanceof Trafo3d) return M44f.fromArray(value.forward.toArray());
+    return value;
+  });
 }
 
 function autoInjectedUniforms(state: TraversalState): HashMap<string, aval<unknown>> {

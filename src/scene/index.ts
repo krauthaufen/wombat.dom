@@ -79,3 +79,13 @@ export {
   type FreeFlyOptions,
   type OrbitOptions,
 } from "./controllers.js";
+
+export {
+  box, quad,
+  type BoxOptions, type QuadOptions,
+} from "./primitives.js";
+
+export {
+  DefaultSurfaces,
+  basic,
+} from "./defaultSurfaces.js";

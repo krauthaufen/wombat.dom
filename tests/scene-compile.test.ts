@@ -143,10 +143,13 @@ describe("compileScene — auto-injected uniforms", () => {
     const cmds = compileScene(tree, fbo);
     const lt = getLeafObject(singleRender(cmds));
     const got = lt.object.uniforms.tryFind("ModelTrafo")!;
-    expect(AVal.force(got)).toBe(AVal.force(userTrafo));
+    // After GPU-adapter: Trafo3d → M44f. Translation x is at row-
+    // major index [3]. User wins over auto-injected identity.
+    const m = AVal.force(got) as { _data: Float32Array };
+    expect(m._data[3]).toBeCloseTo(99, 6);
   });
 
-  it("ModelTrafo reflects accumulated Trafo scopes", () => {
+  it("ModelTrafo reflects accumulated Trafo scopes (adapted to M44f for the GPU)", () => {
     const tree =
       Sg.shader(
         fakeEffect,
@@ -157,13 +160,16 @@ describe("compileScene — auto-injected uniforms", () => {
       );
     const cmds = compileScene(tree, fbo);
     const lt = getLeafObject(singleRender(cmds));
-    const model = lt.object.uniforms.tryFind("ModelTrafo")! as ReturnType<typeof AVal.constant<Trafo3d>>;
-    const at = AVal.force(model).transform(V3d.zero);
-    // origin → scale (no effect) → translate(1,0,0) = (1,0,0)
-    expect(at.x).toBeCloseTo(1, 6);
-    const at2 = AVal.force(model).transform(new V3d(1, 0, 0));
-    // (1,0,0) → scale=(2,0,0) → translate=(3,0,0)
-    expect(at2.x).toBeCloseTo(3, 6);
+    const model = lt.object.uniforms.tryFind("ModelTrafo")!;
+    const m = AVal.force(model) as { _data: Float32Array };
+    // Row-major: m._data[0..3] is row 0; the translation column
+    // sits at indices [3, 7, 11]. Outer trafo is translate(1,0,0)
+    // applied last; inner is scale(2). Combined: scale then
+    // translate; tx = 1, scale = 2.
+    expect(m._data[3]).toBeCloseTo(1, 6);
+    expect(m._data[0]).toBeCloseTo(2, 6);
+    expect(m._data[5]).toBeCloseTo(2, 6);
+    expect(m._data[10]).toBeCloseTo(2, 6);
   });
 });
 
@@ -242,15 +248,17 @@ describe("compileScene — Clear", () => {
 // ---------------------------------------------------------------------------
 
 describe("compileScene — View / Proj / Delay", () => {
-  it("View / Proj scopes feed ViewTrafo / ProjTrafo auto-uniforms", () => {
+  it("View / Proj scopes feed ViewTrafo / ProjTrafo auto-uniforms (M44f-adapted)", () => {
     const v = AVal.constant(Trafo3d.translation(new V3d(0, 0, -5)));
     const p = AVal.constant(Trafo3d.scaling(0.5));
     const tree = Sg.shader(fakeEffect, Sg.view(v, Sg.proj(p, leaf())));
     const lt = getLeafObject(singleRender(compileScene(tree, fbo)));
-    expect(AVal.force(lt.object.uniforms.tryFind("ViewTrafo")! as ReturnType<typeof AVal.constant<Trafo3d>>))
-      .toBe(AVal.force(v));
-    expect(AVal.force(lt.object.uniforms.tryFind("ProjTrafo")! as ReturnType<typeof AVal.constant<Trafo3d>>))
-      .toBe(AVal.force(p));
+    const view = AVal.force(lt.object.uniforms.tryFind("ViewTrafo")!) as { _data: Float32Array };
+    const proj = AVal.force(lt.object.uniforms.tryFind("ProjTrafo")!) as { _data: Float32Array };
+    // Translate-z(-5): row-major [11] = -5
+    expect(view._data[11]).toBeCloseTo(-5, 6);
+    // Uniform scale 0.5: row-major [0,5,10] = 0.5
+    expect(proj._data[0]).toBeCloseTo(0.5, 6);
   });
 
   it("Sg.camera sets both at once", () => {
@@ -258,10 +266,12 @@ describe("compileScene — View / Proj / Delay", () => {
     const p = AVal.constant(Trafo3d.scaling(2));
     const tree = Sg.shader(fakeEffect, Sg.camera(v, p, leaf()));
     const lt = getLeafObject(singleRender(compileScene(tree, fbo)));
-    expect(AVal.force(lt.object.uniforms.tryFind("ViewTrafo")! as ReturnType<typeof AVal.constant<Trafo3d>>))
-      .toBe(AVal.force(v));
-    expect(AVal.force(lt.object.uniforms.tryFind("ProjTrafo")! as ReturnType<typeof AVal.constant<Trafo3d>>))
-      .toBe(AVal.force(p));
+    const view = AVal.force(lt.object.uniforms.tryFind("ViewTrafo")!) as { _data: Float32Array };
+    const proj = AVal.force(lt.object.uniforms.tryFind("ProjTrafo")!) as { _data: Float32Array };
+    expect(view._data[3]).toBeCloseTo(1, 6);   // tx
+    expect(view._data[7]).toBeCloseTo(2, 6);   // ty
+    expect(view._data[11]).toBeCloseTo(3, 6);  // tz
+    expect(proj._data[0]).toBeCloseTo(2, 6);   // scale
   });
 
   it("Sg.delay produces a sub-tree from the accumulated state", () => {
