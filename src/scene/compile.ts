@@ -161,6 +161,9 @@ function lower(
     case "PickThrough":
       return lower(node.child, state.pushPickThrough(node.value), opts);
 
+    case "Intersectable":
+      return lower(node.child, state.pushIntersectable(node.intersectable), opts);
+
     case "PixelSnapRadius":
       return lower(node.child, state.pushPixelSnapRadius(node.radius), opts);
 
@@ -217,6 +220,7 @@ function lowerLeaf(
       proj: state.proj,
       model: state.model,
       pixelSnapRadius: state.pixelSnapRadius,
+      ...(state.intersectable !== undefined ? { intersectable: state.intersectable } : {}),
     });
   }
 

@@ -48,6 +48,7 @@ export interface SceneEventInit {
   readonly button?: number;
   readonly buttons?: number;
   readonly viewPos?: V3d;
+  readonly viewNormal?: V3d;
   readonly pointerId: number;
   readonly pointerType: string;
   readonly raw: PointerEvent;
@@ -75,6 +76,12 @@ export class SceneEvent {
    * proj — implemented in the dispatcher.
    */
   readonly viewPos?: V3d;
+  /**
+   * Optional view-space surface normal at the hit. Populated by the
+   * BVH ray fall-through path (transformed from world-space using the
+   * scope's view trafo); pixel-pick hits leave this undefined.
+   */
+  readonly viewNormal?: V3d;
   /** Forwarded from PointerEvent.pointerId. */
   readonly pointerId: number;
   /** Forwarded from PointerEvent.pointerType. */
@@ -100,6 +107,7 @@ export class SceneEvent {
     if (init.button !== undefined) this.button = init.button;
     if (init.buttons !== undefined) this.buttons = init.buttons;
     if (init.viewPos !== undefined) this.viewPos = init.viewPos;
+    if (init.viewNormal !== undefined) this.viewNormal = init.viewNormal;
     this.pointerId = init.pointerId;
     this.pointerType = init.pointerType;
     this.raw = init.raw;

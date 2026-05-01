@@ -21,6 +21,7 @@
 //   blendMode:   overrides
 //   cursor:      overrides
 //   pickThrough: overrides
+//   intersectable: overrides
 //   pixelSnapRadius: overrides
 //   active:      AND-composes
 //
@@ -52,7 +53,7 @@ import {
   HashMap,
   type aval,
 } from "@aardworx/wombat.adaptive";
-import { Trafo3d } from "@aardworx/wombat.base";
+import { Trafo3d, type IIntersectable } from "@aardworx/wombat.base";
 import type { Effect } from "@aardworx/wombat.shader";
 import type { BlendState } from "@aardworx/wombat.rendering/core";
 import type { EventHandlers, TrafoValue } from "./sg.js";
@@ -142,6 +143,12 @@ export class TraversalState {
   /** Innermost pick-through value; defaults to `false`. */
   readonly pickThrough: boolean;
   /**
+   * Innermost intersectable scope, or `undefined` if no
+   * `<Sg Intersectable=...>` scope was entered. Consumed by the pick
+   * dispatcher's BVH ray fall-through.
+   */
+  readonly intersectable: aval<IIntersectable> | undefined;
+  /**
    * Innermost pixel-snap-radius (device pixels). Defaults to
    * `AVal.constant(1)`. The dispatcher clamps to `[0, 16]`.
    */
@@ -166,6 +173,7 @@ export class TraversalState {
     blendMode: BlendState | undefined;
     cursor: aval<string> | undefined;
     pickThrough: boolean;
+    intersectable: aval<IIntersectable> | undefined;
     pixelSnapRadius: aval<number>;
     active: aval<boolean>;
     handlers: ReadonlyArray<EventHandlers>;
@@ -179,6 +187,7 @@ export class TraversalState {
     this.blendMode = spec.blendMode;
     this.cursor = spec.cursor;
     this.pickThrough = spec.pickThrough;
+    this.intersectable = spec.intersectable;
     this.pixelSnapRadius = spec.pixelSnapRadius;
     this.active = spec.active;
     this.handlers = spec.handlers;
@@ -195,6 +204,7 @@ export class TraversalState {
     blendMode: undefined,
     cursor: undefined,
     pickThrough: false,
+    intersectable: undefined,
     pixelSnapRadius: AVal.constant(1),
     active: AVal.constant(true),
     handlers: [],
@@ -241,6 +251,11 @@ export class TraversalState {
     return this.with({ pickThrough: value });
   }
 
+  /** `<Sg Intersectable={i}>`: override. */
+  pushIntersectable(intersectable: aval<IIntersectable>): TraversalState {
+    return this.with({ intersectable });
+  }
+
   /** `<Sg PixelSnapRadius={r}>`: override. */
   pushPixelSnapRadius(radius: aval<number>): TraversalState {
     return this.with({ pixelSnapRadius: radius });
@@ -282,6 +297,7 @@ export class TraversalState {
     blendMode: BlendState | undefined;
     cursor: aval<string> | undefined;
     pickThrough: boolean;
+    intersectable: aval<IIntersectable> | undefined;
     pixelSnapRadius: aval<number>;
     active: aval<boolean>;
     handlers: ReadonlyArray<EventHandlers>;
@@ -296,6 +312,7 @@ export class TraversalState {
       blendMode: "blendMode" in patch ? patch.blendMode : this.blendMode,
       cursor: "cursor" in patch ? patch.cursor : this.cursor,
       pickThrough: patch.pickThrough ?? this.pickThrough,
+      intersectable: "intersectable" in patch ? patch.intersectable : this.intersectable,
       pixelSnapRadius: patch.pixelSnapRadius ?? this.pixelSnapRadius,
       active: patch.active ?? this.active,
       handlers: patch.handlers ?? this.handlers,

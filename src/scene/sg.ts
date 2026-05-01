@@ -17,6 +17,11 @@
 //   - BlendMode:   overrides
 //   - Cursor:      overrides
 //   - PickThrough: overrides
+//   - Intersectable: overrides — innermost wins. Carries the geometry
+//       used for BVH ray fall-through when a pixel hit lands on a
+//       pickThrough scope (mirrors Aardvark.Dom's
+//       `Aardvark.Dom/SceneGraph/TraversalState.fs`
+//       `Intersectable of aval<IIntersectable>`).
 //   - PixelSnapRadius: overrides — innermost wins
 //       Why: matches Aardvark.Dom's `PixelSnapRadius` attribute,
 //       which is a `Set` (override) on TraversalState, not an
@@ -27,7 +32,7 @@
 import type {
   alist, aset, aval, HashMap,
 } from "@aardworx/wombat.adaptive";
-import type { Trafo3d } from "@aardworx/wombat.base";
+import type { IIntersectable, Trafo3d } from "@aardworx/wombat.base";
 // Type-only imports — wombat.shader / wombat.rendering are optional
 // peer-deps. Importers of /scene must have them installed.
 import type { Effect } from "@aardworx/wombat.shader";
@@ -51,6 +56,7 @@ export type SgNode =
   | SgBlendMode
   | SgCursor
   | SgPickThrough
+  | SgIntersectable
   | SgPixelSnapRadius
   | SgOn
   | SgActive
@@ -152,6 +158,19 @@ export interface SgCursor {
 export interface SgPickThrough {
   readonly kind: "PickThrough";
   readonly value: boolean;
+  readonly child: SgNode;
+}
+
+/**
+ * Intersectable scope — attaches a per-scope `IIntersectable` (a box,
+ * sphere, mesh, transformed wrapper, ...) used by the dispatcher to
+ * build a BVH and ray-fall-through past `pickThrough` scopes when the
+ * pixel hit-test landed on a "transparent" hit. Override semantics:
+ * the innermost `<Sg Intersectable=...>` scope wins.
+ */
+export interface SgIntersectable {
+  readonly kind: "Intersectable";
+  readonly intersectable: aval<IIntersectable>;
   readonly child: SgNode;
 }
 

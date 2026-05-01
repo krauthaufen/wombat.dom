@@ -24,7 +24,7 @@ import {
   AList, ASet, AVal,
   HashMap, type alist, type amap, type aset, type aval,
 } from "@aardworx/wombat.adaptive";
-import { Trafo3d, V3d, Rot3d, Scale3d, Shift3d } from "@aardworx/wombat.base";
+import { Trafo3d, V3d, Rot3d, Scale3d, Shift3d, type IIntersectable } from "@aardworx/wombat.base";
 import type { Effect } from "@aardworx/wombat.shader";
 import type {
   BlendState, BufferView, DrawCall,
@@ -130,6 +130,13 @@ function pickThrough(value: boolean, child: SgNode): SgNode {
   return { kind: "PickThrough", value, child };
 }
 
+function intersectable(value: IIntersectable | aval<IIntersectable>): (child: SgNode) => SgNode {
+  const i: aval<IIntersectable> = isAValRuntime(value)
+    ? value as aval<IIntersectable>
+    : AVal.constant(value as IIntersectable);
+  return (child: SgNode): SgNode => ({ kind: "Intersectable", intersectable: i, child });
+}
+
 function pixelSnapRadius(radius: number | aval<number>): (child: SgNode) => SgNode {
   const r: aval<number> = isAValRuntime(radius)
     ? radius as aval<number>
@@ -227,6 +234,7 @@ export interface SgScopeProps {
   BlendMode?:   BlendState;
   Cursor?:      string | aval<string>;
   PickThrough?: boolean;
+  Intersectable?: IIntersectable | aval<IIntersectable>;
   PixelSnapRadius?: number | aval<number>;
 
   // Camera scopes — also sniffable from outside the scene.
@@ -279,6 +287,7 @@ function applyScopeAttrs(node: SgNode, props: SgScopeProps): SgNode {
   if (props.View !== undefined)        n = viewScope(props.View, n);
   if (props.Active !== undefined)      n = active(props.Active, n);
   if (props.PickThrough !== undefined) n = pickThrough(props.PickThrough, n);
+  if (props.Intersectable !== undefined) n = intersectable(props.Intersectable)(n);
   if (props.PixelSnapRadius !== undefined) n = pixelSnapRadius(props.PixelSnapRadius)(n);
   if (props.Cursor !== undefined)      n = cursor(props.Cursor, n);
   if (props.BlendMode !== undefined)   n = blendMode(props.BlendMode, n);
@@ -423,6 +432,7 @@ interface SgNamespace {
   blendMode:   typeof blendMode;
   cursor:      typeof cursor;
   pickThrough: typeof pickThrough;
+  intersectable: typeof intersectable;
   pixelSnapRadius: typeof pixelSnapRadius;
   on:          typeof on;
   onClick:        typeof onClick;
@@ -466,6 +476,7 @@ export const Sg: SgNamespace = (() => {
   fn.blendMode   = blendMode;
   fn.cursor      = cursor;
   fn.pickThrough = pickThrough;
+  fn.intersectable = intersectable;
   fn.pixelSnapRadius = pixelSnapRadius;
   fn.on          = on;
   fn.onClick        = onClick;

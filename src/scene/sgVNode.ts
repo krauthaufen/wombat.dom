@@ -54,5 +54,5 @@ export function extractSgNode(value: FragmentVNode): SgNode {
 export const SG_KINDS: ReadonlySet<string> = new Set<string>([
   "Empty", "Group", "UnorderedGroup", "AdaptiveGroup", "Leaf",
   "Trafo", "Shader", "Uniform", "BlendMode", "Cursor", "PickThrough",
-  "PixelSnapRadius", "On", "Active", "View", "Proj", "Delay",
+  "Intersectable", "PixelSnapRadius", "On", "Active", "View", "Proj", "Delay",
 ]);

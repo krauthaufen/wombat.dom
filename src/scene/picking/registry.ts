@@ -5,8 +5,8 @@
 // Mirrors the F# `Aardvark.Dom.SceneHandler.acquireId` /
 // `pickBuffer` capture, minus the recycling. See file footer.
 
-import type { aval } from "@aardworx/wombat.adaptive";
-import type { Trafo3d } from "@aardworx/wombat.base";
+import { AVal, type aval } from "@aardworx/wombat.adaptive";
+import { Bvh, type IIntersectable, type Trafo3d } from "@aardworx/wombat.base";
 
 import type { EventHandlers } from "../sg.js";
 
@@ -45,6 +45,12 @@ export interface LeafPickScope {
    * (when no `<Sg PixelSnapRadius>` scope was entered) is 1.
    */
   readonly pixelSnapRadius: aval<number>;
+  /**
+   * Optional per-scope intersectable (world-space). Used by the
+   * dispatcher to build a BVH and ray-fall-through past pickThrough
+   * scopes when the pixel-pick lands on a "transparent" hit.
+   */
+  readonly intersectable?: aval<IIntersectable>;
 }
 
 /**
@@ -62,10 +68,20 @@ export class PickRegistry {
   private next: PickId = 1;
   private readonly entries = new Map<PickId, LeafPickScope>();
 
+  // BVH cache invalidation: every `acquire` bumps `_dirtyVersion`;
+  // `buildBvh` rebuilds (and stamps `_bvhVersion = _dirtyVersion`)
+  // only when the two diverge. This is intentionally coarse — a full
+  // rebuild on any acquire — because the registry today is rebuilt
+  // wholesale per scene compile, so churn is bounded by leaf count.
+  private _dirtyVersion: number = 0;
+  private _bvh: Bvh<PickId, IIntersectable> | undefined = undefined;
+  private _bvhVersion: number = -1;
+
   acquire(scope: Omit<LeafPickScope, "pickId">): PickId {
     const pickId = this.next++;
     const full: LeafPickScope = { pickId, ...scope };
     this.entries.set(pickId, full);
+    this._dirtyVersion++;
     return pickId;
   }
 
@@ -76,9 +92,31 @@ export class PickRegistry {
   clear(): void {
     this.entries.clear();
     this.next = 1;
+    this._dirtyVersion++;
+    this._bvh = undefined;
+    this._bvhVersion = -1;
   }
 
   size(): number {
     return this.entries.size;
+  }
+
+  /**
+   * Build (or return the cached) world-space BVH over every scope
+   * that has an `intersectable`. Returns `undefined` when no scope
+   * has one — callers can short-circuit ray fall-through. Forces
+   * each `aval<IIntersectable>` to extract its `boundingBox`.
+   */
+  buildBvh(): Bvh<PickId, IIntersectable> | undefined {
+    if (this._bvhVersion === this._dirtyVersion) return this._bvh;
+    const items: { key: PickId; box: import("@aardworx/wombat.base").Box3d; value: IIntersectable }[] = [];
+    for (const [pickId, scope] of this.entries) {
+      if (scope.intersectable === undefined) continue;
+      const it = AVal.force(scope.intersectable);
+      items.push({ key: pickId, box: it.boundingBox, value: it });
+    }
+    this._bvh = items.length === 0 ? undefined : Bvh.build(items);
+    this._bvhVersion = this._dirtyVersion;
+    return this._bvh;
   }
 }

@@ -70,7 +70,7 @@
     "@aardworx/wombat.adaptive": "^0.2.0"
   },
   "peerDependencies": {
-    "@aardworx/wombat.base": "^0.3.0",
+    "@aardworx/wombat.base": "^0.3.1",
     "@aardworx/wombat.rendering": "^0.1.0",
     "@aardworx/wombat.shader": "^0.2.2"
   },
@@ -86,7 +86,7 @@
     }
   },
   "devDependencies": {
-    "@aardworx/wombat.base": "^0.3.0",
+    "@aardworx/wombat.base": "^0.3.1",
     "@aardworx/wombat.rendering": "^0.1.1",
     "@aardworx/wombat.shader": "^0.2.2",
     "@types/node": "^20.11.0",
