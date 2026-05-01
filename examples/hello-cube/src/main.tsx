@@ -79,11 +79,11 @@ mount(root, (
     }}
   >
     <Sg View={ctl.view} Shader={DefaultSurfaces.basic()}>
-      {/* Build a viewport-tracking perspective once we know the
-          canvas size — Sg.delay receives the fully-accumulated
-          TraversalState (including viewport from the
-          `<RenderControl>` shell). */}
-      {Sg.delay(state => (
+      {/* Function-child = ambient `TraversalState`. The
+          `<RenderControl>` shell pre-populates `viewport` / `view` /
+          `proj` / `time`, so a viewport-tracking perspective drops in
+          without an explicit `Sg.delay`. */}
+      {state => (
         <Sg
           Proj={perspective({
             fovInRadians: Math.PI / 3,
@@ -97,9 +97,9 @@ mount(root, (
           <Sg Trafo={Sg.translate(new V3d(-1.5, 0, 0))}>
             <Sg.Box />
           </Sg>
-          {/* Cube B — picked geometrically through an Intersectable.
-              The intersectable is local to its scope: bbox `[-1,1]³`.
-              The enclosing Trafo translates it to `(+1.5, 0, 0)`; the
+          {/* Cube B — picked geometrically via an Intersectable. The
+              intersectable is local to its scope (bbox `[-1,1]³`); the
+              enclosing Trafo translates it to (+1.5, 0, 0) and the
               dispatcher transforms the world-space pick ray into local
               space before testing — no global pre-computed world bbox
               needed. */}
@@ -110,7 +110,7 @@ mount(root, (
             <Sg.Box />
           </Sg>
         </Sg>
-      ))}
+      )}
     </Sg>
   </RenderControl>
 ));

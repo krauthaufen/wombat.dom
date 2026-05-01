@@ -613,6 +613,13 @@ function collectImpl(value: unknown): SgNode[] {
     return []; // element VNode — HTML inside RenderControl has no surface
   }
   if (isRawSgNode(value)) return [value];
+  // Function children act as `Sg.delay`: invoked once per traversal
+  // with the fully-accumulated TraversalState. Lets callers read
+  // viewport / view / proj / time / etc. inline without an explicit
+  // `Sg.delay` wrapper.
+  if (typeof value === "function") {
+    return [delay(value as (state: import("./traversalState.js").TraversalState) => SgChild)];
+  }
   if (isAVal(value))  return [adaptive(value as aval<SgNode>)];
   if (isAList(value)) return [group(value as alist<SgNode>)];
   if (isASet(value))  return [unordered(value as aset<SgNode>)];
