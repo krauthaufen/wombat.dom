@@ -72,14 +72,23 @@
   "peerDependencies": {
     "@aardworx/wombat.base": "^0.3.0",
     "@aardworx/wombat.rendering": "^0.1.0",
-    "@aardworx/wombat.shader": "^0.2.0"
+    "@aardworx/wombat.shader": "^0.2.1"
   },
   "peerDependenciesMeta": {
-    "@aardworx/wombat.base": { "optional": true },
-    "@aardworx/wombat.rendering": { "optional": true },
-    "@aardworx/wombat.shader": { "optional": true }
+    "@aardworx/wombat.base": {
+      "optional": true
+    },
+    "@aardworx/wombat.rendering": {
+      "optional": true
+    },
+    "@aardworx/wombat.shader": {
+      "optional": true
+    }
   },
   "devDependencies": {
+    "@aardworx/wombat.base": "^0.3.0",
+    "@aardworx/wombat.rendering": "^0.1.1",
+    "@aardworx/wombat.shader": "^0.2.1",
     "@types/node": "^20.11.0",
     "happy-dom": "^14.0.0",
     "typescript": "^5.4.0",

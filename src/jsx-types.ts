@@ -1,5 +1,5 @@
 // JSX namespace — TypeScript reads this when
-// `jsxImportSource: "@aardworx/wombat.adaptive-ui"` is set. We keep it
+// `jsxImportSource: "@aardworx/wombat.dom"` is set. We keep it
 // permissive: every intrinsic element accepts any prop, but the prop
 // values can be either plain or `aval<plain>`. Children accept plain
 // values, avals, alists, or arrays/iterables.

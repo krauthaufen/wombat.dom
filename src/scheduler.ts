@@ -75,7 +75,7 @@ export class UIScheduler {
       try {
         b.flush(tok);
       } catch (err) {
-        console.error("[adaptive-ui] binding flush threw", err);
+        console.error("[wombat.dom] binding flush threw", err);
       }
     }
   }

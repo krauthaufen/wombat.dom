@@ -1,5 +1,5 @@
 // JSX runtime entry — referenced by `tsconfig.json`'s
-// `"jsxImportSource": "@aardworx/wombat.adaptive-ui"`. The compiler lowers
+// `"jsxImportSource": "@aardworx/wombat.dom"`. The compiler lowers
 // `<h1 class={c}>{x}</h1>` to `jsx("h1", { class: c, children: x })`.
 // We just package the call into a plain VNode object; mounting is
 // done later by `mount(...)`.

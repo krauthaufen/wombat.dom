@@ -1,6 +1,6 @@
 import type { aval, alist, amap } from "@aardworx/wombat.adaptive";
 
-export const FRAGMENT = Symbol.for("adaptive-ui.Fragment");
+export const FRAGMENT = Symbol.for("wombat.dom.Fragment");
 export type FragmentTag = typeof FRAGMENT;
 
 export type AttrValue =

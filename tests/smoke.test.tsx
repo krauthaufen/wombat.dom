@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { cval, cset, clist, transact, AList } from "@aardworx/wombat.adaptive";
-import { mount, UIScheduler } from "@aardworx/wombat.adaptive-ui";
+import { mount, UIScheduler } from "@aardworx/wombat.dom";
 
-describe("adaptive-ui smoke", () => {
+describe("wombat.dom smoke", () => {
   let root: HTMLDivElement;
   let scheduler: UIScheduler;
 

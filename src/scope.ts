@@ -45,7 +45,7 @@ export class Scope implements Disposable {
         ds[i]!.dispose();
       } catch (err) {
         // never throw out of dispose — log and continue
-        console.error("[adaptive-ui] scope cleanup threw", err);
+        console.error("[wombat.dom] scope cleanup threw", err);
       }
     }
   }

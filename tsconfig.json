@@ -14,11 +14,12 @@
     "skipLibCheck": true,
     "noEmit": true,
     "jsx": "react-jsx",
-    "jsxImportSource": "@aardworx/wombat.adaptive-ui",
+    "jsxImportSource": "@aardworx/wombat.dom",
     "paths": {
-      "@aardworx/wombat.adaptive-ui": ["./src/index.ts"],
-      "@aardworx/wombat.adaptive-ui/jsx-runtime": ["./src/jsx-runtime.ts"],
-      "@aardworx/wombat.adaptive-ui/jsx-dev-runtime": ["./src/jsx-dev-runtime.ts"]
+      "@aardworx/wombat.dom": ["./src/index.ts"],
+      "@aardworx/wombat.dom/jsx-runtime": ["./src/jsx-runtime.ts"],
+      "@aardworx/wombat.dom/jsx-dev-runtime": ["./src/jsx-dev-runtime.ts"],
+      "@aardworx/wombat.dom/scene": ["./src/scene/index.ts"]
     }
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts", "tests/**/*.tsx"]

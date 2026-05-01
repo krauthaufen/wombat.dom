@@ -1,20 +1,47 @@
 // @aardworx/wombat.dom/scene — adaptive 3D scene-graph layer.
 //
-// Imports from this subpath bring in @aardworx/wombat.rendering
-// + @aardworx/wombat.shader (declared as optional peerDependencies
-// at the package level). The DOM-only side stays free of WebGPU
-// concerns when this subpath isn't imported.
+// M2 surface:
+//   - SgNode tagged-union data model
+//   - immutable TraversalState with composition-by-attribute rules
+//   - pure visitors over the static tree
+//   - `Sg.*` constructors (data-only; no GPU)
 //
-// Roadmap (see README §Scene roadmap):
-//   M2  Sg core: SgNode tagged union, TraversalState, attribute
-//       composition rules. No GPU.
-//   M3  scene-to-RenderObject lowering. Hooks into wombat.rendering.
-//   M4  <RenderControl> JSX component.
-//   M5  Camera + view/proj uniforms.
-//   M6  Free-fly + Orbit controllers.
-//   M7  Pick framebuffer + pick effect.
-//   M8  Pick-read + SceneEvent dispatch.
-//   M9  Default surfaces + primitives.
-//   M10 BVH picking + fusion (optional).
+// Importing from `@aardworx/wombat.dom/scene` is what pulls in
+// wombat.rendering / wombat.shader / wombat.base via type-level
+// dependencies declared as optional peer-deps. The DOM core
+// (`@aardworx/wombat.dom`) does NOT load these modules — only
+// consumers who actually import from `/scene` pay for them.
 
-export const SCENE_LAYER_VERSION = "0.0.0";
+export type {
+  SgNode,
+  SgEmpty,
+  SgGroup,
+  SgUnorderedGroup,
+  SgAdaptiveGroup,
+  SgLeaf,
+  SgTrafo,
+  SgShader,
+  SgUniform,
+  SgBlendMode,
+  SgCursor,
+  SgPickThrough,
+  SgOn,
+  SgActive,
+  EventHandlers,
+  TrafoValue,
+  UniformBag,
+} from "./sg.js";
+
+export {
+  TraversalState,
+  composeTrafoValue,
+  composeModel,
+} from "./traversalState.js";
+
+export {
+  forEachLeaf,
+  collectLeaves,
+  countLeaves,
+} from "./visit.js";
+
+export { Sg } from "./constructors.js";
