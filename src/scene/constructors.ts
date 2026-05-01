@@ -119,6 +119,32 @@ function active(value: aval<boolean>, child: SgNode): SgNode {
   return { kind: "Active", active: value, child };
 }
 
+function viewScope(view: aval<Trafo3d>, child: SgNode): SgNode {
+  return { kind: "View", view, child };
+}
+
+function projScope(proj: aval<Trafo3d>, child: SgNode): SgNode {
+  return { kind: "Proj", proj, child };
+}
+
+/** Set both view and proj at once — Sg.view + Sg.proj wrapped. */
+function camera(view: aval<Trafo3d>, proj: aval<Trafo3d>, child: SgNode): SgNode {
+  return viewScope(view, projScope(proj, child));
+}
+
+/**
+ * Escape hatch — build a sub-tree from the fully accumulated
+ * `TraversalState` at this point in the walk. The creator runs
+ * once per traversal (not per delta); embed `Sg.adaptive` /
+ * `aval`-driven children inside the returned node for runtime
+ * updates.
+ */
+function delay(
+  create: (state: import("./traversalState.js").TraversalState) => SgNode,
+): SgNode {
+  return { kind: "Delay", create };
+}
+
 // ---------------------------------------------------------------------------
 // Trafo helpers — return Trafo3d (or aval<Trafo3d>) for use in arrays.
 // Composition-by-array semantics is the consumer's job (see `composeTrafoValue`).
@@ -186,6 +212,10 @@ export const Sg = {
   pickThrough,
   on,
   active,
+  view: viewScope,
+  proj: projScope,
+  camera,
+  delay,
   // trafo helpers
   identity,
   translate,

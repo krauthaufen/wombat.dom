@@ -47,7 +47,10 @@ export type SgNode =
   | SgCursor
   | SgPickThrough
   | SgOn
-  | SgActive;
+  | SgActive
+  | SgView
+  | SgProj
+  | SgDelay;
 
 export interface SgEmpty {
   readonly kind: "Empty";
@@ -166,4 +169,47 @@ export interface SgActive {
   readonly kind: "Active";
   readonly active: aval<boolean>;
   readonly child: SgNode;
+}
+
+/**
+ * View-trafo scope (world → view). Innermost wins. The
+ * `<RenderControl>` component sniffs the outermost View/Proj
+ * scopes off the scene root for its picking infrastructure (see
+ * Aardvark.Dom's `RenderControlBuilderState.Build`).
+ */
+export interface SgView {
+  readonly kind: "View";
+  readonly view: aval<Trafo3d>;
+  readonly child: SgNode;
+}
+
+/** Projection-trafo scope (view → clip). Innermost wins. */
+export interface SgProj {
+  readonly kind: "Proj";
+  readonly proj: aval<Trafo3d>;
+  readonly child: SgNode;
+}
+
+/**
+ * Escape hatch — produce a sub-tree from the **fully accumulated**
+ * `TraversalState` at this point in the walk. Used for things that
+ * need the live camera / viewport to build their geometry:
+ * screen-space-sized gizmos, view-aligned billboards, scene
+ * adapters keyed on model trafo, etc. Mirrors Aardvark.Dom's
+ * `Sg.Delay : TraversalState -> ISceneNode`.
+ *
+ * Caveats:
+ *   - The creator function runs **once per traversal**, not per
+ *     aval delta. The returned `SgNode` should embed its own
+ *     reactive plumbing (e.g. `Sg.adaptive`) for runtime updates.
+ *   - Avoid expensive computation inside; cache externally if
+ *     needed.
+ *   - Forwards declared imports — keep this comment block: the
+ *     `TraversalState` ref must come from a circular type that
+ *     `traversalState.ts` defines, so we type the param via an
+ *     interface alias to break the cycle.
+ */
+export interface SgDelay {
+  readonly kind: "Delay";
+  readonly create: (state: import("./traversalState.js").TraversalState) => SgNode;
 }

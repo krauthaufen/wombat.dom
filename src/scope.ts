@@ -50,3 +50,39 @@ export class Scope implements Disposable {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Component-scope stack
+//
+// `mountComponent` pushes the active scope before calling the
+// component function and pops after. Component bodies can call
+// `useScope()` to grab the scope for cleanup registration —
+// matches the React-hook calling convention but without React's
+// render-pass machinery (we just have one initial run).
+// ---------------------------------------------------------------------------
+
+const scopeStack: Scope[] = [];
+
+/** @internal — used by `mount.ts`'s `mountComponent`. */
+export function pushScope(scope: Scope): void {
+  scopeStack.push(scope);
+}
+
+/** @internal — used by `mount.ts`'s `mountComponent`. */
+export function popScope(): void {
+  scopeStack.pop();
+}
+
+/**
+ * Inside a component body: returns the scope this mount belongs
+ * to. Throws when called outside a component (e.g. from a top-
+ * level module init). Use `scope.onDispose(...)` to register
+ * cleanup.
+ */
+export function useScope(): Scope {
+  const top = scopeStack[scopeStack.length - 1];
+  if (top === undefined) {
+    throw new Error("useScope() called outside a component body");
+  }
+  return top;
+}

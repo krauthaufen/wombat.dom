@@ -165,6 +165,10 @@ export namespace JSX {
       width?: AdaptiveOr<number | string>;
       height?: AdaptiveOr<number | string>;
     };
+    canvas: CommonAttrs & {
+      width?: AdaptiveOr<number | string>;
+      height?: AdaptiveOr<number | string>;
+    };
     // table
     table: CommonAttrs;
     thead: CommonAttrs;

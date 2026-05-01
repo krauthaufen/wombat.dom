@@ -241,6 +241,47 @@ describe("compileScene — Clear", () => {
 // TraversalState immutability after compile
 // ---------------------------------------------------------------------------
 
+describe("compileScene — View / Proj / Delay", () => {
+  it("View / Proj scopes feed ViewTrafo / ProjTrafo auto-uniforms", () => {
+    const v = AVal.constant(Trafo3d.translation(new V3d(0, 0, -5)));
+    const p = AVal.constant(Trafo3d.scaling(0.5));
+    const tree = Sg.shader(fakeEffect, Sg.view(v, Sg.proj(p, leaf())));
+    const lt = getLeafObject(singleRender(compileScene(tree, fbo)));
+    expect(AVal.force(lt.object.uniforms.tryFind("ViewTrafo")! as ReturnType<typeof AVal.constant<Trafo3d>>))
+      .toBe(AVal.force(v));
+    expect(AVal.force(lt.object.uniforms.tryFind("ProjTrafo")! as ReturnType<typeof AVal.constant<Trafo3d>>))
+      .toBe(AVal.force(p));
+  });
+
+  it("Sg.camera sets both at once", () => {
+    const v = AVal.constant(Trafo3d.translation(new V3d(1, 2, 3)));
+    const p = AVal.constant(Trafo3d.scaling(2));
+    const tree = Sg.shader(fakeEffect, Sg.camera(v, p, leaf()));
+    const lt = getLeafObject(singleRender(compileScene(tree, fbo)));
+    expect(AVal.force(lt.object.uniforms.tryFind("ViewTrafo")! as ReturnType<typeof AVal.constant<Trafo3d>>))
+      .toBe(AVal.force(v));
+    expect(AVal.force(lt.object.uniforms.tryFind("ProjTrafo")! as ReturnType<typeof AVal.constant<Trafo3d>>))
+      .toBe(AVal.force(p));
+  });
+
+  it("Sg.delay produces a sub-tree from the accumulated state", () => {
+    const tree = Sg.shader(
+      fakeEffect,
+      Sg.trafo(
+        Sg.translate(new V3d(5, 0, 0)) as Trafo3d,
+        Sg.delay(state => {
+          // Build a leaf only when model.x > 0 — exercises the
+          // "decide structure based on traversal" pattern.
+          const at = AVal.force(state.model).transform(V3d.zero);
+          return at.x > 0 ? leaf() : Sg.empty;
+        }),
+      ),
+    );
+    const rt = singleRender(compileScene(tree, fbo));
+    expect(rt.kind).toBe("Leaf");
+  });
+});
+
 describe("compileScene — non-mutating", () => {
   it("supplied initialState is not mutated", () => {
     const before = TraversalState.empty;

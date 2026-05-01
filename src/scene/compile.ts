@@ -148,6 +148,19 @@ function lower(
 
     case "Active":
       return lower(node.child, state.pushActive(node.active), opts);
+
+    case "View":
+      return lower(node.child, state.withCamera(node.view, state.proj), opts);
+
+    case "Proj":
+      return lower(node.child, state.withCamera(state.view, node.proj), opts);
+
+    case "Delay":
+      // Run the creator with the accumulated state. The returned
+      // sub-tree is lowered with the SAME state — Delay isn't a
+      // scope that pushes anything; it just builds the child from
+      // what it sees.
+      return lower(node.create(state), state, opts);
   }
 }
 

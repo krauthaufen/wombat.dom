@@ -27,6 +27,9 @@ export type {
   SgPickThrough,
   SgOn,
   SgActive,
+  SgView,
+  SgProj,
+  SgDelay,
   EventHandlers,
   TrafoValue,
   UniformBag,
@@ -50,3 +53,9 @@ export {
   compileScene,
   type CompileSceneOptions,
 } from "./compile.js";
+
+export {
+  RenderControl,
+  type RenderControlProps,
+  type RenderControlReadyInfo,
+} from "./renderControl.js";

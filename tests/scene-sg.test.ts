@@ -197,4 +197,29 @@ describe("forEachLeaf / collectLeaves", () => {
     expect(countLeaves(Sg.empty)).toBe(0);
     expect(countLeaves(Sg.group([Sg.empty, leaf(), Sg.empty]))).toBe(1);
   });
+
+  it("View / Proj scopes set TraversalState.view / .proj for nested leaves", () => {
+    const v = AVal.constant(Trafo3d.translation(new V3d(0, 0, -5)));
+    const p = AVal.constant(Trafo3d.scaling(0.5));
+    const tree = Sg.view(v, Sg.proj(p, leaf()));
+    const got = collectLeaves(tree)[0]!;
+    expect(AVal.force(got.state.view)).toBe(AVal.force(v));
+    expect(AVal.force(got.state.proj)).toBe(AVal.force(p));
+  });
+
+  it("Sg.delay receives the accumulated state and produces a sub-tree", () => {
+    let captured: { hit: boolean } = { hit: false };
+    const tree = Sg.trafo(
+      Sg.translate(new V3d(7, 0, 0)) as Trafo3d,
+      Sg.delay(state => {
+        captured.hit = true;
+        // Confirm we see the accumulated model trafo here.
+        const at = AVal.force(state.model).transform(V3d.zero);
+        expect(at.x).toBeCloseTo(7, 6);
+        return leaf();
+      }),
+    );
+    expect(countLeaves(tree)).toBe(1);
+    expect(captured.hit).toBe(true);
+  });
 });

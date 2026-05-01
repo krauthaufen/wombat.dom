@@ -1,7 +1,7 @@
 // Public barrel for `@aardworx/wombat.dom`.
 
 export { mount, mountInto, type MountResult, type MountOptions } from "./mount.js";
-export { Scope, type Disposable } from "./scope.js";
+export { Scope, useScope, type Disposable } from "./scope.js";
 export {
   UIScheduler,
   defaultScheduler,

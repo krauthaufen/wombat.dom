@@ -77,6 +77,17 @@ export function forEachLeaf(
     case "Active":
       forEachLeaf(node.child, state.pushActive(node.active), visit);
       return;
+    case "View":
+      forEachLeaf(node.child, state.withCamera(node.view, state.proj), visit);
+      return;
+    case "Proj":
+      forEachLeaf(node.child, state.withCamera(state.view, node.proj), visit);
+      return;
+    case "Delay":
+      // Run the creator with the accumulated state and recurse
+      // into whatever sub-tree it returns — same state.
+      forEachLeaf(node.create(state), state, visit);
+      return;
   }
 }
 

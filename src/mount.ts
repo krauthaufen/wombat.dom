@@ -2,7 +2,7 @@
 // creates DOM, attaches adaptive bindings under a fresh root scope.
 // Returns a Disposable that tears the whole subtree down.
 
-import { Scope } from "./scope.js";
+import { Scope, pushScope, popScope } from "./scope.js";
 import { UIScheduler, defaultScheduler } from "./scheduler.js";
 import {
   isVNode,
@@ -101,7 +101,15 @@ function mountComponent(
   scope: Scope,
   scheduler: UIScheduler,
 ): void {
-  const result = vnode.type(vnode.props);
+  // Run the component function with `scope` exposed via the
+  // module-level stack so `useScope()` works inside the body.
+  pushScope(scope);
+  let result: unknown;
+  try {
+    result = vnode.type(vnode.props);
+  } finally {
+    popScope();
+  }
   if (result === null || result === undefined || result === false || result === true) {
     return;
   }
