@@ -45,3 +45,8 @@ export {
 } from "./visit.js";
 
 export { Sg } from "./constructors.js";
+
+export {
+  compileScene,
+  type CompileSceneOptions,
+} from "./compile.js";
