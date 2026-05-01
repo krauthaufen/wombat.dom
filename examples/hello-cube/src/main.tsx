@@ -83,32 +83,34 @@ mount(root, (
           canvas size — Sg.delay receives the fully-accumulated
           TraversalState (including viewport from the
           `<RenderControl>` shell). */}
-      {Sg.delay(state =>
-        Sg.proj(
-          perspective({
+      {Sg.delay(state => (
+        <Sg
+          Proj={perspective({
             fovInRadians: Math.PI / 3,
             aspect: aspectFromViewport(state.viewport),
             near: 0.1,
             far: 100,
-          }),
-          <Sg OnDoubleTap={flyTarget}>
-            {/* Cube A — picked via the rgba32f pickId attachment. */}
-            {Sg.trafo(Sg.translate(new V3d(-1.5, 0, 0)), Sg.box())}
-            {/* Cube B — picked geometrically through an Intersectable.
-                The intersectable is local to its scope: its bounding box
-                is `[-1,1]³`. The enclosing Trafo translates it to
-                `(+1.5, 0, 0)`; the dispatcher transforms the world-space
-                pick ray into local space before testing — no global
-                pre-computed world bbox needed. */}
-            {Sg.trafo(
-              Sg.translate(new V3d(1.5, 0, 0)),
-              Sg.intersectable(Intersectable.box(Box3d.fromMinMax(new V3d(-1, -1, -1), new V3d(1, 1, 1))))(
-                Sg.box(),
-              ),
-            )}
-          </Sg>,
-        ),
-      )}
+          })}
+          OnDoubleTap={flyTarget}
+        >
+          {/* Cube A — picked via the rgba32f pickId attachment. */}
+          <Sg Trafo={Sg.translate(new V3d(-1.5, 0, 0))}>
+            <Sg.Box />
+          </Sg>
+          {/* Cube B — picked geometrically through an Intersectable.
+              The intersectable is local to its scope: bbox `[-1,1]³`.
+              The enclosing Trafo translates it to `(+1.5, 0, 0)`; the
+              dispatcher transforms the world-space pick ray into local
+              space before testing — no global pre-computed world bbox
+              needed. */}
+          <Sg
+            Trafo={Sg.translate(new V3d(1.5, 0, 0))}
+            Intersectable={Intersectable.box(Box3d.fromMinMax(new V3d(-1, -1, -1), new V3d(1, 1, 1)))}
+          >
+            <Sg.Box />
+          </Sg>
+        </Sg>
+      ))}
     </Sg>
   </RenderControl>
 ));

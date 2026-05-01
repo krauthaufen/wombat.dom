@@ -203,9 +203,9 @@ function camera(view: aval<Trafo3d>, proj: aval<Trafo3d>, child: SgChild): SgNod
 }
 
 function delay(
-  create: (state: import("./traversalState.js").TraversalState) => SgNode,
+  create: (state: import("./traversalState.js").TraversalState) => SgChild,
 ): SgNode {
-  return { kind: "Delay", create };
+  return { kind: "Delay", create: (state) => coerceChild(create(state)) };
 }
 
 // ---------------------------------------------------------------------------
