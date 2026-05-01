@@ -59,3 +59,23 @@ export {
   type RenderControlProps,
   type RenderControlReadyInfo,
 } from "./renderControl.js";
+
+export {
+  type Camera,
+  type LookAtOptions,
+  type PerspectiveOptions,
+  type OrthographicOptions,
+  type PerspectiveCameraOptions,
+  lookAt,
+  perspective,
+  orthographic,
+  perspectiveCamera,
+} from "./camera.js";
+
+export {
+  freeFlyController,
+  orbitController,
+  type CameraControllerHandle,
+  type FreeFlyOptions,
+  type OrbitOptions,
+} from "./controllers.js";
