@@ -41,18 +41,29 @@ function makeDispatcher(reg: PickRegistry, canvas: HTMLCanvasElement): PickDispa
   );
 }
 
-function makeRegion(centerX: number, centerY: number, stamps: ReadonlyArray<{ dx: number; dy: number; pickId: number }>): PickRegion {
+function makeRegion(
+  centerX: number,
+  centerY: number,
+  stamps: ReadonlyArray<{ dx: number; dy: number; pickId: number }>,
+  /** When true, expand each stamp to a 3×3 patch so the spiral validator's neighbour count passes. */
+  expand = false,
+): PickRegion {
   const sizeX = SNAP_REGION_SIZE;
   const sizeY = SNAP_REGION_SIZE;
   const originX = centerX - SNAP_RADIUS_MAX;
   const originY = centerY - SNAP_RADIUS_MAX;
   const data = new Float32Array(sizeX * sizeY * 4);
+  const r = expand ? 1 : 0;
   for (const s of stamps) {
-    const lx = (centerX + s.dx) - originX;
-    const ly = (centerY + s.dy) - originY;
-    if (lx < 0 || ly < 0 || lx >= sizeX || ly >= sizeY) continue;
-    const i = (ly * sizeX + lx) * 4;
-    data[i] = s.pickId;
+    for (let ddy = -r; ddy <= r; ddy++) {
+      for (let ddx = -r; ddx <= r; ddx++) {
+        const lx = (centerX + s.dx + ddx) - originX;
+        const ly = (centerY + s.dy + ddy) - originY;
+        if (lx < 0 || ly < 0 || lx >= sizeX || ly >= sizeY) continue;
+        const i = (ly * sizeX + lx) * 4;
+        data[i] = s.pickId;
+      }
+    }
   }
   return { data, originX, originY, sizeX, sizeY };
 }
@@ -138,7 +149,9 @@ describe("PickDispatcher BVH fall-through", () => {
     detach();
   });
 
-  it("BVH does not fire when only pickThrough scopes have intersectables", async () => {
+  it("BVH winner that is pickThrough with no fallthrough scope keeps the pickThrough scope", async () => {
+    // F#: pickThrough BVH winner re-traces excluding pickThrough; on
+    // empty re-trace it keeps the original (Some(scope, ..., None)).
     const reg = new PickRegistry();
     const calls: SceneEvent[] = [];
     const idA = acquire(reg, [{ OnPointerDown: (e) => calls.push(e) }], {
@@ -147,12 +160,16 @@ describe("PickDispatcher BVH fall-through", () => {
 
     const canvas = makeCanvas();
     const d = makeDispatcher(reg, canvas);
+    // Single-pixel stamp: 3-neighbour check rejects the pixel
+    // candidate, so BVH on idA wins. idA is pickThrough → re-trace
+    // with no other scopes finds nothing → keep idA.
     const detach = d.attach(canvas, regionOf(makeRegion(50, 50, [{ dx: 0, dy: 0, pickId: idA }])));
 
     pevent(canvas, "pointerdown", 50, 50);
     await flush();
 
-    expect(calls.length).toBe(0);
+    expect(calls.length).toBe(1);
+    expect(calls[0]!.pickId).toBe(idA);
     detach();
   });
 
@@ -168,7 +185,7 @@ describe("PickDispatcher BVH fall-through", () => {
 
     const canvas = makeCanvas();
     const d = makeDispatcher(reg, canvas);
-    const detach = d.attach(canvas, regionOf(makeRegion(50, 50, [{ dx: 0, dy: 0, pickId: idA }])));
+    const detach = d.attach(canvas, regionOf(makeRegion(50, 50, [{ dx: 0, dy: 0, pickId: idA }], true)));
 
     pevent(canvas, "pointerdown", 50, 50);
     await flush();

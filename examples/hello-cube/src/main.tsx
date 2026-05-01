@@ -18,7 +18,7 @@ import {
   perspective,
 } from "@aardworx/wombat.dom/scene";
 import { HashMap } from "@aardworx/wombat.adaptive";
-import { V4f } from "@aardworx/wombat.base";
+import { Box3d, Intersectable, V3d, V4f } from "@aardworx/wombat.base";
 import type { ClearValues } from "@aardworx/wombat.rendering/core";
 import type { SceneEvent } from "@aardworx/wombat.dom/scene";
 
@@ -92,7 +92,20 @@ mount(root, (
             far: 100,
           }),
           <Sg OnDoubleTap={flyTarget}>
-            {Sg.box()}
+            {/* Cube A — picked via the rgba32f pickId attachment. */}
+            {Sg.trafo(Sg.translate(new V3d(-1.5, 0, 0)), Sg.box())}
+            {/* Cube B — picked geometrically through an Intersectable.
+                The intersectable is local to its scope: its bounding box
+                is `[-1,1]³`. The enclosing Trafo translates it to
+                `(+1.5, 0, 0)`; the dispatcher transforms the world-space
+                pick ray into local space before testing — no global
+                pre-computed world bbox needed. */}
+            {Sg.trafo(
+              Sg.translate(new V3d(1.5, 0, 0)),
+              Sg.intersectable(Intersectable.box(Box3d.fromMinMax(new V3d(-1, -1, -1), new V3d(1, 1, 1))))(
+                Sg.box(),
+              ),
+            )}
           </Sg>,
         ),
       )}

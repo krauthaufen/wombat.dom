@@ -121,11 +121,24 @@ export function composePickChain(
   eff: Effect,
   geomHas: (semantic: string) => boolean,
 ): Effect {
+  return composePickChainWithChoice(eff, geomHas).effect;
+}
+
+/**
+ * Same as {@link composePickChain} but also returns the resolved
+ * chain choice so callers can react to which `final` variant was
+ * selected (e.g. to register the leaf's pick mode against the
+ * registry: Mode-A for FinalA*, Mode-B for FinalB).
+ */
+export function composePickChainWithChoice(
+  eff: Effect,
+  geomHas: (semantic: string) => boolean,
+): { effect: Effect; choice: PickChainChoice } {
   const choice = chooseChain(eff, geomHas);
   const stages: Effect[] = [];
   if (choice.injectVsn) stages.push(viewSpaceNormalVertexEffect());
   stages.push(eff);
   stages.push(finalEffect(choice.final));
   void pickDepthBeforeEffect;
-  return effect(...stages);
+  return { effect: effect(...stages), choice };
 }

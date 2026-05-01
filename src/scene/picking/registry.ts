@@ -71,9 +71,17 @@ export interface LeafPickScope {
  * actually exhausts the range — the next signal would be `acquire`
  * needing to fail or wrap, neither of which is correct silently.
  */
+export type PickMode = "A" | "B";
+
 export class PickRegistry {
   private next: PickId = 1;
   private readonly entries = new Map<PickId, LeafPickScope>();
+  // Mode the leaf was registered with — Mode-A writes `+pickId`,
+  // Mode-B writes `-pickId`. The spiral hit-test rejects any pixel
+  // whose sign disagrees with the registered mode (MSAA averaging
+  // at silhouettes can otherwise surface a valid pickId with the
+  // wrong layout).
+  private readonly modes = new Map<PickId, PickMode>();
 
   // BVH cache invalidation: every `acquire` bumps `_dirtyVersion`;
   // `buildBvh` rebuilds (and stamps `_bvhVersion = _dirtyVersion`)
@@ -90,10 +98,11 @@ export class PickRegistry {
   /** Currently focused scope's PickId, or `undefined`. Observable. */
   readonly focusedPickId: aval<PickId | undefined> = this._focused;
 
-  acquire(scope: Omit<LeafPickScope, "pickId">): PickId {
+  acquire(scope: Omit<LeafPickScope, "pickId">, mode: PickMode = "A"): PickId {
     const pickId = this.next++;
     const full: LeafPickScope = { pickId, ...scope };
     this.entries.set(pickId, full);
+    this.modes.set(pickId, mode);
     this._dirtyVersion++;
     return pickId;
   }
@@ -102,8 +111,18 @@ export class PickRegistry {
     return this.entries.get(id);
   }
 
+  /**
+   * Mode the given pickId was acquired with — `"A"` means Mode-A
+   * (slot0 written as `+pickId`), `"B"` means Mode-B (`-pickId`).
+   * `undefined` for unknown ids.
+   */
+  modeOf(id: PickId): PickMode | undefined {
+    return this.modes.get(id);
+  }
+
   clear(): void {
     this.entries.clear();
+    this.modes.clear();
     this.next = 1;
     this._dirtyVersion++;
     this._bvh = undefined;

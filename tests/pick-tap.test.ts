@@ -49,11 +49,16 @@ function makeRegion(centerX: number, centerY: number, pickId: number): PickRegio
   const originX = centerX - SNAP_RADIUS_MAX;
   const originY = centerY - SNAP_RADIUS_MAX;
   const data = new Float32Array(sizeX * sizeY * 4);
-  // Stamp the pickId at the centre.
-  const lx = centerX - originX;
-  const ly = centerY - originY;
-  const i = (ly * sizeX + lx) * 4;
-  data[i] = pickId;
+  // Stamp a 3×3 block around the centre so the spiral validator's
+  // ≥ 3 same-id neighbour count passes.
+  for (let ddy = -1; ddy <= 1; ddy++) {
+    for (let ddx = -1; ddx <= 1; ddx++) {
+      const lx = (centerX + ddx) - originX;
+      const ly = (centerY + ddy) - originY;
+      if (lx < 0 || ly < 0 || lx >= sizeX || ly >= sizeY) continue;
+      data[(ly * sizeX + lx) * 4] = pickId;
+    }
+  }
   return { data, originX, originY, sizeX, sizeY };
 }
 

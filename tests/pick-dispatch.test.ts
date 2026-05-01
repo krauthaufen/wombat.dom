@@ -7,7 +7,7 @@
 // decoded slots, do the right thing"; the actual GPU readback is
 // covered separately by browser-mode tests.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AVal } from "@aardworx/wombat.adaptive";
 import { Trafo3d } from "@aardworx/wombat.base";
 
@@ -55,14 +55,18 @@ function makeRegion(centerX: number, centerY: number, stamps: ReadonlyArray<{ dx
   const originY = centerY - SNAP_RADIUS_MAX;
   const data = new Float32Array(sizeX * sizeY * 4);
   for (const s of stamps) {
-    const lx = (centerX + s.dx) - originX;
-    const ly = (centerY + s.dy) - originY;
-    if (lx < 0 || ly < 0 || lx >= sizeX || ly >= sizeY) continue;
-    const i = (ly * sizeX + lx) * 4;
-    data[i] = s.pickId;       // slot0 = +id (mode-A)
-    data[i + 1] = 0;
-    data[i + 2] = 0;           // ndcZ
-    data[i + 3] = 0;
+    for (let ddy = -1; ddy <= 1; ddy++) {
+      for (let ddx = -1; ddx <= 1; ddx++) {
+        const lx = (centerX + s.dx + ddx) - originX;
+        const ly = (centerY + s.dy + ddy) - originY;
+        if (lx < 0 || ly < 0 || lx >= sizeX || ly >= sizeY) continue;
+        const i = (ly * sizeX + lx) * 4;
+        data[i] = s.pickId;       // slot0 = +id (mode-A)
+        data[i + 1] = 0;
+        data[i + 2] = 0;           // ndcZ
+        data[i + 3] = 0;
+      }
+    }
   }
   return { data, originX, originY, sizeX, sizeY };
 }
@@ -164,12 +168,13 @@ describe("PickDispatcher", () => {
   it("neighbour outside its own snap radius does not dispatch", async () => {
     const reg = new PickRegistry();
     const calls: SceneEvent[] = [];
-    // pixelSnapRadius = 1 → r² = 1. Stamp at d² = 4 → rejected.
+    // pixelSnapRadius = 1 → r² = 1. Stamp the 3×3 patch at (dx=3, dy=0):
+    // the closest neighbour pixel within the patch is at (2, 0), d²=4 > 1.
     const id = acquire(reg, [{ OnPointerDown: (e) => calls.push(e) }], { pixelSnapRadius: 1 });
 
     const canvas = makeCanvas();
     const d = makeDispatcher(reg, canvas);
-    const detach = d.attach(canvas, regionOf(makeRegion(50, 50, [{ dx: 2, dy: 0, pickId: id }])));
+    const detach = d.attach(canvas, regionOf(makeRegion(50, 50, [{ dx: 3, dy: 0, pickId: id }])));
 
     pevent(canvas, "pointerdown", 50, 50);
     await flush();
@@ -201,11 +206,10 @@ describe("PickDispatcher", () => {
     detach();
   });
 
-  it("pickThrough on the spiral hit does not dispatch (no fall-through)", async () => {
-    // F# only falls through pickThrough for BVH-backed hits
-    // (SceneHandler.fs:1814–1860); for pixel hits it warns and keeps
-    // the winner. We have no BVH path, so pixel pickThrough = no
-    // dispatch.
+  it("pixel-picked pickThrough scope is kept (warn, no fall-through)", async () => {
+    // F# `SceneHandler.fs:1814` warns and keeps the winner when a
+    // pickThrough scope was selected by the pixel path — only BVH
+    // winners fall through to the next non-pickThrough scope.
     const reg = new PickRegistry();
     const calls: SceneEvent[] = [];
     const idThrough = acquire(reg, [{ OnPointerDown: (e) => calls.push(e) }], {
@@ -217,18 +221,18 @@ describe("PickDispatcher", () => {
     const d = makeDispatcher(reg, canvas);
     const region = makeRegion(50, 50, [
       { dx: 0, dy: 0, pickId: idThrough }, // pickThrough at the centre
-      { dx: 2, dy: 0, pickId: idBehind  }, // would otherwise be valid
+      { dx: 2, dy: 0, pickId: idBehind  },
     ]);
     const detach = d.attach(canvas, regionOf(region));
 
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     pevent(canvas, "pointerdown", 50, 50);
     await flush();
 
-    // Spiral skips the pickThrough leaf at offset (0,0) and continues:
-    // next reachable hit is idBehind at (2,0). Both `idBehind`'s and
-    // `idThrough`'s offsets are walked; idBehind wins.
     expect(calls.length).toBe(1);
-    expect(calls[0]!.pickId).toBe(idBehind);
+    expect(calls[0]!.pickId).toBe(idThrough);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
     detach();
   });
 

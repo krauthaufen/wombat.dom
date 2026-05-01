@@ -80,10 +80,14 @@ function makeRegion(centerX: number, centerY: number, stamps: ReadonlyArray<{ dx
   const originY = centerY - SNAP_RADIUS_MAX;
   const data = new Float32Array(sz * sz * 4);
   for (const s of stamps) {
-    const lx = (centerX + s.dx) - originX;
-    const ly = (centerY + s.dy) - originY;
-    if (lx < 0 || ly < 0 || lx >= sz || ly >= sz) continue;
-    data[(ly * sz + lx) * 4] = s.pickId;
+    for (let ddy = -1; ddy <= 1; ddy++) {
+      for (let ddx = -1; ddx <= 1; ddx++) {
+        const lx = (centerX + s.dx + ddx) - originX;
+        const ly = (centerY + s.dy + ddy) - originY;
+        if (lx < 0 || ly < 0 || lx >= sz || ly >= sz) continue;
+        data[(ly * sz + lx) * 4] = s.pickId;
+      }
+    }
   }
   return { data, originX, originY, sizeX: sz, sizeY: sz };
 }

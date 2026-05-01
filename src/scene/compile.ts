@@ -44,7 +44,7 @@ import type {
   SgLeaf, SgNode,
 } from "./sg.js";
 import { TraversalState } from "./traversalState.js";
-import { composePickChain } from "./picking/pickChain.js";
+import { composePickChainWithChoice } from "./picking/pickChain.js";
 import type { PickRegistry } from "./picking/registry.js";
 
 // ---------------------------------------------------------------------------
@@ -414,7 +414,9 @@ function lowerLeaf(
   const noEvents = state.noEvents.force();
   if (opts.picking !== undefined && !noEvents) {
     const geomHas = opts.picking.geomHas ?? defaultGeomHas(merged);
-    effect = composePickChain(userEffect, geomHas);
+    const composed = composePickChainWithChoice(userEffect, geomHas);
+    effect = composed.effect;
+    const mode = composed.choice.final === "FinalB" ? "B" : "A";
     pickId = opts.picking.registry.acquire({
       handlers: state.handlers,
       cursor: state.cursor,
@@ -427,7 +429,7 @@ function lowerLeaf(
       forcePixelPicking: state.forcePixelPicking,
       canFocus: state.canFocus,
       ...(state.intersectable !== undefined ? { intersectable: state.intersectable } : {}),
-    });
+    }, mode);
   }
 
   const obj: RenderObject = buildRenderObject(merged, state, effect, opts, pickId);

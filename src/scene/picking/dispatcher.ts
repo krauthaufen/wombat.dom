@@ -31,17 +31,17 @@
 // pointermove using the last cursor position to re-establish hover.
 
 import { AVal, avalAddCallback } from "@aardworx/wombat.adaptive";
-import { Ray3d, Trafo3d, V2d, V2i, V3d, V4d } from "@aardworx/wombat.base";
+import { Trafo3d, V2d, V2i, V3d, V4d } from "@aardworx/wombat.base";
 
 import type { LeafPickScope, PickRegistry } from "./registry.js";
-import { decodePick, readSlotsAt, type DecodedPick, type PickRegion } from "./readback.js";
+import { type PickRegion } from "./readback.js";
 import {
   SceneEvent,
   type SceneEventDispatch,
   type SceneEventKind,
 } from "./sceneEvent.js";
 import { SceneEventLocation } from "./sceneEventLocation.js";
-import { SNAP_OFFSETS, SNAP_RADIUS_MAX } from "./snapOffsets.js";
+import { spiralHitTest, type ResolvedHit } from "./spiralHitTest.js";
 
 // --- Tap / long-press / double-tap detection thresholds ----------------
 // Sensible defaults. Exported so callers can read or — eventually —
@@ -84,27 +84,6 @@ export interface TapThresholds {
  */
 export type ReadRegion = (x: number, y: number) => Promise<PickRegion | undefined>;
 
-interface SpiralHit {
-  readonly scope: LeafPickScope;
-  readonly decoded: DecodedPick;
-  readonly hitPxX: number;
-  readonly hitPxY: number;
-  readonly d2: number;
-}
-
-/**
- * Result of the BVH ray fall-through: a non-pickThrough scope whose
- * world-space intersectable was hit by the cursor ray, plus the
- * world-space hit point + outward normal. The dispatcher unprojects
- * those into view space using the scope's `view` to feed
- * `SceneEvent.viewPos` / `viewNormal`.
- */
-interface BvhFallthrough {
-  readonly scope: LeafPickScope;
-  readonly worldPoint: V3d;
-  readonly worldNormal: V3d;
-}
-
 /**
  * Snapshot of the most-recent move for synthetic-move replay on
  * capture release. Stores enough to reconstruct an event without
@@ -117,7 +96,7 @@ interface LastMoveInfo {
   readonly rect: DOMRect;
   readonly sx: number;
   readonly sy: number;
-  readonly hit: SpiralHit | undefined;
+  readonly hit: ResolvedHit | undefined;
 }
 
 /**
@@ -236,9 +215,8 @@ export class PickDispatcher implements SceneEventDispatch {
       void readRegion(devX, devY).then((region) => {
         if (seq < this.lastSettledSeq) return;
         this.lastSettledSeq = seq;
-        const hit = region !== undefined ? this.spiralResolve(region, devX, devY) : undefined;
-        const bvhFall = hit === undefined ? this.bvhFallthrough(devX, devY, rect, sx, sy) : undefined;
-        this.dispatch(ev, kind, cssX, cssY, hit, rect, sx, sy, bvhFall);
+        const hit = region !== undefined ? this.resolve(region, devX, devY) : undefined;
+        this.dispatch(ev, kind, cssX, cssY, hit, rect, sx, sy);
       });
     };
 
@@ -303,9 +281,8 @@ export class PickDispatcher implements SceneEventDispatch {
       void readRegion(devX, devY).then((region) => {
         if (seq < this.lastSettledSeq) return;
         this.lastSettledSeq = seq;
-        const hit = region !== undefined ? this.spiralResolve(region, devX, devY) : undefined;
-        const bvhFall = hit === undefined ? this.bvhFallthrough(devX, devY, rect, sx, sy) : undefined;
-        this.dispatchWheel(ev, cssX, cssY, hit, rect, sx, sy, bvhFall);
+        const hit = region !== undefined ? this.resolve(region, devX, devY) : undefined;
+        this.dispatchWheel(ev, cssX, cssY, hit, rect, sx, sy);
       });
     };
     canvas.addEventListener("wheel", onWheel as unknown as EventListener, opts);
@@ -397,42 +374,25 @@ export class PickDispatcher implements SceneEventDispatch {
     ev: WheelEvent,
     cssX: number,
     cssY: number,
-    hit: SpiralHit | undefined,
-    rect: DOMRect,
-    sx: number,
-    sy: number,
-    bvhFall: BvhFallthrough | undefined,
+    hit: ResolvedHit | undefined,
+    _rect: DOMRect,
+    _sx: number,
+    _sy: number,
   ): void {
-    let scope: LeafPickScope | undefined;
-    let viewPos: V3d | undefined;
-    let viewNormal: V3d | undefined;
-    let modeB = false;
-    if (hit !== undefined) {
-      scope = hit.scope;
-      modeB = hit.decoded.modeB;
-      viewPos = this.viewPosFor(scope, hit, rect, sx, sy);
-    } else if (bvhFall !== undefined) {
-      scope = bvhFall.scope;
-      const v = AVal.force(scope.view);
-      const p4 = v.forward.transform(new V4d(bvhFall.worldPoint.x, bvhFall.worldPoint.y, bvhFall.worldPoint.z, 1));
-      const pw = p4.w !== 0 ? p4.w : 1;
-      viewPos = new V3d(p4.x / pw, p4.y / pw, p4.z / pw);
-      const n4 = v.forward.transform(new V4d(bvhFall.worldNormal.x, bvhFall.worldNormal.y, bvhFall.worldNormal.z, 0));
-      viewNormal = new V3d(n4.x, n4.y, n4.z);
-    }
-    if (scope === undefined) return;
-    const partIndex = (hit !== undefined && !hit.decoded.modeB) ? Math.round(hit.decoded.raw.slot3) | 0 : 0;
+    if (hit === undefined) return;
+    const { scope, viewPos, viewNormal, partIndex, isPixel } = hit;
     const location = this.buildLocation(
       scope, cssX, cssY,
-      viewPos ?? V3d.zero,
-      viewNormal ?? V3d.zero,
+      viewPos,
+      viewNormal,
       partIndex,
     );
     const sceneEv = new SceneEvent({
       kind: "OnWheel",
       location,
       pickId: scope.pickId,
-      modeB,
+      // The pickId's registered mode determines modeB (Mode-B → true).
+      modeB: !isPixel ? false : (this.registry.modeOf(scope.pickId) === "B"),
       raw: ev,
       deltaX: ev.deltaX,
       deltaY: ev.deltaY,
@@ -498,45 +458,20 @@ export class PickDispatcher implements SceneEventDispatch {
 
   // --- spiral hit-test -----------------------------------------------------
 
-  private spiralResolve(region: PickRegion, centerX: number, centerY: number): SpiralHit | undefined {
-    // Per-scope snap-r² cache, lazily populated as we walk. Avoids
-    // forcing the same `pixelSnapRadius` aval for every offset that
-    // touches the same scope.
-    const r2Cache = new Map<number, number>();
-    const snapR2 = (scope: LeafPickScope): number => {
-      const cached = r2Cache.get(scope.pickId);
-      if (cached !== undefined) return cached;
-      const raw = AVal.force(scope.pixelSnapRadius);
-      const clamped = Math.min(SNAP_RADIUS_MAX, Math.max(0, Math.floor(raw)));
-      const r2 = clamped * clamped;
-      r2Cache.set(scope.pickId, r2);
-      return r2;
-    };
-
-    for (let i = 0; i < SNAP_OFFSETS.length; i++) {
-      const off = SNAP_OFFSETS[i]!;
-      const lx = (centerX + off.dx) - region.originX;
-      const ly = (centerY + off.dy) - region.originY;
-      const slots = readSlotsAt(region, lx, ly);
-      const decoded = decodePick(slots);
-      if (decoded.pickId === 0) continue;
-      const scope = this.registry.lookup(decoded.pickId);
-      if (scope === undefined) continue;
-      // pickThrough on a pixel hit: skip dispatch entirely. Mirrors
-      // F# `SceneHandler.fs:1814` — it warns and keeps the winner;
-      // we don't have BVH fall-through, so we just bail.
-      if (scope.pickThrough) continue;
-      if (!AVal.force(scope.active)) continue;
-      if (off.d2 > snapR2(scope)) continue;
-      return {
-        scope,
-        decoded,
-        hitPxX: centerX + off.dx,
-        hitPxY: centerY + off.dy,
-        d2: off.d2,
-      };
-    }
-    return undefined;
+  /**
+   * Single-call merge of the pixel + BVH candidates that mirrors F#'s
+   * SceneHandler step-for-step. Replaces the previous separate
+   * `spiralResolve` + `bvhFallthrough` paths.
+   */
+  private resolve(region: PickRegion, centerX: number, centerY: number): ResolvedHit | undefined {
+    return spiralHitTest(
+      region,
+      { devX: centerX, devY: centerY },
+      this.registry,
+      this._getView(),
+      this._getProj(),
+      this.canvasSize(),
+    );
   }
 
   // --- core dispatch -------------------------------------------------------
@@ -546,11 +481,10 @@ export class PickDispatcher implements SceneEventDispatch {
     kind: SceneEventKind,
     cssX: number,
     cssY: number,
-    hit: SpiralHit | undefined,
+    hit: ResolvedHit | undefined,
     rect: DOMRect,
     sx: number,
     sy: number,
-    bvhFall?: BvhFallthrough,
   ): void {
     const pointerId = ev.pointerId ?? 0;
 
@@ -610,35 +544,17 @@ export class PickDispatcher implements SceneEventDispatch {
       // Route to captured scope; do NOT update lastHit/lastPath. F#
       // `SceneHandler.fs:1700–` skips lastOver updates while a
       // pointer is captured, then re-fires move on release.
-      const viewPos = hit !== undefined ? this.viewPosFor(captured, hit, rect, sx, sy) : undefined;
-      const sceneEv = this.makeEvent(kind, ev, cssX, cssY, captured, captured.pickId, hit?.decoded.modeB ?? false, viewPos);
+      const viewPos = hit !== undefined && hit.scope === captured ? hit.viewPos : undefined;
+      const modeB = this.registry.modeOf(captured.pickId) === "B";
+      const sceneEv = this.makeEvent(kind, ev, cssX, cssY, captured, captured.pickId, modeB, viewPos);
       this.runCaptureBubble(captured.handlers, sceneEv);
       return;
     }
 
-    // BVH fall-through: when the spiral didn't yield a non-pickThrough
-    // hit but the registry has intersectables, use the cursor ray's
-    // closest non-pickThrough scope as the dispatch target. The
-    // viewPos/viewNormal come from the world-space BVH hit transformed
-    // into the scope's view space.
-    let bvhScope: LeafPickScope | undefined;
-    let bvhViewPos: V3d | undefined;
-    let bvhViewNormal: V3d | undefined;
-    if (hit === undefined && bvhFall !== undefined) {
-      bvhScope = bvhFall.scope;
-      const v = AVal.force(bvhScope.view);
-      const p4 = v.forward.transform(new V4d(bvhFall.worldPoint.x, bvhFall.worldPoint.y, bvhFall.worldPoint.z, 1));
-      const pw = p4.w !== 0 ? p4.w : 1;
-      bvhViewPos = new V3d(p4.x / pw, p4.y / pw, p4.z / pw);
-      // Normal: transform as a direction (w=0). Strictly correct for
-      // affine view trafos; acceptable for the camera trafos we use.
-      const n4 = v.forward.transform(new V4d(bvhFall.worldNormal.x, bvhFall.worldNormal.y, bvhFall.worldNormal.z, 0));
-      bvhViewNormal = new V3d(n4.x, n4.y, n4.z);
-    }
-
-    const hitScope = hit?.scope ?? bvhScope;
+    const hitScope = hit?.scope;
     const hitId = hitScope?.pickId ?? 0;
     const newPath = hitScope?.handlers ?? [];
+    void rect; void sx; void sy;
 
     if (kind === "OnPointerMove") {
       // Hover dwell: any move cancels the pending timer; we re-schedule
@@ -663,12 +579,9 @@ export class PickDispatcher implements SceneEventDispatch {
         }
       }
 
-      if (hitScope !== undefined) {
-        const viewPos = hit !== undefined
-          ? this.viewPosFor(hitScope, hit, rect, sx, sy)
-          : bvhViewPos;
-        const modeB = hit?.decoded.modeB ?? false;
-        const enterEv = this.makeEvent("OnPointerEnter", ev, cssX, cssY, hitScope, hitScope.pickId, modeB, viewPos, bvhViewNormal);
+      if (hitScope !== undefined && hit !== undefined) {
+        const modeB = !hit.isPixel ? false : (this.registry.modeOf(hitScope.pickId) === "B");
+        const enterEv = this.makeEvent("OnPointerEnter", ev, cssX, cssY, hitScope, hitScope.pickId, modeB, hit.viewPos, hit.viewNormal, hit.partIndex);
         this.runDownAll(newPath, newPath.slice(0, prefix), enterEv);
       }
 
@@ -697,11 +610,13 @@ export class PickDispatcher implements SceneEventDispatch {
       return;
     }
 
-    const viewPos = hit !== undefined
-      ? this.viewPosFor(hitScope, hit, rect, sx, sy)
-      : bvhViewPos;
-    const modeB = hit?.decoded.modeB ?? false;
-    const sceneEv = this.makeEvent(kind, ev, cssX, cssY, hitScope, hitScope.pickId, modeB, viewPos, bvhViewNormal);
+    const viewPos = hit?.viewPos;
+    const viewNormal = hit?.viewNormal;
+    const partIndex = hit?.partIndex ?? 0;
+    const modeB = hit !== undefined && hit.isPixel
+      ? this.registry.modeOf(hitScope.pickId) === "B"
+      : false;
+    const sceneEv = this.makeEvent(kind, ev, cssX, cssY, hitScope, hitScope.pickId, modeB, viewPos, viewNormal, partIndex);
     this.runCaptureBubble(hitScope.handlers, sceneEv);
 
     // Hover dwell: a move that resolves to a known scope re-arms the
@@ -953,94 +868,7 @@ export class PickDispatcher implements SceneEventDispatch {
     }
   }
 
-  // --- BVH fall-through ----------------------------------------------------
-
-  /**
-   * Build a world-space ray from the cursor pixel and walk the
-   * registry's BVH for the closest hit on a non-pickThrough scope.
-   * Returns undefined when the BVH is empty, no scope matched, or
-   * only pickThrough scopes were intersected.
-   */
-  private bvhFallthrough(
-    devX: number,
-    devY: number,
-    rect: DOMRect,
-    sx: number,
-    sy: number,
-  ): BvhFallthrough | undefined {
-    const bvh = this.registry.buildBvh();
-    if (bvh === undefined) return undefined;
-    if (rect.width <= 0 || rect.height <= 0) return undefined;
-
-    const view = this._getView();
-    const proj = this._getProj();
-    const ray = this.unprojectWorldRay(devX, devY, rect, sx, sy, view, proj);
-
-    const hit = bvh.closestHit(ray, 0, Number.POSITIVE_INFINITY, (key, value) => {
-      const scope = this.registry.lookup(key);
-      if (scope === undefined || scope.pickThrough) return undefined;
-      if (!AVal.force(scope.active)) return undefined;
-      // ForcePixelPicking opts a scope out of BVH ray fall-through.
-      if (scope.forcePixelPicking !== undefined && AVal.force(scope.forcePixelPicking)) return undefined;
-      return value.intersects(ray, 0, Number.POSITIVE_INFINITY);
-    });
-    if (hit === undefined) return undefined;
-    const scope = this.registry.lookup(hit.key);
-    if (scope === undefined) return undefined;
-    return { scope, worldPoint: hit.point, worldNormal: hit.normal };
-  }
-
-  /**
-   * Mode-A unprojection generalised: produce a world-space ray from
-   * a device pixel through the scene at the supplied view+proj.
-   * Reuses the same NDC math as `viewPosFor` (search "ndcX = (cssHitX
-   * / rect.width)..." above) — z=-1 is the near plane, z=+1 the far
-   * plane, then view⁻¹ pulls the two view-space points back into
-   * world.
-   */
-  private unprojectWorldRay(
-    devX: number,
-    devY: number,
-    rect: DOMRect,
-    sx: number,
-    sy: number,
-    view: Trafo3d,
-    proj: Trafo3d,
-  ): Ray3d {
-    const cssHitX = (devX + 0.5) / (sx > 0 ? sx : 1);
-    const cssHitY = (devY + 0.5) / (sy > 0 ? sy : 1);
-    const ndcX = (cssHitX / rect.width) * 2 - 1;
-    const ndcY = 1 - (cssHitY / rect.height) * 2;
-    const near = unprojectNdc(ndcX, ndcY, -1, proj, view);
-    const far  = unprojectNdc(ndcX, ndcY,  1, proj, view);
-    return Ray3d.fromPoints(near, far);
-  }
-
   // --- helpers -------------------------------------------------------------
-
-  private viewPosFor(
-    scope: LeafPickScope,
-    hit: SpiralHit,
-    rect: DOMRect,
-    sx: number,
-    sy: number,
-  ): V3d | undefined {
-    const decoded = hit.decoded;
-    if (decoded.modeB) return decoded.viewPos;
-    if (rect.width <= 0 || rect.height <= 0) return undefined;
-    // Use the spiral hit pixel (in device coords) for NDC, not the
-    // raw cursor pixel — the snap may have moved us a few px.
-    const cssHitX = (hit.hitPxX + 0.5) / (sx > 0 ? sx : 1);
-    const cssHitY = (hit.hitPxY + 0.5) / (sy > 0 ? sy : 1);
-    const ndcX = (cssHitX / rect.width) * 2 - 1;
-    const ndcY = 1 - (cssHitY / rect.height) * 2;
-    const ndcZ = decoded.raw.slot2;
-    const proj: Trafo3d = AVal.force(scope.proj);
-    const v4 = new V4d(ndcX, ndcY, ndcZ, 1);
-    const viewSpace = proj.backward.transform(v4);
-    const w = viewSpace.w !== 0 ? viewSpace.w : 1;
-    return new V3d(viewSpace.x / w, viewSpace.y / w, viewSpace.z / w);
-  }
 
   /**
    * Build a `SceneEventLocation` for a hit-bearing event. `viewPos` /
@@ -1256,23 +1084,9 @@ export class PickDispatcher implements SceneEventDispatch {
   }
 }
 
-function unprojectNdc(ndcX: number, ndcY: number, ndcZ: number, proj: Trafo3d, view: Trafo3d): V3d {
-  // proj.backward: clip → view; view.backward: view → world.
-  const v4 = proj.backward.transform(new V4d(ndcX, ndcY, ndcZ, 1));
-  const w = v4.w !== 0 ? v4.w : 1;
-  const viewSpace = new V4d(v4.x / w, v4.y / w, v4.z / w, 1);
-  const w4 = view.backward.transform(viewSpace);
-  const ww = w4.w !== 0 ? w4.w : 1;
-  return new V3d(w4.x / ww, w4.y / ww, w4.z / ww);
-}
-
 function sharedPrefixLength<T>(a: ReadonlyArray<T>, b: ReadonlyArray<T>): number {
   const n = Math.min(a.length, b.length);
   let i = 0;
   while (i < n && a[i] === b[i]) i++;
   return i;
 }
-
-// Suppress unused-import noise — kept for future getter-based proj
-// override paths.
-void Trafo3d;

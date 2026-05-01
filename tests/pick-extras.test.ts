@@ -36,9 +36,14 @@ function makeRegion(centerX: number, centerY: number, pickId: number): PickRegio
   const originX = centerX - SNAP_RADIUS_MAX;
   const originY = centerY - SNAP_RADIUS_MAX;
   const data = new Float32Array(sz * sz * 4);
-  const lx = centerX - originX;
-  const ly = centerY - originY;
-  data[(ly * sz + lx) * 4] = pickId;
+  for (let ddy = -1; ddy <= 1; ddy++) {
+    for (let ddx = -1; ddx <= 1; ddx++) {
+      const lx = (centerX + ddx) - originX;
+      const ly = (centerY + ddy) - originY;
+      if (lx < 0 || ly < 0 || lx >= sz || ly >= sz) continue;
+      data[(ly * sz + lx) * 4] = pickId;
+    }
+  }
   return { data, originX, originY, sizeX: sz, sizeY: sz };
 }
 

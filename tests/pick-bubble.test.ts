@@ -41,11 +41,18 @@ function makeRegion(centerX: number, centerY: number, stamps: ReadonlyArray<{ dx
   const originY = centerY - SNAP_RADIUS_MAX;
   const data = new Float32Array(sizeX * sizeY * 4);
   for (const s of stamps) {
-    const lx = (centerX + s.dx) - originX;
-    const ly = (centerY + s.dy) - originY;
-    if (lx < 0 || ly < 0 || lx >= sizeX || ly >= sizeY) continue;
-    const i = (ly * sizeX + lx) * 4;
-    data[i] = s.pickId;
+    // Expand each stamp to a 3×3 block so the spiral validator's
+    // ≥ 3 same-id neighbour check passes. Mirrors how a real
+    // multi-sample pick buffer would write a contiguous patch.
+    for (let ddy = -1; ddy <= 1; ddy++) {
+      for (let ddx = -1; ddx <= 1; ddx++) {
+        const lx = (centerX + s.dx + ddx) - originX;
+        const ly = (centerY + s.dy + ddy) - originY;
+        if (lx < 0 || ly < 0 || lx >= sizeX || ly >= sizeY) continue;
+        const i = (ly * sizeX + lx) * 4;
+        data[i] = s.pickId;
+      }
+    }
   }
   return { data, originX, originY, sizeX, sizeY };
 }
