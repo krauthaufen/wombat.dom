@@ -17,6 +17,8 @@ import type { PickRegion } from "../src/scene/picking/readback.js";
 import type { SceneEvent } from "../src/scene/picking/sceneEvent.js";
 import { SNAP_RADIUS_MAX, SNAP_REGION_SIZE } from "../src/scene/picking/snapOffsets.js";
 import { TraversalState } from "../src/scene/traversalState.js";
+import type { EventHandlers, SceneEventHandler } from "../src/scene/sg.js";
+import type { SceneEventKind } from "../src/scene/picking/sceneEvent.js";
 
 // Canvas size: 200×100. Place the cursor at (50, 50) — that lands
 // at device pixel (50, 50) since CSS px = device px in our stub.
@@ -88,9 +90,15 @@ interface AcquireOpts {
   pixelSnapRadius?: number;
 }
 
-function acquire(reg: PickRegistry, handlers: ReadonlyArray<Record<string, (e: SceneEvent) => void>>, opts: AcquireOpts = {}): number {
+function bubbleOf(rec: Record<string, (e: SceneEvent) => unknown>): EventHandlers {
+  const bubble: Partial<Record<SceneEventKind, SceneEventHandler>> = {};
+  for (const [k, v] of Object.entries(rec)) bubble[k as SceneEventKind] = v as SceneEventHandler;
+  return { bubble };
+}
+
+function acquire(reg: PickRegistry, handlers: ReadonlyArray<Record<string, (e: SceneEvent) => unknown>>, opts: AcquireOpts = {}): number {
   return reg.acquire({
-    handlers: handlers as unknown as ReadonlyArray<Readonly<Record<string, (e: unknown) => void>>>,
+    handlers: handlers.map(bubbleOf),
     cursor: undefined,
     pickThrough: opts.pickThrough ?? false,
     active: AVal.constant(opts.active ?? true),

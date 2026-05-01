@@ -6,24 +6,41 @@
 // through scope AND falls within that scope's own
 // `pixelSnapRadius²` wins.
 //
-// Why spiral walk: Aardvark.Dom's `SceneHandler.fs:1700–1720`. In
-// practice this lets touch UIs widen the cursor's effective pick
-// area to ~16 px without the snap ever overshooting the pickee's
-// own preferred slop (so a tiny 1-px pickee won't capture the
-// cursor from 16 px away).
+// On top of the spiral resolve we run a capture/bubble dispatch
+// across the scope's `handlers` chain (outer→inner). The chain is
+// stored on `LeafPickScope` as the path from root to leaf; index 0
+// is the outermost `<Sg On=...>` scope that wrapped this leaf.
 //
-// `pickThrough` simplification: F# only falls through for BVH-
-// (intersector-) backed scopes; for pixel hits it just emits a
-// log warning and still selects the winner (`SceneHandler.fs:1814–
-// 1817`). We have no BVH path, so we treat pickThrough as "skip the
-// whole spiral hit" — no fall-through to the next offset.
+// Differential enter/leave: when a pointermove hits a different
+// scope than `lastHit`, we diff the two paths. Because we don't
+// have a tree (we have an array per leaf), we approximate the
+// "common ancestor" by the longest shared prefix of the OLD and
+// NEW paths. Equality is reference equality on the shared
+// `EventHandlers` objects — those are the identity carriers for
+// `<Sg On=...>` scope nodes (`SgOn.handlers`), and the registry
+// captures them by reference from the surrounding TraversalState.
+// Two leaves under the same `<Sg On={H}>` scope therefore share
+// the same H reference, so the prefix walk skips H during a
+// sibling-to-sibling transition. This matches the F# common-
+// ancestor pruning closely enough for our DAG-shaped event scopes.
+//
+// PointerCapture: while a pointer is captured, all of its events
+// route to the captured scope INSTEAD of the spiral hit; lastHit
+// is NOT updated (mirrors `SceneHandler.SetPointerCapture` / F#'s
+// "no lastOver update while captured"). Releasing fires a synthetic
+// pointermove using the last cursor position to re-establish hover.
 
 import { AVal } from "@aardworx/wombat.adaptive";
 import { Trafo3d, V4d } from "@aardworx/wombat.base";
 
 import type { LeafPickScope, PickRegistry } from "./registry.js";
 import { decodePick, readSlotsAt, type DecodedPick, type PickRegion } from "./readback.js";
-import type { SceneEvent, SceneEventKind, SceneEventViewPos } from "./sceneEvent.js";
+import {
+  SceneEvent,
+  type SceneEventDispatch,
+  type SceneEventKind,
+  type SceneEventViewPos,
+} from "./sceneEvent.js";
 import { SNAP_OFFSETS, SNAP_RADIUS_MAX } from "./snapOffsets.js";
 
 /**
@@ -41,10 +58,29 @@ interface SpiralHit {
   readonly d2: number;
 }
 
-export class PickDispatcher {
+/**
+ * Snapshot of the most-recent move for synthetic-move replay on
+ * capture release. Stores enough to reconstruct an event without
+ * re-reading the framebuffer.
+ */
+interface LastMoveInfo {
+  readonly raw: PointerEvent;
+  readonly cssX: number;
+  readonly cssY: number;
+  readonly rect: DOMRect;
+  readonly sx: number;
+  readonly sy: number;
+  readonly hit: SpiralHit | undefined;
+}
+
+export class PickDispatcher implements SceneEventDispatch {
   private lastHit: number = 0;
+  private lastPath: ReadonlyArray<import("../sg.js").EventHandlers> = [];
   private seq: number = 0;
   private lastSettledSeq: number = 0;
+
+  private readonly capturedScopes: Map<number, LeafPickScope> = new Map();
+  private lastMove: LastMoveInfo | undefined;
 
   constructor(
     private readonly registry: PickRegistry,
@@ -91,16 +127,11 @@ export class PickDispatcher {
           const rect = this.getCanvasRect();
           const cssX = e.clientX - rect.left;
           const cssY = e.clientY - rect.top;
-          this.fire(scope, {
-            kind: "OnPointerLeave",
-            clientX: cssX, clientY: cssY,
-            pickId: scope.pickId, modeB: false,
-            ...(e.button !== undefined ? { button: e.button } : {}),
-            buttons: e.buttons,
-            raw: e,
-          });
+          const ev = this.makeEvent("OnPointerLeave", e, cssX, cssY, scope, scope.pickId, false, undefined);
+          this.runUpAll(this.lastPath, [], ev);
         }
         this.lastHit = 0;
+        this.lastPath = [];
       }
     };
 
@@ -119,6 +150,28 @@ export class PickDispatcher {
       canvas.removeEventListener("pointerenter", onEnter);
       canvas.removeEventListener("pointerleave", onLeave);
     };
+  }
+
+  // --- pointer capture API -------------------------------------------------
+
+  setPointerCapture(scope: LeafPickScope, pointerId: number): void {
+    this.capturedScopes.set(pointerId, scope);
+  }
+
+  releasePointerCapture(scope: LeafPickScope, pointerId: number): void {
+    const cur = this.capturedScopes.get(pointerId);
+    if (cur === undefined || cur !== scope) return;
+    this.capturedScopes.delete(pointerId);
+
+    // Synthetic move to re-establish hover state at the last cursor
+    // position. Matches `SceneHandler.ReleasePointerCapture`.
+    const lm = this.lastMove;
+    if (lm === undefined) return;
+    this.dispatch(lm.raw, "OnPointerMove", lm.cssX, lm.cssY, lm.hit, lm.rect, lm.sx, lm.sy);
+  }
+
+  hasPointerCapture(scope: LeafPickScope, pointerId: number): boolean {
+    return this.capturedScopes.get(pointerId) === scope;
   }
 
   // --- spiral hit-test -----------------------------------------------------
@@ -176,26 +229,137 @@ export class PickDispatcher {
     sx: number,
     sy: number,
   ): void {
+    const pointerId = ev.pointerId ?? 0;
+
+    // Always record the latest cursor position for synthetic-move
+    // replay on capture release. Track `hit` from the spiral so we
+    // can replay against the geometry under the cursor at release
+    // time (close enough — the framebuffer may have changed, but we
+    // don't have a fresh region read in hand).
+    this.lastMove = { raw: ev, cssX, cssY, rect, sx, sy, hit };
+
+    const captured = this.capturedScopes.get(pointerId);
+    if (captured !== undefined) {
+      // Route to captured scope; do NOT update lastHit/lastPath. F#
+      // `SceneHandler.fs:1700–` skips lastOver updates while a
+      // pointer is captured, then re-fires move on release.
+      const viewPos = hit !== undefined ? this.viewPosFor(captured, hit, rect, sx, sy) : undefined;
+      const sceneEv = this.makeEvent(kind, ev, cssX, cssY, captured, captured.pickId, hit?.decoded.modeB ?? false, viewPos);
+      this.runCaptureBubble(captured.handlers, sceneEv);
+      return;
+    }
+
     const hitScope = hit?.scope;
     const hitId = hitScope?.pickId ?? 0;
+    const newPath = hitScope?.handlers ?? [];
 
     if (kind === "OnPointerMove" && hitId !== this.lastHit) {
-      const oldScope = this.lastHit !== 0 ? this.registry.lookup(this.lastHit) : undefined;
-      if (oldScope !== undefined && !oldScope.pickThrough && AVal.force(oldScope.active)) {
-        this.fire(oldScope, this.makeEvent("OnPointerLeave", ev, cssX, cssY, oldScope.pickId, false, undefined));
+      // Differential enter/leave. Diff oldPath vs newPath by
+      // longest shared prefix (reference equality on EventHandlers
+      // objects — see file header).
+      const prefix = sharedPrefixLength(this.lastPath, newPath);
+
+      if (this.lastHit !== 0) {
+        const oldScope = this.registry.lookup(this.lastHit);
+        if (oldScope !== undefined && !oldScope.pickThrough && AVal.force(oldScope.active)) {
+          const leaveEv = this.makeEvent("OnPointerLeave", ev, cssX, cssY, oldScope, oldScope.pickId, false, undefined);
+          // Walk the OLD path (above prefix) firing OnPointerLeave
+          // — F# `runUp` fires capture+bubble together and ignores
+          // continue/stop. We mirror that.
+          this.runUpAll(this.lastPath, this.lastPath.slice(0, prefix), leaveEv);
+        }
       }
+
       if (hitScope !== undefined && hit !== undefined) {
         const viewPos = this.viewPosFor(hitScope, hit, rect, sx, sy);
-        this.fire(hitScope, this.makeEvent("OnPointerEnter", ev, cssX, cssY, hitScope.pickId, hit.decoded.modeB, viewPos));
+        const enterEv = this.makeEvent("OnPointerEnter", ev, cssX, cssY, hitScope, hitScope.pickId, hit.decoded.modeB, viewPos);
+        this.runDownAll(newPath, newPath.slice(0, prefix), enterEv);
       }
+
       this.lastHit = hitId;
+      this.lastPath = newPath;
     }
 
     if (hitScope === undefined || hit === undefined) return;
 
     const viewPos = this.viewPosFor(hitScope, hit, rect, sx, sy);
-    this.fire(hitScope, this.makeEvent(kind, ev, cssX, cssY, hitScope.pickId, hit.decoded.modeB, viewPos));
+    const sceneEv = this.makeEvent(kind, ev, cssX, cssY, hitScope, hitScope.pickId, hit.decoded.modeB, viewPos);
+    this.runCaptureBubble(hitScope.handlers, sceneEv);
   }
+
+  // --- capture/bubble walk -------------------------------------------------
+
+  /**
+   * Capture phase outer-first, bubble phase inner-first. A handler
+   * returning `false` OR calling `stopPropagation()` halts further
+   * dispatch. Capture-stop also skips the bubble phase entirely
+   * (matches F# `runCapture` short-circuit).
+   *
+   * Why try/catch around each handler: defensive — a buggy scene-
+   * graph handler shouldn't take down the runtime. Errors are
+   * logged, then the loop continues. (Aardvark.Dom doesn't isolate
+   * handlers, but TS userland tends to throw more freely.)
+   */
+  private runCaptureBubble(path: ReadonlyArray<import("../sg.js").EventHandlers>, ev: SceneEvent): void {
+    // Capture phase: outer → inner
+    for (let i = 0; i < path.length; i++) {
+      const h = path[i]!.capture?.[ev.kind];
+      if (h !== undefined) {
+        let r: boolean | void;
+        try { r = h(ev); } catch (err) { console.error(`[PickDispatcher] capture ${ev.kind} threw:`, err); continue; }
+        if (r === false || ev.propagationStopped) return;
+      }
+    }
+    // Bubble phase: inner → outer
+    for (let i = path.length - 1; i >= 0; i--) {
+      const h = path[i]!.bubble?.[ev.kind];
+      if (h !== undefined) {
+        let r: boolean | void;
+        try { r = h(ev); } catch (err) { console.error(`[PickDispatcher] bubble ${ev.kind} threw:`, err); continue; }
+        if (r === false || ev.propagationStopped) return;
+      }
+    }
+  }
+
+  /**
+   * Fire on every scope along `path` (excluding any in `exclude`,
+   * which is a prefix slice), collapsing capture+bubble — outer-first.
+   * Matches F# `runUp`: "fire all, ignore continue/stop". We use it
+   * for OnPointerLeave on the OLD path. Direction is leaf→root
+   * (inner-first) per F#.
+   */
+  private runUpAll(
+    path: ReadonlyArray<import("../sg.js").EventHandlers>,
+    exclude: ReadonlyArray<import("../sg.js").EventHandlers>,
+    ev: SceneEvent,
+  ): void {
+    for (let i = path.length - 1; i >= exclude.length; i--) {
+      this.fireBoth(path[i]!, ev);
+    }
+  }
+
+  private runDownAll(
+    path: ReadonlyArray<import("../sg.js").EventHandlers>,
+    exclude: ReadonlyArray<import("../sg.js").EventHandlers>,
+    ev: SceneEvent,
+  ): void {
+    for (let i = exclude.length; i < path.length; i++) {
+      this.fireBoth(path[i]!, ev);
+    }
+  }
+
+  private fireBoth(h: import("../sg.js").EventHandlers, ev: SceneEvent): void {
+    const cap = h.capture?.[ev.kind];
+    if (cap !== undefined) {
+      try { cap(ev); } catch (err) { console.error(`[PickDispatcher] capture ${ev.kind} threw:`, err); }
+    }
+    const bub = h.bubble?.[ev.kind];
+    if (bub !== undefined) {
+      try { bub(ev); } catch (err) { console.error(`[PickDispatcher] bubble ${ev.kind} threw:`, err); }
+    }
+  }
+
+  // --- helpers -------------------------------------------------------------
 
   private viewPosFor(
     scope: LeafPickScope,
@@ -226,37 +390,36 @@ export class PickDispatcher {
     ev: PointerEvent,
     cssX: number,
     cssY: number,
+    scope: LeafPickScope,
     pickId: number,
     modeB: boolean,
     viewPos: SceneEventViewPos | undefined,
   ): SceneEvent {
-    return {
+    return new SceneEvent({
       kind,
       clientX: cssX,
       clientY: cssY,
       pickId,
       modeB,
       ...(ev.button !== undefined ? { button: ev.button } : {}),
-      buttons: ev.buttons,
+      ...(ev.buttons !== undefined ? { buttons: ev.buttons } : {}),
       ...(viewPos !== undefined ? { viewPos } : {}),
+      pointerId: ev.pointerId ?? 0,
+      pointerType: ev.pointerType ?? "",
       raw: ev,
-    };
-  }
-
-  private fire(scope: LeafPickScope, event: SceneEvent): void {
-    for (const map of scope.handlers) {
-      const fn = map[event.kind];
-      if (typeof fn === "function") {
-        try {
-          fn(event);
-        } catch (err) {
-          console.error(`[PickDispatcher] handler for ${event.kind} threw:`, err);
-        }
-      }
-    }
+      scope,
+      dispatch: this,
+    });
   }
 }
 
-// Suppress unused-import noise — these are kept for future
-// integrations (e.g. a getter-based proj override path).
+function sharedPrefixLength<T>(a: ReadonlyArray<T>, b: ReadonlyArray<T>): number {
+  const n = Math.min(a.length, b.length);
+  let i = 0;
+  while (i < n && a[i] === b[i]) i++;
+  return i;
+}
+
+// Suppress unused-import noise — kept for future getter-based proj
+// override paths.
 void Trafo3d;

@@ -35,11 +35,13 @@ import { isVNode } from "../vnode.js";
 import { isAList, isASet, isAVal } from "../guards.js";
 import type {
   EventHandlers,
+  SceneEventHandler,
   SgNode,
   SgLeaf,
   TrafoValue,
   UniformBag,
 } from "./sg.js";
+import type { SceneEventKind } from "./picking/sceneEvent.js";
 import { box as boxLeaf, quad as quadLeaf, type BoxOptions, type QuadOptions } from "./primitives.js";
 import {
   sgVNode, isSgVNode, extractSgNode, SG_KINDS,
@@ -139,6 +141,18 @@ function on(handlers: EventHandlers, child: SgNode): SgNode {
   return { kind: "On", handlers, child };
 }
 
+/** Curried convenience: bubble-only single-event SgOn. */
+function onEvent(kind: SceneEventKind, fn: SceneEventHandler): (child: SgNode) => SgNode {
+  return (child) => on({ bubble: { [kind]: fn } }, child);
+}
+
+const onClick      = (fn: SceneEventHandler): ((child: SgNode) => SgNode) => onEvent("OnClick", fn);
+const onPointerDown  = (fn: SceneEventHandler): ((child: SgNode) => SgNode) => onEvent("OnPointerDown", fn);
+const onPointerUp    = (fn: SceneEventHandler): ((child: SgNode) => SgNode) => onEvent("OnPointerUp", fn);
+const onPointerMove  = (fn: SceneEventHandler): ((child: SgNode) => SgNode) => onEvent("OnPointerMove", fn);
+const onPointerEnter = (fn: SceneEventHandler): ((child: SgNode) => SgNode) => onEvent("OnPointerEnter", fn);
+const onPointerLeave = (fn: SceneEventHandler): ((child: SgNode) => SgNode) => onEvent("OnPointerLeave", fn);
+
 function active(value: aval<boolean>, child: SgNode): SgNode {
   return { kind: "Active", active: value, child };
 }
@@ -222,14 +236,22 @@ export interface SgScopeProps {
   // Active gating (AND across nesting).
   Active?: aval<boolean>;
 
-  // Event handlers — appended to the chain at this scope.
-  // Wired into the pick dispatcher in M7-M8.
-  OnClick?:        (e: unknown) => void;
-  OnPointerEnter?: (e: unknown) => void;
-  OnPointerLeave?: (e: unknown) => void;
-  OnPointerDown?:  (e: unknown) => void;
-  OnPointerUp?:    (e: unknown) => void;
-  OnWheel?:        (e: unknown) => void;
+  // Event handlers — appended to the chain at this scope. Each
+  // pair is `On<Kind>` (bubble) and `OnCapture<Kind>` (capture);
+  // the dispatcher walks capture outer-first then bubble inner-
+  // first across the chain.
+  OnClick?:           SceneEventHandler;
+  OnCaptureClick?:    SceneEventHandler;
+  OnPointerEnter?:    SceneEventHandler;
+  OnCapturePointerEnter?: SceneEventHandler;
+  OnPointerLeave?:    SceneEventHandler;
+  OnCapturePointerLeave?: SceneEventHandler;
+  OnPointerDown?:     SceneEventHandler;
+  OnCapturePointerDown?: SceneEventHandler;
+  OnPointerUp?:       SceneEventHandler;
+  OnCapturePointerUp?: SceneEventHandler;
+  OnPointerMove?:     SceneEventHandler;
+  OnCapturePointerMove?: SceneEventHandler;
 
   /**
    * Children: ordinary JSX (Sg components, fragments, arrays) plus
@@ -246,7 +268,7 @@ function applyScopeAttrs(node: SgNode, props: SgScopeProps): SgNode {
   // (= outermost wrapper) is applied last to a point.
   let n = node;
   const events = collectEventHandlers(props);
-  if (Object.keys(events).length > 0) n = on(events, n);
+  if (events !== undefined) n = on(events, n);
   if (props.Proj !== undefined)        n = projScope(props.Proj, n);
   if (props.View !== undefined)        n = viewScope(props.View, n);
   if (props.Active !== undefined)      n = active(props.Active, n);
@@ -260,14 +282,26 @@ function applyScopeAttrs(node: SgNode, props: SgScopeProps): SgNode {
   return n;
 }
 
-function collectEventHandlers(props: SgScopeProps): EventHandlers {
-  const out: Record<string, (e: unknown) => void> = {};
-  if (props.OnClick)        out.click = props.OnClick;
-  if (props.OnPointerEnter) out.pointerenter = props.OnPointerEnter;
-  if (props.OnPointerLeave) out.pointerleave = props.OnPointerLeave;
-  if (props.OnPointerDown)  out.pointerdown = props.OnPointerDown;
-  if (props.OnPointerUp)    out.pointerup = props.OnPointerUp;
-  if (props.OnWheel)        out.wheel = props.OnWheel;
+function collectEventHandlers(props: SgScopeProps): EventHandlers | undefined {
+  const bubble: Partial<Record<SceneEventKind, SceneEventHandler>> = {};
+  const capture: Partial<Record<SceneEventKind, SceneEventHandler>> = {};
+  let any = false;
+  if (props.OnClick)        { bubble.OnClick = props.OnClick; any = true; }
+  if (props.OnPointerEnter) { bubble.OnPointerEnter = props.OnPointerEnter; any = true; }
+  if (props.OnPointerLeave) { bubble.OnPointerLeave = props.OnPointerLeave; any = true; }
+  if (props.OnPointerDown)  { bubble.OnPointerDown = props.OnPointerDown; any = true; }
+  if (props.OnPointerUp)    { bubble.OnPointerUp = props.OnPointerUp; any = true; }
+  if (props.OnPointerMove)  { bubble.OnPointerMove = props.OnPointerMove; any = true; }
+  if (props.OnCaptureClick)        { capture.OnClick = props.OnCaptureClick; any = true; }
+  if (props.OnCapturePointerEnter) { capture.OnPointerEnter = props.OnCapturePointerEnter; any = true; }
+  if (props.OnCapturePointerLeave) { capture.OnPointerLeave = props.OnCapturePointerLeave; any = true; }
+  if (props.OnCapturePointerDown)  { capture.OnPointerDown = props.OnCapturePointerDown; any = true; }
+  if (props.OnCapturePointerUp)    { capture.OnPointerUp = props.OnCapturePointerUp; any = true; }
+  if (props.OnCapturePointerMove)  { capture.OnPointerMove = props.OnCapturePointerMove; any = true; }
+  if (!any) return undefined;
+  const out: { capture?: typeof capture; bubble?: typeof bubble } = {};
+  if (Object.keys(capture).length > 0) out.capture = capture;
+  if (Object.keys(bubble).length > 0) out.bubble = bubble;
   return out;
 }
 
@@ -379,6 +413,12 @@ interface SgNamespace {
   pickThrough: typeof pickThrough;
   pixelSnapRadius: typeof pixelSnapRadius;
   on:          typeof on;
+  onClick:        typeof onClick;
+  onPointerDown:  typeof onPointerDown;
+  onPointerUp:    typeof onPointerUp;
+  onPointerMove:  typeof onPointerMove;
+  onPointerEnter: typeof onPointerEnter;
+  onPointerLeave: typeof onPointerLeave;
   active:      typeof active;
   view:        typeof viewScope;
   proj:        typeof projScope;
@@ -416,6 +456,12 @@ export const Sg: SgNamespace = (() => {
   fn.pickThrough = pickThrough;
   fn.pixelSnapRadius = pixelSnapRadius;
   fn.on          = on;
+  fn.onClick        = onClick;
+  fn.onPointerDown  = onPointerDown;
+  fn.onPointerUp    = onPointerUp;
+  fn.onPointerMove  = onPointerMove;
+  fn.onPointerEnter = onPointerEnter;
+  fn.onPointerLeave = onPointerLeave;
   fn.active      = active;
   fn.view        = viewScope;
   fn.proj        = projScope;

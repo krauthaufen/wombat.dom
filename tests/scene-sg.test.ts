@@ -137,8 +137,8 @@ describe("TraversalState — attribute composition", () => {
   });
 
   it("handlers append to chain (outermost first)", () => {
-    const a = { onClick: () => {} };
-    const b = { onClick: () => {} };
+    const a = { bubble: { OnClick: (): void => {} } };
+    const b = { bubble: { OnClick: (): void => {} } };
     const s = TraversalState.empty.pushHandlers(a).pushHandlers(b);
     expect(s.handlers).toEqual([a, b]);
   });

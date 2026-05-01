@@ -90,9 +90,9 @@ describe("compileScene — picking integration", () => {
   it("single leaf with On registers exactly one PickScope and wraps the effect", () => {
     const userEff = buildUserEffect();
     const registry = new PickRegistry();
-    const onClick = (_e: unknown) => { /* noop test handler */ };
+    const onClick = (_e: unknown): void => { /* noop test handler */ };
 
-    const tree = Sg.shader(userEff, Sg.on({ click: onClick }, leaf()));
+    const tree = Sg.shader(userEff, Sg.on({ bubble: { OnClick: onClick } }, leaf()));
     const cmds = compileScene(tree, fbo, { picking: { registry } });
     const lt = getLeaf(singleRender(cmds));
 
@@ -104,7 +104,7 @@ describe("compileScene — picking integration", () => {
     const scope = registry.lookup(id);
     expect(scope).toBeDefined();
     expect(scope!.handlers.length).toBe(1);
-    expect(scope!.handlers[0]!.click).toBe(onClick);
+    expect(scope!.handlers[0]!.bubble!.OnClick).toBe(onClick);
 
     // composed effect has more stages than the user effect, and
     // compiles to WGSL successfully.
@@ -120,14 +120,14 @@ describe("compileScene — picking integration", () => {
   it("two leaves under different On scopes get distinct pickIds and matching handlers", () => {
     const userEff = buildUserEffect();
     const registry = new PickRegistry();
-    const onA = (_: unknown) => {};
-    const onB = (_: unknown) => {};
+    const onA = (_: unknown): void => {};
+    const onB = (_: unknown): void => {};
 
     const tree = Sg.shader(
       userEff,
       Sg.group([
-        Sg.on({ click: onA }, leaf()),
-        Sg.on({ click: onB }, leaf()),
+        Sg.on({ bubble: { OnClick: onA } }, leaf()),
+        Sg.on({ bubble: { OnClick: onB } }, leaf()),
       ]),
     );
     const cmds = compileScene(tree, fbo, { picking: { registry } });
@@ -141,8 +141,8 @@ describe("compileScene — picking integration", () => {
     expect(id0).not.toBe(id1);
     expect(registry.size()).toBe(2);
 
-    expect(registry.lookup(id0)!.handlers[0]!.click).toBe(onA);
-    expect(registry.lookup(id1)!.handlers[0]!.click).toBe(onB);
+    expect(registry.lookup(id0)!.handlers[0]!.bubble!.OnClick).toBe(onA);
+    expect(registry.lookup(id1)!.handlers[0]!.bubble!.OnClick).toBe(onB);
   });
 
   it("no picking option → effect is the user's, no PickId uniform", () => {

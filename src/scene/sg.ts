@@ -169,12 +169,25 @@ export interface SgPixelSnapRadius {
 
 /**
  * Event-handler scope. Handlers are appended to the chain at this
- * scope; outer + inner handlers all fire during dispatch.
+ * scope; outer + inner handlers all participate in capture/bubble
+ * dispatch (see `picking/dispatcher.ts`).
  *
- * `SceneEvent` proper lands with the pick infra (M7-M8); for now
- * `events` is a record of opaque handlers keyed by event-kind name.
+ * Handlers may return `false` to stop propagation (matches F#'s
+ * `List.forall`). Anything else (including `void`) lets dispatch
+ * continue. `SceneEvent.stopPropagation()` is the explicit form.
  */
-export type EventHandlers = Readonly<Record<string, (e: unknown) => void>>;
+export type SceneEventHandler = (e: import("./picking/sceneEvent.js").SceneEvent) => boolean | void;
+
+/**
+ * Per-scope handler bag, keyed by phase. Each phase is a partial
+ * map kind → handler. Why two phases instead of a flat record:
+ * mirrors Aardvark.Dom's `TraversalState.handleEvent` capture/bubble
+ * walk — outer-first capture, inner-first bubble.
+ */
+export interface EventHandlers {
+  readonly capture?: Partial<Record<import("./picking/sceneEvent.js").SceneEventKind, SceneEventHandler>>;
+  readonly bubble?: Partial<Record<import("./picking/sceneEvent.js").SceneEventKind, SceneEventHandler>>;
+}
 
 export interface SgOn {
   readonly kind: "On";

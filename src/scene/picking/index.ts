@@ -35,10 +35,14 @@ export {
 } from "./registry.js";
 
 export {
-  type SceneEvent,
+  SceneEvent,
   type SceneEventKind,
   type SceneEventViewPos,
+  type SceneEventInit,
+  type SceneEventDispatch,
 } from "./sceneEvent.js";
+
+export type { EventHandlers, SceneEventHandler } from "../sg.js";
 
 export {
   readPickPixel,

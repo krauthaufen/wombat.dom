@@ -31,6 +31,7 @@ export type {
   SgProj,
   SgDelay,
   EventHandlers,
+  SceneEventHandler,
   TrafoValue,
   UniformBag,
 } from "./sg.js";
