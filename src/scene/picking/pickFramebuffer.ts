@@ -4,20 +4,26 @@
 // and `pickId` (slot 1); both targets must be present in the
 // framebuffer signature for pipeline creation to succeed.
 //
-// Lifecycle:
-//   - `pickTexture: aval<GPUTexture>` — re-allocated whenever the
-//     canvas size changes. Always sized to canvas device pixels.
-//   - `pickFramebuffer: aval<IFramebuffer>` — depends on both the
-//     canvas FB aval and the pick texture. Re-evaluating it pulls a
-//     fresh swap-chain view + the current pick view.
-//   - `dispose()` — destroys the latest pick texture and stops the
-//     resize subscription.
+// Two paths:
 //
-// MSAA: v1 assumes sampleCount = 1 on the canvas. The pickId target
-// is always single-sample; resolving multi-sample pickIds correctly
-// needs a custom compute pass (averaging would smear two distinct
-// ids into a fractional value that decodes to garbage). We document
-// the future plan with a TODO instead of doing it half-right.
+//   sampleCount === 1:
+//     - The pickId target is single-sample. The same texture acts
+//       as render target AND as readback source.
+//
+//   sampleCount > 1:
+//     - The pickId target is MSAA (so it can co-attach with the MSAA
+//       canvas color). It is RENDER_ATTACHMENT | TEXTURE_BINDING so
+//       the resolve compute can sample it via texture_multisampled_2d.
+//     - A second, single-sample `resolvedPickTexture` is allocated
+//       (STORAGE_BINDING | TEXTURE_BINDING | COPY_SRC). The custom
+//       compute pass (see `pickResolveCompute.ts`) majority-votes
+//       slot-0 across samples and writes the winning sample's full
+//       vec4 into it. Readback copies from THIS texture, not the
+//       MSAA one.
+//
+// The hardware `resolveTarget` average is wrong for pickIds: two
+// distinct integer ids averaged at silhouettes produce a meaningless
+// fractional value that decodes to a registered-but-unrelated id.
 
 import {
   AVal,
@@ -30,6 +36,8 @@ import type {
 } from "@aardworx/wombat.rendering/core";
 import { createFramebufferSignature } from "@aardworx/wombat.rendering";
 
+import { createPickResolveCompute, type PickResolveCompute } from "./pickResolveCompute.js";
+
 export interface CanvasLikeAttachment {
   readonly framebuffer: aval<IFramebuffer>;
   readonly size: aval<{ readonly width: number; readonly height: number }>;
@@ -38,10 +46,20 @@ export interface CanvasLikeAttachment {
 
 export interface PickFramebuffer {
   readonly pickFramebuffer: aval<IFramebuffer>;
-  /** Latest allocated pickId texture; resizes follow the canvas. */
-  readonly pickTexture: aval<GPUTexture>;
+  /**
+   * The texture suitable for readback (single-sample rgba32float).
+   * sampleCount === 1: same as the render-target pick texture.
+   * sampleCount  >  1: the resolved (post-compute) texture.
+   */
+  readonly readbackPickTexture: aval<GPUTexture>;
   /** Combined signature (canvas color + pickId + canvas depth). */
   readonly signature: FramebufferSignature;
+  /**
+   * When MSAA is in play, the caller must invoke this on a command
+   * encoder AFTER the render pass and BEFORE submitting any pickId
+   * readback copies. Undefined for sampleCount === 1.
+   */
+  readonly maybeRunResolve?: (encoder: GPUCommandEncoder) => void;
   dispose(): void;
 }
 
@@ -57,17 +75,8 @@ export function createPickFramebuffer(
   } = {},
 ): PickFramebuffer {
   const colorName = opts.colorAttachmentName ?? "outColor";
-  if (attachment.signature.sampleCount !== 1) {
-    // TODO: MSAA pick attachment. WebGPU's render-pass resolve does
-    // a per-sample average — fine for color, wrong for integer ids
-    // packed as f32. The fix is a separate compute resolve that
-    // picks the nearest-coverage sample, run after the pass.
-    console.warn(
-      "[pickFramebuffer] MSAA canvas detected; pick attachment will be single-sample, " +
-      "which conflicts with WebGPU's requirement that all attachments share sampleCount. " +
-      "Drop sampleCount to 1 on the RenderControl until the compute-resolve path lands.",
-    );
-  }
+  const sampleCount = attachment.signature.sampleCount;
+  const isMSAA = sampleCount > 1;
 
   // Build the combined signature once — its shape is fixed for the
   // lifetime of the framebuffer (only sizes change). Pipelines key
@@ -79,43 +88,85 @@ export function createPickFramebuffer(
   combinedColors[PICK_NAME] = PICK_FORMAT;
   const signature: FramebufferSignature = createFramebufferSignature({
     colors: combinedColors,
-    sampleCount: 1,
+    sampleCount,
     ...(attachment.signature.depthStencil !== undefined
       ? { depthStencil: { format: attachment.signature.depthStencil.format } }
       : {}),
   });
 
-  // pickTexture: aval<GPUTexture> driven by canvas size. We track
-  // the most recently allocated texture so dispose() can destroy it
-  // even if no consumer ever forces the aval again.
-  let latestPick: GPUTexture | undefined;
+  // Lazy compute-resolve pipeline (one per sampleCount, cached on
+  // device by pickResolveCompute itself). We hold the per-instance
+  // wrapper so we can dispose its uniform buffer.
+  let resolveCompute: PickResolveCompute | undefined;
+  if (isMSAA) {
+    resolveCompute = createPickResolveCompute(device, sampleCount);
+  }
+
+  // Track the latest allocations so dispose() always finds them and
+  // resize-driven re-allocation can free the old textures.
+  let latestRenderPick: GPUTexture | undefined;
+  let latestResolvedPick: GPUTexture | undefined;
   let latestKey: string | undefined;
-  const pickTexture: aval<GPUTexture> = attachment.size.map((sz) => {
+  let latestWidth = 0;
+  let latestHeight = 0;
+
+  const reallocate = (w: number, h: number): { renderTex: GPUTexture; resolvedTex: GPUTexture } => {
+    const renderUsage = isMSAA
+      ? GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
+      : GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC;
+    const renderTex = device.createTexture({
+      size: { width: w, height: h, depthOrArrayLayers: 1 },
+      format: PICK_FORMAT,
+      usage: renderUsage,
+      sampleCount,
+      label: isMSAA ? `pick.id.ms${sampleCount}` : "pick.id",
+    });
+    let resolvedTex: GPUTexture;
+    if (isMSAA) {
+      resolvedTex = device.createTexture({
+        size: { width: w, height: h, depthOrArrayLayers: 1 },
+        format: PICK_FORMAT,
+        usage:
+          GPUTextureUsage.STORAGE_BINDING |
+          GPUTextureUsage.TEXTURE_BINDING |
+          GPUTextureUsage.COPY_SRC,
+        sampleCount: 1,
+        label: "pick.id.resolved",
+      });
+    } else {
+      resolvedTex = renderTex;
+    }
+    return { renderTex, resolvedTex };
+  };
+
+  // Drive both textures off canvas size. We expose both as separate
+  // avals (readbackPickTexture below) but realloc once per resize.
+  const renderPickTexture: aval<GPUTexture> = attachment.size.map((sz) => {
     const w = Math.max(1, sz.width);
     const h = Math.max(1, sz.height);
     const key = `${w}x${h}`;
-    if (latestPick !== undefined && latestKey === key) return latestPick;
-    if (latestPick !== undefined) {
-      try { latestPick.destroy(); } catch { /* already gone */ }
+    if (latestRenderPick !== undefined && latestKey === key) return latestRenderPick;
+    if (latestRenderPick !== undefined) {
+      try { latestRenderPick.destroy(); } catch { /* already gone */ }
     }
-    const tex = device.createTexture({
-      size: { width: w, height: h, depthOrArrayLayers: 1 },
-      format: PICK_FORMAT,
-      // COPY_SRC is what the readback path needs;
-      // RENDER_ATTACHMENT is what the render pass needs.
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-      sampleCount: 1,
-      label: "pick.id",
-    });
-    latestPick = tex;
+    if (latestResolvedPick !== undefined && latestResolvedPick !== latestRenderPick) {
+      try { latestResolvedPick.destroy(); } catch { /* already gone */ }
+    }
+    const { renderTex, resolvedTex } = reallocate(w, h);
+    latestRenderPick = renderTex;
+    latestResolvedPick = resolvedTex;
     latestKey = key;
-    return tex;
+    latestWidth = w;
+    latestHeight = h;
+    return renderTex;
   });
+
+  const readbackPickTexture: aval<GPUTexture> = renderPickTexture.map(() => latestResolvedPick!);
 
   // Combined framebuffer: zip the canvas FB with the pick texture,
   // produce a fresh IFramebuffer that merges colors and forwards
   // depthStencil from the canvas FB.
-  const pickFramebuffer: aval<IFramebuffer> = AVal.zip(attachment.framebuffer, pickTexture).map((fb, pick) => {
+  const pickFramebuffer: aval<IFramebuffer> = AVal.zip(attachment.framebuffer, renderPickTexture).map((fb, pick) => {
     const pickView = pick.createView({ label: "pick.id.view" });
     let colors = HashMap.empty<string, GPUTextureView>();
     for (const [name, view] of fb.colors) colors = colors.add(name, view);
@@ -132,16 +183,37 @@ export function createPickFramebuffer(
     return out;
   });
 
-  return {
+  const result: PickFramebuffer = {
     pickFramebuffer,
-    pickTexture,
+    readbackPickTexture,
     signature,
     dispose() {
-      if (latestPick !== undefined) {
-        try { latestPick.destroy(); } catch { /* already gone */ }
-        latestPick = undefined;
-        latestKey = undefined;
+      if (latestResolvedPick !== undefined && latestResolvedPick !== latestRenderPick) {
+        try { latestResolvedPick.destroy(); } catch { /* already gone */ }
+      }
+      if (latestRenderPick !== undefined) {
+        try { latestRenderPick.destroy(); } catch { /* already gone */ }
+      }
+      latestRenderPick = undefined;
+      latestResolvedPick = undefined;
+      latestKey = undefined;
+      if (resolveCompute !== undefined) {
+        resolveCompute.dispose();
+        resolveCompute = undefined;
       }
     },
   };
+
+  if (isMSAA) {
+    (result as { maybeRunResolve?: (encoder: GPUCommandEncoder) => void }).maybeRunResolve = (encoder) => {
+      if (resolveCompute === undefined) return;
+      if (latestRenderPick === undefined || latestResolvedPick === undefined) return;
+      if (latestRenderPick === latestResolvedPick) return;
+      const srcView = latestRenderPick.createView({ label: "pick.id.ms.view" });
+      const dstView = latestResolvedPick.createView({ label: "pick.id.resolved.view" });
+      resolveCompute.resolve(encoder, srcView, dstView, latestWidth, latestHeight);
+    };
+  }
+
+  return result;
 }

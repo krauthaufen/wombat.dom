@@ -8,7 +8,9 @@ Tracking deferred work and stretch ideas. Living document — entries get crosse
 - [ ] Wheel events (OnWheel) routed to the spiral hit scope; deltaY inverted-scroll handling hint.
 - [ ] Touch gestures beyond tap: pinch / two-finger pan / rotate as synthesised events.
 - [ ] Focus ring rendering — outline around the focused scope (UI only; uses pickId attachment).
-- [ ] Custom MSAA pick-resolve (compute pass, majority vote on PickId — currently we warn on sampleCount > 1).
+- [x] Custom MSAA pick-resolve (compute pass, majority vote on PickId).
+- [ ] GPU-side test for MSAA pick resolve — currently only the JS reference impl + WGSL template are tested in vitest; the actual compute pipeline runs on real hardware. A browser-side test (Playwright + WebGPU) would close this loop.
+- [ ] Per-frame command-encoder hook on `wombat.rendering`'s `runFrame` — would let the pickId resolve compute pass piggy-back on the render encoder instead of submitting a separate one.
 - [ ] BVH + IIntersectable in wombat.base + BVH-based fall-through after pixel pickThrough.
 - [ ] PointerCapture release on scope unmount.
 - [ ] Configurable tap / long-press thresholds at the RenderControl level.

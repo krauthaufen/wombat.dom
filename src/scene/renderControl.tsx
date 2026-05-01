@@ -314,16 +314,28 @@ async function initialise(
       () => canvas.getBoundingClientRect(),
     );
     const readRegion = async (x: number, y: number): Promise<PickRegion | undefined> => {
-      const tex = AVal.force(pickFb!.pickTexture);
+      const tex = AVal.force(pickFb!.readbackPickTexture);
       return readPickRegion(device, tex, x, y);
     };
     const detach = dispatcher.attach(canvas, readRegion);
     scope.onDispose(detach);
   }
 
+  // For MSAA picking we need a custom resolve compute pass after the
+  // render pass. wombat.rendering's `runFrame` does not expose its
+  // per-frame command encoder, so we submit a SEPARATE encoder right
+  // after `task.run`. This adds one queue submission per frame; an
+  // upstream hook for piggy-backing on the render encoder would be
+  // cleaner (see docs/FUTURE.md).
+  const runResolve = pickFb?.maybeRunResolve;
   const loop = runFrame(attachment, (token) => {
     if (scope.isDisposed) return;
     task.run(token);
+    if (runResolve !== undefined) {
+      const enc = device.createCommandEncoder({ label: "pick.resolve.frame" });
+      runResolve(enc);
+      device.queue.submit([enc.finish()]);
+    }
   });
   scope.onDispose(() => loop.stop());
 

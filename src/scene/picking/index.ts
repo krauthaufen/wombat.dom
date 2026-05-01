@@ -67,6 +67,15 @@ export {
 } from "./pickFramebuffer.js";
 
 export {
+  createPickResolveCompute,
+  buildPickResolveWgsl,
+  majorityVoteReference,
+  PICK_RESOLVE_WORKGROUP_X,
+  PICK_RESOLVE_WORKGROUP_Y,
+  type PickResolveCompute,
+} from "./pickResolveCompute.js";
+
+export {
   PickDispatcher,
   type ReadRegion,
 } from "./dispatcher.js";
