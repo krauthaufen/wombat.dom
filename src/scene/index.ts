@@ -73,12 +73,31 @@ export {
 } from "./camera.js";
 
 export {
-  freeFlyController,
-  orbitController,
-  type CameraControllerHandle,
-  type FreeFlyOptions,
-  type OrbitOptions,
-} from "./controllers.js";
+  FreeFlyController,
+  FreeFlyConfigDefault,
+  defaultFreeFlyState,
+  freeFlyIsAnimating,
+  OrbitController,
+  OrbitConfigDefault,
+  defaultOrbitState,
+  deriveView,
+  Anim,
+  getParameter,
+  interpolateV2,
+  interpolateV3,
+  type FreeFlyConfig,
+  type FreeFlyState,
+  type FreeFlyInitial,
+  type FreeFlyAttachOptions,
+  type OrbitConfig,
+  type OrbitState,
+  type OrbitInitial,
+  type OrbitView,
+  type OrbitAttachOptions,
+  type AnimationKind,
+  type Animation,
+  type DragStart,
+} from "./controllers/index.js";
 
 export {
   box, quad,

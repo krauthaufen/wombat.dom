@@ -33,3 +33,11 @@ Tracking deferred work and stretch ideas. Living document — entries get crosse
 ## Rendering
 - [ ] Multi-output post-processing chains beyond the pickId attachment.
 - [ ] Sparse / dirty-region picking readback (skip readback when no relevant pointer event).
+
+## Controllers (FreeFly / Orbit)
+- [ ] Gamepad input for FreeFlyController — F# wires `OnGamepadAxisChange` / `OnGamepadButtonDown/Up` to MoveVec/TurnVec; the TS port currently omits this. Re-add via the GamepadAPI once the scene-event side surfaces gamepad events.
+- [ ] FreeFlyController `FlyTo` animation — F# branch present (yaw/pitch deltas + global target move); the TS port leaves this for now (no test consumer yet).
+- [ ] Virtual-touch-stick UI overlay for FreeFly — the original F# resource drew on-canvas joystick widgets. The TS port replaces this with multi-pointer gestures; an explicit overlay (with thumbstick rendering + dead-zones) is still nice-to-have.
+- [ ] Orbit pick-aware MMB-up snap to picked depth (F# uses `model.pick V2d.Half` after pan release to recenter; TS port has the hook but no PickRegistry threading yet).
+- [ ] OrbitController free-pan vs scroll-pan toggle (F# has `freeMovePan = true` hard-coded; expose as config).
+- [ ] Damping/spring tuning surface for OrbitController (currently `speed` controls integration gain, but no per-axis spring constants).

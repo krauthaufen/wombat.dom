@@ -11,10 +11,10 @@
 import { mount } from "@aardworx/wombat.dom";
 import {
   DefaultSurfaces,
+  OrbitController,
   RenderControl,
   Sg,
   aspectFromViewport,
-  orbitController,
   perspective,
 } from "@aardworx/wombat.dom/scene";
 import { HashMap } from "@aardworx/wombat.adaptive";
@@ -44,12 +44,13 @@ console.error = (...args) => {
   status.style.color = "#ff7777";
 };
 
-// Orbit controller — owns its own rAF loop and pointer/wheel
-// listeners (attached after the canvas exists, in `onReady`).
-const ctl = orbitController({
-  distance: 5,
-  yaw: Math.PI / 6,
-  pitch: 0.4,
+// Orbit controller — listeners + per-frame integration are attached
+// after the canvas exists (in `onReady`); the controller is driven
+// by `info.time` (the per-frame clock).
+const ctl = OrbitController.create({
+  radius: 5,
+  phi: Math.PI / 6,
+  theta: 0.4,
 });
 
 // Clear the framebuffer to a dark grey before rendering each frame.
@@ -65,8 +66,8 @@ mount(root, (
   <RenderControl
     sampleCount={4}
     clear={clear}
-    onReady={({ canvas }) => {
-      ctl.attach(canvas);
+    onReady={({ canvas, time }) => {
+      ctl.attach(canvas, time);
       status.textContent = "ready — drag to rotate, wheel to zoom";
     }}
   >
