@@ -88,3 +88,21 @@ export {
   DefaultSurfaces,
   basic,
 } from "./defaultSurfaces.js";
+
+export {
+  n24DecodeI32, n24EncodeI32,
+  n24DecodeF32, n24EncodeF32,
+  n24ShaderHelpers,
+  N24_BITS_PER_AXIS,
+  viewSpaceNormalVertexEffect,
+  pickDepthBeforeEffect,
+  pickFinalAEffect,
+  pickFinalANoPiEffect,
+  pickFinalANoNormalEffect,
+  pickFinalANoNormalNoPiEffect,
+  pickFinalBEffect,
+  chooseChain,
+  composePickChain,
+  type PickFinalTag,
+  type PickChainChoice,
+} from "./picking/index.js";

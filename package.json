@@ -72,7 +72,7 @@
   "peerDependencies": {
     "@aardworx/wombat.base": "^0.3.0",
     "@aardworx/wombat.rendering": "^0.1.0",
-    "@aardworx/wombat.shader": "^0.2.1"
+    "@aardworx/wombat.shader": "^0.2.2"
   },
   "peerDependenciesMeta": {
     "@aardworx/wombat.base": {
@@ -88,7 +88,7 @@
   "devDependencies": {
     "@aardworx/wombat.base": "^0.3.0",
     "@aardworx/wombat.rendering": "^0.1.1",
-    "@aardworx/wombat.shader": "^0.2.1",
+    "@aardworx/wombat.shader": "^0.2.2",
     "@types/node": "^20.11.0",
     "@webgpu/types": "^0.1.69",
     "happy-dom": "^14.0.0",
