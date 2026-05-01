@@ -25,6 +25,25 @@ const root = document.getElementById("app")!;
 const status = document.getElementById("status")!;
 status.textContent = "starting…";
 
+// Surface unhandled errors / warnings into the on-page status
+// div — handy when the dev tools aren't reachable (e.g. mobile).
+window.addEventListener("error", (e) => {
+  status.textContent = "error: " + (e.error?.message ?? e.message);
+  status.style.color = "#ff7777";
+});
+window.addEventListener("unhandledrejection", (e) => {
+  const msg = e.reason?.message ?? String(e.reason);
+  status.textContent = "promise rejected: " + msg;
+  status.style.color = "#ff7777";
+});
+const origConsoleError = console.error.bind(console);
+console.error = (...args) => {
+  origConsoleError(...args);
+  const text = args.map(a => a instanceof Error ? a.message : String(a)).join(" ");
+  status.textContent = "console.error: " + text.slice(0, 500);
+  status.style.color = "#ff7777";
+};
+
 // Orbit controller — owns its own rAF loop and pointer/wheel
 // listeners (attached after the canvas exists, in `onReady`).
 const ctl = orbitController({

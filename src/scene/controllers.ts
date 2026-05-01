@@ -220,9 +220,15 @@ export interface OrbitOptions {
 /**
  * Orbit-around-target controller.
  *
+ * Mouse:
  *   Left-drag    rotate (yaw + pitch)
- *   Wheel        zoom (multiplicative on distance)
  *   Middle-drag  pan target along the screen plane
+ *   Wheel        zoom (multiplicative on distance)
+ *
+ * Touch:
+ *   1 finger     rotate
+ *   2 fingers    pinch zoom + drag pan (translation of the
+ *                centroid pans, change in distance zooms)
  */
 export function orbitController(opts: OrbitOptions = {}): CameraControllerHandle {
   const targetC: ChangeableValue<V3d> = cval(opts.target ?? V3d.zero);
@@ -238,8 +244,15 @@ export function orbitController(opts: OrbitOptions = {}): CameraControllerHandle
   let pendingPitch = 0;
   let pendingPan = new V3d(0, 0, 0);
   let pendingZoom = 0;
-  let leftDrag = false;
-  let middleDrag = false;
+
+  // Active pointers, tracked by pointerId so we can support
+  // multi-touch (and a stuck-button mouse gesture). For each
+  // pointer, the last-seen position in CSS pixels.
+  interface ActivePointer { x: number; y: number; type: string; button: number }
+  const active = new Map<number, ActivePointer>();
+  // Last-known centroid + distance from a 2-pointer gesture, used
+  // to compute deltas between successive moves of either finger.
+  let twoPointer: { cx: number; cy: number; dist: number } | undefined;
 
   const eye = AVal.zip(targetC, upC, yawC, pitchC, distanceC).map((tgt, up, yaw, pitch, d) =>
     eyeFromOrbit(tgt, up, yaw, pitch, d),
@@ -278,39 +291,88 @@ export function orbitController(opts: OrbitOptions = {}): CameraControllerHandle
     pendingPan = new V3d(0, 0, 0);
   };
 
+  // Build the right / screen-up basis vectors at the current
+  // camera pose. Used for screen-plane panning.
+  const screenBasis = (): { right: V3d; upScreen: V3d; d: number } => {
+    const tgt = AVal.force(targetC);
+    const up = AVal.force(upC);
+    const yaw = AVal.force(yawC);
+    const pitch = AVal.force(pitchC);
+    const d = AVal.force(distanceC);
+    const eyeNow = eyeFromOrbit(tgt, up, yaw, pitch, d);
+    const fwd = tgt.sub(eyeNow).normalize();
+    const right = fwd.cross(up).normalize();
+    const upScreen = right.cross(fwd).normalize();
+    return { right, upScreen, d };
+  };
+
   // ---- Event wiring ----
   const onPointerDown = (e: PointerEvent): void => {
-    if (e.button === 0) leftDrag = true;
-    else if (e.button === 1) middleDrag = true;
-    else return;
+    // Mouse: only react to left + middle. Touch / pen: any
+    // pointer counts as an active gesture finger (button is 0
+    // for primary touch by spec).
+    const isMouse = e.pointerType === "mouse";
+    if (isMouse && e.button !== 0 && e.button !== 1) return;
+    active.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType, button: e.button });
+    twoPointer = undefined;  // recompute centroid on next move
     (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
     e.preventDefault();
   };
   const onPointerMove = (e: PointerEvent): void => {
-    if (leftDrag) {
-      pendingYaw   += e.movementX * turnSensitivity;
-      pendingPitch += e.movementY * turnSensitivity;
-    } else if (middleDrag) {
-      // Pan along screen-plane: build current right + up, scale by
-      // mouse delta * distance.
-      const tgt = AVal.force(targetC);
-      const up  = AVal.force(upC);
-      const yaw = AVal.force(yawC);
-      const pitch = AVal.force(pitchC);
-      const d = AVal.force(distanceC);
-      const eyeNow = eyeFromOrbit(tgt, up, yaw, pitch, d);
-      const fwd = tgt.sub(eyeNow).normalize();
-      const right = fwd.cross(up).normalize();
-      const upScreen = right.cross(fwd).normalize();
-      const k = d * 0.001;
-      pendingPan = pendingPan
-        .add(right.mul(-e.movementX * k))
-        .add(upScreen.mul(e.movementY * k));
+    const prev = active.get(e.pointerId);
+    if (prev === undefined) return;
+    const dx = e.clientX - prev.x;
+    const dy = e.clientY - prev.y;
+    prev.x = e.clientX;
+    prev.y = e.clientY;
+
+    if (active.size === 1) {
+      // 1-pointer rotate (mouse left-drag, single touch, single
+      // pen). Middle-mouse drag is the pan path below.
+      if (prev.type === "mouse" && prev.button === 1) {
+        const { right, upScreen, d } = screenBasis();
+        const k = d * 0.001;
+        pendingPan = pendingPan
+          .add(right.mul(-dx * k))
+          .add(upScreen.mul(dy * k));
+      } else {
+        pendingYaw   += dx * turnSensitivity;
+        pendingPitch += dy * turnSensitivity;
+      }
+      return;
+    }
+
+    if (active.size === 2) {
+      // 2-pointer pinch + pan. Compute centroid + pairwise
+      // distance, compare to last-known.
+      const pts = Array.from(active.values());
+      const a = pts[0]!, b = pts[1]!;
+      const cx = (a.x + b.x) * 0.5;
+      const cy = (a.y + b.y) * 0.5;
+      const ddx = a.x - b.x, ddy = a.y - b.y;
+      const dist = Math.sqrt(ddx * ddx + ddy * ddy);
+      if (twoPointer !== undefined) {
+        const dCx = cx - twoPointer.cx;
+        const dCy = cy - twoPointer.cy;
+        const { right, upScreen, d } = screenBasis();
+        const k = d * 0.001;
+        pendingPan = pendingPan
+          .add(right.mul(-dCx * k))
+          .add(upScreen.mul(dCy * k));
+        // Pinch out (dist grows) → zoom in (negative steps).
+        // Each `pendingZoom` step multiplies distance by zoomFactor;
+        // tune the divisor so a typical pinch covers a few steps.
+        if (twoPointer.dist > 0) {
+          const ratio = twoPointer.dist / dist;
+          pendingZoom += Math.log(ratio) / Math.log(zoomFactor);
+        }
+      }
+      twoPointer = { cx, cy, dist };
     }
   };
   const onPointerUp = (e: PointerEvent): void => {
-    if (e.button === 0) leftDrag = false;
-    else if (e.button === 1) middleDrag = false;
+    active.delete(e.pointerId);
+    if (active.size < 2) twoPointer = undefined;
     (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
   };
   const onWheel = (e: WheelEvent): void => {

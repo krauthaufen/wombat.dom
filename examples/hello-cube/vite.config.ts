@@ -7,7 +7,13 @@ import { defineConfig } from "vite";
 // in the app code.
 
 export default defineConfig({
-  server: { port: 5175 },
+  server: {
+    port: 5175,
+    // Permit Tailscale-issued hostnames + LAN access. Vite's
+    // default host-allowlist refuses requests that come in
+    // through a reverse proxy under a different name.
+    allowedHosts: [".ts.net", "localhost"],
+  },
   esbuild: {
     jsx: "automatic",
     jsxImportSource: "@aardworx/wombat.dom",

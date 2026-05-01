@@ -160,16 +160,38 @@ export function RenderControl(props: RenderControlProps): import("../vnode.js").
   // attribute binder.
   const { scene, children, view, proj, defaultEffect, clear,
           device, runtime, attach, format, depthFormat, sampleCount,
-          onReady,
+          onReady, style: userStyle,
           ...htmlProps } = props;
   void scene; void children; void view; void proj; void defaultEffect; void clear;
   void device; void runtime; void attach;
   void format; void depthFormat; void sampleCount;
   void onReady;
 
+  // Default styles defend against the browser eating pointer
+  // events that should reach the controller:
+  //   - `touchAction: "none"` disables iOS Safari's pan/pinch/
+  //     double-tap-zoom on the canvas; without this `pointermove`
+  //     gets cancelled by the browser's gesture detector.
+  //   - `userSelect: "none"` + `-webkit-touch-callout: none`
+  //     prevents long-press selection / context menus.
+  //   - `overscrollBehavior: "contain"` stops drag from chaining
+  //     into pull-to-refresh on the parent scroller.
+  // User-supplied `style` values override.
+  const defaultStyle: Record<string, string | number | boolean | null | undefined> = {
+    touchAction: "none",
+    userSelect: "none",
+    "-webkit-user-select": "none",
+    "-webkit-touch-callout": "none",
+    overscrollBehavior: "contain",
+  };
+  const mergedStyle =
+    typeof userStyle === "string"
+      ? userStyle
+      : { ...defaultStyle, ...(userStyle ?? {}) };
+
   // Use the JSX runtime indirectly via the global jsx factory —
   // this file is `.tsx` so the build emits a jsx call.
-  return <canvas ref={onCanvasMount} {...htmlProps}/>;
+  return <canvas ref={onCanvasMount} style={mergedStyle} {...htmlProps}/>;
 }
 
 // ---------------------------------------------------------------------------
@@ -209,13 +231,21 @@ async function initialise(
   // exposes `framebuffer: aval<IFramebuffer>` and `size:
   // aval<{w,h}>`.
   //
-  // `colorAttachmentName: "outColor"` aligns the framebuffer
-  // signature with the de-facto wombat.shader convention (the
-  // fragment output is named `outColor` in `DefaultSurfaces.basic`
-  // and in the renderto-real coverage in wombat.rendering). User
-  // code can still override via `attach.colorAttachmentName`.
+  // Defaults:
+  //   - `colorAttachmentName: "outColor"` aligns the framebuffer
+  //     signature with the de-facto wombat.shader convention (the
+  //     fragment output is named `outColor` in
+  //     `DefaultSurfaces.basic` and in the renderto-real coverage
+  //     in wombat.rendering).
+  //   - `depthFormat: "depth24plus"` so the pipeline's `depth: {
+  //     write, compare: "less" }` state actually has a buffer to
+  //     test against. Without it, draws happen in vertex order —
+  //     visibly wrong for opaque 3D geometry.
+  //
+  // `attach`/`format`/`depthFormat`/`sampleCount` props override.
   const attachment = attachCanvas(device, canvas, {
     colorAttachmentName: "outColor",
+    depthFormat: "depth24plus",
     ...(props.attach ?? {}),
     ...(props.format !== undefined ? { format: props.format } : {}),
     ...(props.depthFormat !== undefined ? { depthFormat: props.depthFormat } : {}),

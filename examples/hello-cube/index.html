@@ -2,11 +2,27 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover lets the canvas reach behind iOS notches.
+         maximum-scale=1 + user-scalable=no kill double-tap-zoom and
+         pinch-on-page so the orbit controller's pinch gesture isn't
+         intercepted by Safari. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>wombat.dom — hello cube</title>
     <style>
       :root { color-scheme: dark; }
-      html, body { margin: 0; padding: 0; height: 100%; background: #111; font-family: system-ui, sans-serif; color: #ddd; }
+      html, body {
+        margin: 0; padding: 0; height: 100%;
+        background: #111; font-family: system-ui, sans-serif; color: #ddd;
+        /* Belt-and-braces: even with the canvas-level touch-action
+           applied by RenderControl, lock the page itself so a stray
+           drag near the edges doesn't pull-to-refresh / overscroll. */
+        overflow: hidden;
+        overscroll-behavior: none;
+        touch-action: none;
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
+      }
       body { display: grid; grid-template-rows: auto 1fr auto; }
       header { padding: 12px 16px; border-bottom: 1px solid #333; }
       header h1 { margin: 0; font-size: 14px; font-weight: 500; }
