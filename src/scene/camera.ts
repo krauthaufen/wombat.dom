@@ -1,7 +1,12 @@
-// Camera helpers — view + projection trafo builders that take
-// reactive parameters (`number | aval<number>`, `V3d | aval<V3d>`)
-// and produce `aval<Trafo3d>` ready to feed into `<Sg View=…>`,
-// `<Sg Proj=…>`, or `<RenderControl view proj>`.
+// View + projection trafo builders that take reactive parameters
+// (`number | aval<number>`, `V3d | aval<V3d>`) and produce
+// `aval<Trafo3d>` ready to feed into `<Sg View=…>` / `<Sg Proj=…>`
+// or `<RenderControl view proj>`.
+//
+// Deliberately no `Camera` record — view and proj travel as two
+// independent avals through the SG, and users mix them as they
+// please. A box-of-two would just add a field-spelling chore at
+// every call site.
 //
 // Conventions:
 //   - Right-handed coordinate system. Camera looks down `-Z` in
@@ -14,15 +19,6 @@
 
 import { AVal, type aval } from "@aardworx/wombat.adaptive";
 import { Trafo3d, V3d } from "@aardworx/wombat.base";
-
-// ---------------------------------------------------------------------------
-// Camera record
-// ---------------------------------------------------------------------------
-
-export interface Camera {
-  readonly view: aval<Trafo3d>;
-  readonly proj: aval<Trafo3d>;
-}
 
 // ---------------------------------------------------------------------------
 // Helpers — accept plain or aval, lift into avals
@@ -111,29 +107,18 @@ export function orthographic(opts: OrthographicOptions): aval<Trafo3d> {
 }
 
 // ---------------------------------------------------------------------------
-// Convenience — perspective camera with a viewport-driven aspect
+// Convenience — derive aspect from a viewport aval
 // ---------------------------------------------------------------------------
 
-export interface PerspectiveCameraOptions {
-  readonly view: aval<Trafo3d>;
-  readonly viewport: aval<{ width: number; height: number }>;
-  readonly fovInRadians: number | aval<number>;
-  readonly near: number | aval<number>;
-  readonly far?: number | aval<number>;
-}
-
 /**
- * Common perspective-camera setup: the projection auto-tracks the
- * viewport's aspect ratio. Plug `<RenderControl>`'s viewport aval
- * (from `onReady.viewport` or via `useViewport()`) straight in.
+ * `viewport.width / viewport.height`, clamped to avoid div-by-0
+ * during the first frame when the canvas hasn't had a layout yet.
+ *
+ * Pair with `perspective({ aspect: aspectFromViewport(viewport),
+ * ... })` to get a projection that auto-tracks canvas resizes.
  */
-export function perspectiveCamera(opts: PerspectiveCameraOptions): Camera {
-  const aspect = opts.viewport.map(v => v.width / Math.max(1, v.height));
-  const proj = perspective({
-    fovInRadians: opts.fovInRadians,
-    aspect,
-    near: opts.near,
-    ...(opts.far !== undefined ? { far: opts.far } : {}),
-  });
-  return { view: opts.view, proj };
+export function aspectFromViewport(
+  viewport: aval<{ width: number; height: number }>,
+): aval<number> {
+  return viewport.map(v => v.width / Math.max(1, v.height));
 }

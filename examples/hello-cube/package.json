@@ -1,0 +1,22 @@
+{
+  "name": "wombat.dom-example-hello-cube",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@aardworx/wombat.adaptive": "^0.2.1",
+    "@aardworx/wombat.base": "^0.3.0",
+    "@aardworx/wombat.dom": "file:../..",
+    "@aardworx/wombat.rendering": "^0.1.1",
+    "@aardworx/wombat.shader": "^0.2.1"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.69",
+    "typescript": "^5.4.0",
+    "vite": "^5.0.0"
+  }
+}

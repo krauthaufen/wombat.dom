@@ -47,7 +47,8 @@ export {
   countLeaves,
 } from "./visit.js";
 
-export { Sg } from "./constructors.js";
+export { Sg, collectSgChildren, type SgScopeProps } from "./constructors.js";
+export { sgVNode, isSgVNode, extractSgNode, SG_NODE_KEY } from "./sgVNode.js";
 
 export {
   compileScene,
@@ -61,15 +62,13 @@ export {
 } from "./renderControl.js";
 
 export {
-  type Camera,
   type LookAtOptions,
   type PerspectiveOptions,
   type OrthographicOptions,
-  type PerspectiveCameraOptions,
   lookAt,
   perspective,
   orthographic,
-  perspectiveCamera,
+  aspectFromViewport,
 } from "./camera.js";
 
 export {

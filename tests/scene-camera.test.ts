@@ -9,12 +9,12 @@ import { AVal, cval, transact } from "@aardworx/wombat.adaptive";
 import { Trafo3d, V3d } from "@aardworx/wombat.base";
 
 import {
+  aspectFromViewport,
   freeFlyController,
   lookAt,
   orbitController,
   orthographic,
   perspective,
-  perspectiveCamera,
 } from "../src/scene/index.js";
 
 // ---------------------------------------------------------------------------
@@ -90,14 +90,23 @@ describe("orthographic", () => {
   });
 });
 
-describe("perspectiveCamera", () => {
-  it("auto-tracks viewport aspect", () => {
-    const view = AVal.constant(Trafo3d.identity);
+describe("aspectFromViewport", () => {
+  it("clamps height to ≥1 to avoid div-by-0", () => {
+    const v = cval({ width: 100, height: 0 });
+    const aspect = aspectFromViewport(v);
+    expect(AVal.force(aspect)).toBe(100);  // 100 / max(1, 0) = 100
+  });
+
+  it("re-derives the projection when the viewport changes", () => {
     const viewport = cval({ width: 800, height: 400 });
-    const cam = perspectiveCamera({ view, viewport, fovInRadians: Math.PI / 2, near: 1, far: 100 });
-    const before = AVal.force(cam.proj);
+    const proj = perspective({
+      fovInRadians: Math.PI / 2,
+      aspect: aspectFromViewport(viewport),
+      near: 1, far: 100,
+    });
+    const before = AVal.force(proj);
     transact(() => { viewport.value = { width: 400, height: 800 }; });
-    const after = AVal.force(cam.proj);
+    const after = AVal.force(proj);
     expect(before).not.toBe(after);
   });
 });

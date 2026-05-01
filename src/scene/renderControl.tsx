@@ -34,8 +34,9 @@ import type {
   Effect,
 } from "@aardworx/wombat.rendering/core";
 
+import type { Child } from "../vnode.js";
 import { useScope } from "../scope.js";
-import { Sg } from "./constructors.js";
+import { Sg, collectSgChildren } from "./constructors.js";
 import { compileScene } from "./compile.js";
 import type { SgNode } from "./sg.js";
 import { TraversalState } from "./traversalState.js";
@@ -45,8 +46,23 @@ import { TraversalState } from "./traversalState.js";
 // ---------------------------------------------------------------------------
 
 export interface RenderControlProps {
-  /** The scene to render. Defaults to `Sg.empty`. */
+  /**
+   * The scene to render. Either:
+   *   - **JSX children** (preferred):
+   *       ```tsx
+   *       <RenderControl>
+   *         <Sg Trafo={[...]} Shader={DefaultSurfaces.basic()}>
+   *           <Sg.Box />
+   *         </Sg>
+   *       </RenderControl>
+   *       ```
+   *     Children pass through `collectSgChildren`, which extracts
+   *     SgNodes from JSX components, alists, asets, avals, etc.
+   *   - **`scene` prop**: a pre-built `SgNode` for code-generated
+   *     trees. Wins over JSX children when both are set.
+   */
   readonly scene?: SgNode;
+  readonly children?: Child | Child[] | SgNode | ReadonlyArray<Child | SgNode>;
 
   /**
    * View trafo (world → view). When unset, the scene's outermost
@@ -119,6 +135,12 @@ export interface RenderControlReadyInfo {
 export function RenderControl(props: RenderControlProps): import("../vnode.js").VNode {
   const scope = useScope();
 
+  // Resolve the scene tree at component-call time. The `scene`
+  // prop (if set) wins over JSX children — useful for code-
+  // generated scenes; otherwise children flow through
+  // collectSgChildren.
+  const sceneTree: SgNode = props.scene ?? collectSgChildren(props.children);
+
   // Ref callback — fires once the canvas is in the DOM. Kicks off
   // async device acquisition and returns immediately. Errors
   // (no GPU, adapter request rejected, ...) get logged rather than
@@ -126,7 +148,7 @@ export function RenderControl(props: RenderControlProps): import("../vnode.js").
   // stays mounted but never receives frames. Tests under happy-dom
   // hit this path on purpose.
   const onCanvasMount = (canvas: Element): void => {
-    initialise(canvas as HTMLCanvasElement, props, scope).catch((err) => {
+    initialise(canvas as HTMLCanvasElement, sceneTree, props, scope).catch((err) => {
       if (!scope.isDisposed) {
         console.error("[RenderControl] init failed:", err);
       }
@@ -136,11 +158,11 @@ export function RenderControl(props: RenderControlProps): import("../vnode.js").
   // Build the canvas VNode. The `ref` is consumed by mount.ts's
   // bindElementProps; everything else passes through to the DOM
   // attribute binder.
-  const { scene, view, proj, defaultEffect, clear,
+  const { scene, children, view, proj, defaultEffect, clear,
           device, runtime, attach, format, depthFormat, sampleCount,
           onReady,
           ...htmlProps } = props;
-  void scene; void view; void proj; void defaultEffect; void clear;
+  void scene; void children; void view; void proj; void defaultEffect; void clear;
   void device; void runtime; void attach;
   void format; void depthFormat; void sampleCount;
   void onReady;
@@ -156,6 +178,7 @@ export function RenderControl(props: RenderControlProps): import("../vnode.js").
 
 async function initialise(
   canvas: HTMLCanvasElement,
+  sceneTree: SgNode,
   props: RenderControlProps,
   scope: import("../scope.js").Scope,
 ): Promise<void> {
@@ -198,7 +221,6 @@ async function initialise(
   // Resolve view / proj — props take precedence; otherwise sniff
   // the scene's outermost View / Proj scopes; otherwise default
   // to identity (with a console.warn — picking won't work).
-  const sceneTree = props.scene ?? Sg.empty;
   const sniffed = sniffViewProj(sceneTree);
   const view = props.view ?? sniffed.view ?? warnDefault("view");
   const proj = props.proj ?? sniffed.proj ?? warnDefault("proj");

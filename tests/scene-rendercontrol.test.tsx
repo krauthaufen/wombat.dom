@@ -13,7 +13,9 @@
 
 import { describe, expect, it } from "vitest";
 import { mount, useScope } from "../src/index.js";
-import { RenderControl, Sg } from "../src/scene/index.js";
+import {
+  collectSgChildren, DefaultSurfaces, RenderControl, Sg,
+} from "../src/scene/index.js";
 
 describe("RenderControl — DOM", () => {
   it("mounts a canvas element with passed-through HTML props", () => {
@@ -67,5 +69,63 @@ describe("RenderControl — DOM", () => {
 
   it("useScope() throws when called outside a component body", () => {
     expect(() => useScope()).toThrow(/outside a component/);
+  });
+});
+
+describe("Sg JSX wrappers", () => {
+  it("<Sg.Box/> wraps the box leaf in a tagged Fragment", () => {
+    const got = collectSgChildren(<Sg.Box/>);
+    expect(got.kind).toBe("Leaf");
+  });
+
+  it("<Sg Trafo Shader>...</Sg> wraps children with attribute scopes (innermost-out)", async () => {
+    const { V3d, Trafo3d } = await import("@aardworx/wombat.base");
+    const node = collectSgChildren(
+      <Sg
+        Trafo={[Trafo3d.translation(new V3d(1, 0, 0))]}
+        Shader={DefaultSurfaces.basic()}
+      >
+        <Sg.Box/>
+      </Sg>,
+    );
+    // Outermost wrapper is Trafo (per JSX rule: leftmost outermost,
+    // applied last to a point).
+    expect(node.kind).toBe("Trafo");
+    if (node.kind === "Trafo") {
+      expect(node.child.kind).toBe("Shader");
+      if (node.child.kind === "Shader") {
+        expect(node.child.child.kind).toBe("Leaf");
+      }
+    }
+  });
+
+  it("multiple JSX children become an Sg.group", () => {
+    const node = collectSgChildren(
+      <>
+        <Sg.Box/>
+        <Sg.Quad/>
+      </>,
+    );
+    expect(node.kind).toBe("Group");
+  });
+
+  it("an array of children flattens into a Group", () => {
+    const arr = [<Sg.Box/>, <Sg.Quad/>];
+    const node = collectSgChildren(arr);
+    expect(node.kind).toBe("Group");
+  });
+
+  it("RenderControl accepts JSX children scenes", () => {
+    const root = document.createElement("div");
+    const handle = mount(
+      root,
+      <RenderControl>
+        <Sg Shader={DefaultSurfaces.basic()}>
+          <Sg.Box/>
+        </Sg>
+      </RenderControl>,
+    );
+    expect(root.querySelector("canvas")).not.toBeNull();
+    handle.dispose();
   });
 });
