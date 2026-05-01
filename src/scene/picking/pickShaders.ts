@@ -210,9 +210,8 @@ export function pickFinalAEffect(): Effect {
       PickPartIndex: i32;
     }, b: FragmentBuiltinIn): { outColor: V4f; pickId: V4f; Depth: f32 } {
       const n24 = n24Encode(input.ViewSpaceNormal.normalize());
-      const d = 2.0 * b.fragCoord.z - 1.0;
-      const id = new V4f(PickId as f32, n24, d, input.PickPartIndex as f32);
-      return { outColor: input.outColor, pickId: id, Depth: d };
+      const id = new V4f(PickId as f32, n24, b.fragCoord.z, input.PickPartIndex as f32);
+      return { outColor: input.outColor, pickId: id, Depth: b.fragCoord.z };
     }
   `;
 
@@ -239,9 +238,8 @@ export function pickFinalANoPiEffect(): Effect {
       ViewSpaceNormal: V3f;
     }, b: FragmentBuiltinIn): { outColor: V4f; pickId: V4f; Depth: f32 } {
       const n24 = n24Encode(input.ViewSpaceNormal.normalize());
-      const d = 2.0 * b.fragCoord.z - 1.0;
-      const id = new V4f(PickId as f32, n24, d, 0.0);
-      return { outColor: input.outColor, pickId: id, Depth: d };
+      const id = new V4f(PickId as f32, n24, b.fragCoord.z, 0.0);
+      return { outColor: input.outColor, pickId: id, Depth: b.fragCoord.z };
     }
   `;
 
@@ -267,9 +265,8 @@ export function pickFinalANoNormalEffect(): Effect {
       outColor: V4f;
       PickPartIndex: i32;
     }, b: FragmentBuiltinIn): { outColor: V4f; pickId: V4f; Depth: f32 } {
-      const d = 2.0 * b.fragCoord.z - 1.0;
-      const id = new V4f(PickId as f32, 0.0, d, input.PickPartIndex as f32);
-      return { outColor: input.outColor, pickId: id, Depth: d };
+      const id = new V4f(PickId as f32, 0.0, b.fragCoord.z, input.PickPartIndex as f32);
+      return { outColor: input.outColor, pickId: id, Depth: b.fragCoord.z };
     }
   `;
 
@@ -293,9 +290,8 @@ export function pickFinalANoNormalNoPiEffect(): Effect {
     function fsMain(input: {
       outColor: V4f;
     }, b: FragmentBuiltinIn): { outColor: V4f; pickId: V4f; Depth: f32 } {
-      const d = 2.0 * b.fragCoord.z - 1.0;
-      const id = new V4f(PickId as f32, 0.0, d, 0.0);
-      return { outColor: input.outColor, pickId: id, Depth: d };
+      const id = new V4f(PickId as f32, 0.0, b.fragCoord.z, 0.0);
+      return { outColor: input.outColor, pickId: id, Depth: b.fragCoord.z };
     }
   `;
 
