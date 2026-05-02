@@ -16,7 +16,7 @@ Tracking deferred work and stretch ideas. Living document — entries get crosse
 - [x] PointerCapture release on scope unmount (dispatcher invalidates capture when registry lookup no longer matches).
 - [x] Configurable tap / long-press thresholds at the RenderControl level (`<RenderControl tapThresholds={…}>`).
 - [x] Implicit picking: `<RenderControl>` always allocates a per-instance `PickRegistry` and pickId attachment; the registry is exposed via `onReady({ picking })`. (Previously gated on a `picking` prop.)
-- [ ] Per-scope `local2World` in capture/bubble: push the scope's accumulated model trafo onto the SceneEventLocation's `local2World` as the event walks the path so handlers see `e.position` / `e.normal` / `e.pickRay` in their own local frame. Currently `local2World = Trafo3d.identity` everywhere — handlers see world-space values via `e.position`. Matching F#'s "matrix walks down the path" requires the registry to capture each scope-node's `state.model` and the dispatcher's runDownAll/runUpAll/runCaptureBubble walks to thread `event.transformed(scope.local2World)` through.
+- [x] Per-scope `local2World` in capture/bubble: each `LeafPickEntry` carries a snapshot of `state.model` taken at `pushHandlers` time; the dispatcher applies it via `event.transformed(...)` before invoking each handler so `e.position` / `e.normal` / `e.pickRay` are in that scope's own local frame.
 
 ## Scene graph
 - [x] OnDragStart / OnDrag / OnDragEnd synthesis (Phase 6 — pointerdown → move past `DRAG_THRESHOLD_PX` → up; suppresses trailing tap).
@@ -25,7 +25,8 @@ Tracking deferred work and stretch ideas. Living document — entries get crosse
 ## Render state
 - [x] Render-state scopes (DepthTest/Mask/Bias/Clamp, CullMode, FrontFace, FillMode, Multisample, BlendConstant, ColorMask, StencilMode, Pass) — Phase 1.
 - [ ] **Reactive PipelineState**: render-state scope avals are forced once at compile time. Dynamic state changes require swapping the subtree via `Sg.adaptive` so a fresh RenderObject is produced. A direct aval pipeline state would avoid the reflow.
-- [ ] **Multisample / DepthClamp** — gated on adapter features (`unclippedDepth`); falls back to no-op with a once-only console warning.
+- [ ] **Multisample (`<Sg Multisample={false}>`)** — NOT wired into `PipelineState`. WebGPU has no per-pipeline switch to disable multisampling below the framebuffer's `sampleCount`, and the closest equivalent (`sampleMask = 0`) has no plain pipeline expression either. The framebuffer's `sampleCount` is the single source of truth; per-leaf "disable MSAA" is a known limitation. (See compile.ts `derivePipelineState`.)
+- [ ] **DepthClamp** — gated on the `unclippedDepth` adapter feature; consumed via `primitive.unclippedDepth` in the snapshot path. Pipeline compile fails when the feature is absent (no silent fallback).
 - [ ] **FillMode line/point** — approximated by topology override; no real polygon-mode wireframe (WebGPU limitation).
 
 ## Time-driven adaptivity

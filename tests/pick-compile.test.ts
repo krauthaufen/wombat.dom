@@ -104,7 +104,7 @@ describe("compileScene — picking integration", () => {
     const scope = registry.lookup(id);
     expect(scope).toBeDefined();
     expect(scope!.handlers.length).toBe(1);
-    expect(scope!.handlers[0]!.bubble!.OnClick).toBe(onClick);
+    expect(scope!.handlers[0]!.handlers.bubble!.OnClick).toBe(onClick);
 
     // composed effect has more stages than the user effect, and
     // compiles to WGSL successfully.
@@ -141,8 +141,8 @@ describe("compileScene — picking integration", () => {
     expect(id0).not.toBe(id1);
     expect(registry.size()).toBe(2);
 
-    expect(registry.lookup(id0)!.handlers[0]!.bubble!.OnClick).toBe(onA);
-    expect(registry.lookup(id1)!.handlers[0]!.bubble!.OnClick).toBe(onB);
+    expect(registry.lookup(id0)!.handlers[0]!.handlers.bubble!.OnClick).toBe(onA);
+    expect(registry.lookup(id1)!.handlers[0]!.handlers.bubble!.OnClick).toBe(onB);
   });
 
   it("no picking option → effect is the user's, no PickId uniform", () => {

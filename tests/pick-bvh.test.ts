@@ -98,7 +98,7 @@ interface AcquireOpts {
 
 function acquire(reg: PickRegistry, handlers: ReadonlyArray<Record<string, (e: SceneEvent) => unknown>>, opts: AcquireOpts = {}): number {
   return reg.acquire({
-    handlers: handlers.map(bubbleOf),
+    handlers: handlers.map(h => ({ handlers: bubbleOf(h), local2World: AVal.constant(Trafo3d.identity) })),
     cursor: undefined,
     pickThrough: opts.pickThrough ?? false,
     active: AVal.constant(true),

@@ -33,7 +33,7 @@
 import { AVal, avalAddCallback } from "@aardworx/wombat.adaptive";
 import { Trafo3d, V2d, V2i, V3d, V4d } from "@aardworx/wombat.base";
 
-import type { LeafPickScope, PickRegistry } from "./registry.js";
+import type { LeafPickEntry, LeafPickScope, PickRegistry } from "./registry.js";
 import { type PickRegion } from "./readback.js";
 import {
   SceneEvent,
@@ -132,7 +132,7 @@ interface LastTapInfo {
 
 export class PickDispatcher implements SceneEventDispatch {
   private lastHit: number = 0;
-  private lastPath: ReadonlyArray<import("../sg.js").EventHandlers> = [];
+  private lastPath: ReadonlyArray<LeafPickEntry> = [];
   private seq: number = 0;
   private lastSettledSeq: number = 0;
 
@@ -829,22 +829,26 @@ export class PickDispatcher implements SceneEventDispatch {
    * logged, then the loop continues. (Aardvark.Dom doesn't isolate
    * handlers, but TS userland tends to throw more freely.)
    */
-  private runCaptureBubble(path: ReadonlyArray<import("../sg.js").EventHandlers>, ev: SceneEvent): void {
+  private runCaptureBubble(path: ReadonlyArray<LeafPickEntry>, ev: SceneEvent): void {
     // Capture phase: outer → inner
     for (let i = 0; i < path.length; i++) {
-      const h = path[i]!.capture?.[ev.kind];
+      const h = path[i]!.handlers.capture?.[ev.kind];
       if (h !== undefined) {
+        const local = AVal.force(path[i]!.local2World);
+        const localEv = ev.transformed(local);
         let r: boolean | void;
-        try { r = h(ev); } catch (err) { console.error(`[PickDispatcher] capture ${ev.kind} threw:`, err); continue; }
+        try { r = h(localEv); } catch (err) { console.error(`[PickDispatcher] capture ${ev.kind} threw:`, err); continue; }
         if (r === false || ev.propagationStopped) return;
       }
     }
     // Bubble phase: inner → outer
     for (let i = path.length - 1; i >= 0; i--) {
-      const h = path[i]!.bubble?.[ev.kind];
+      const h = path[i]!.handlers.bubble?.[ev.kind];
       if (h !== undefined) {
+        const local = AVal.force(path[i]!.local2World);
+        const localEv = ev.transformed(local);
         let r: boolean | void;
-        try { r = h(ev); } catch (err) { console.error(`[PickDispatcher] bubble ${ev.kind} threw:`, err); continue; }
+        try { r = h(localEv); } catch (err) { console.error(`[PickDispatcher] bubble ${ev.kind} threw:`, err); continue; }
         if (r === false || ev.propagationStopped) return;
       }
     }
@@ -858,8 +862,8 @@ export class PickDispatcher implements SceneEventDispatch {
    * (inner-first) per F#.
    */
   private runUpAll(
-    path: ReadonlyArray<import("../sg.js").EventHandlers>,
-    exclude: ReadonlyArray<import("../sg.js").EventHandlers>,
+    path: ReadonlyArray<LeafPickEntry>,
+    exclude: ReadonlyArray<LeafPickEntry>,
     ev: SceneEvent,
   ): void {
     for (let i = path.length - 1; i >= exclude.length; i--) {
@@ -868,8 +872,8 @@ export class PickDispatcher implements SceneEventDispatch {
   }
 
   private runDownAll(
-    path: ReadonlyArray<import("../sg.js").EventHandlers>,
-    exclude: ReadonlyArray<import("../sg.js").EventHandlers>,
+    path: ReadonlyArray<LeafPickEntry>,
+    exclude: ReadonlyArray<LeafPickEntry>,
     ev: SceneEvent,
   ): void {
     for (let i = exclude.length; i < path.length; i++) {
@@ -877,14 +881,17 @@ export class PickDispatcher implements SceneEventDispatch {
     }
   }
 
-  private fireBoth(h: import("../sg.js").EventHandlers, ev: SceneEvent): void {
-    const cap = h.capture?.[ev.kind];
+  private fireBoth(entry: LeafPickEntry, ev: SceneEvent): void {
+    const cap = entry.handlers.capture?.[ev.kind];
+    const bub = entry.handlers.bubble?.[ev.kind];
+    if (cap === undefined && bub === undefined) return;
+    const local = AVal.force(entry.local2World);
+    const localEv = ev.transformed(local);
     if (cap !== undefined) {
-      try { cap(ev); } catch (err) { console.error(`[PickDispatcher] capture ${ev.kind} threw:`, err); }
+      try { cap(localEv); } catch (err) { console.error(`[PickDispatcher] capture ${ev.kind} threw:`, err); }
     }
-    const bub = h.bubble?.[ev.kind];
     if (bub !== undefined) {
-      try { bub(ev); } catch (err) { console.error(`[PickDispatcher] bubble ${ev.kind} threw:`, err); }
+      try { bub(localEv); } catch (err) { console.error(`[PickDispatcher] bubble ${ev.kind} threw:`, err); }
     }
   }
 
@@ -1104,9 +1111,17 @@ export class PickDispatcher implements SceneEventDispatch {
   }
 }
 
-function sharedPrefixLength<T>(a: ReadonlyArray<T>, b: ReadonlyArray<T>): number {
+function sharedPrefixLength(
+  a: ReadonlyArray<LeafPickEntry>,
+  b: ReadonlyArray<LeafPickEntry>,
+): number {
   const n = Math.min(a.length, b.length);
   let i = 0;
-  while (i < n && a[i] === b[i]) i++;
+  // Reference equality on the inner `handlers` payload (the
+  // identity carrier from `<Sg On=…>` — `pushHandlers` allocates a
+  // fresh entry wrapper per traversal but copies the same handlers
+  // ref, so two leaves under the same On scope share the same
+  // `entry.handlers` identity).
+  while (i < n && a[i]!.handlers === b[i]!.handlers) i++;
   return i;
 }

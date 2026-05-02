@@ -140,7 +140,12 @@ describe("TraversalState — attribute composition", () => {
     const a = { bubble: { OnClick: (): void => {} } };
     const b = { bubble: { OnClick: (): void => {} } };
     const s = TraversalState.empty.pushHandlers(a).pushHandlers(b);
-    expect(s.handlers).toEqual([a, b]);
+    expect(s.handlers).toHaveLength(2);
+    expect(s.handlers[0]!.handlers).toBe(a);
+    expect(s.handlers[1]!.handlers).toBe(b);
+    // Each entry snapshots the model trafo at scope-push time.
+    expect(s.handlers[0]!.local2World).toBeDefined();
+    expect(s.handlers[1]!.local2World).toBeDefined();
   });
 
   it("active AND-composes", () => {

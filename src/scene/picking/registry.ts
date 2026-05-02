@@ -5,7 +5,14 @@
 // Mirrors the F# `Aardvark.Dom.SceneHandler.acquireId` /
 // `pickBuffer` capture, minus the recycling. See file footer.
 
-import { AVal, cval, transact, type aval } from "@aardworx/wombat.adaptive";
+import {
+  AVal,
+  avalAddCallback,
+  cval,
+  transact,
+  type aval,
+  type IDisposable,
+} from "@aardworx/wombat.adaptive";
 import { Bvh, type IIntersectable, type Trafo3d } from "@aardworx/wombat.base";
 
 import type { EventHandlers } from "../sg.js";
@@ -22,6 +29,26 @@ export type PickId = number;
 export const PICK_ID_MAX: PickId = (1 << 24) - 1;
 
 /**
+ * One entry in the leaf's path-of-scopes. `handlers` is the
+ * `EventHandlers` value from the surrounding `<Sg On=…>` scope —
+ * carried by reference, so two leaves sharing the same On scope
+ * also share the same entry's `handlers` identity (used for the
+ * dispatcher's prefix diff). `local2World` is the model trafo
+ * accumulated UP TO AND INCLUDING this scope (snapshotted from
+ * `state.model` when the scope was pushed in TraversalState).
+ *
+ * The dispatcher applies `local2World.inverse()` (via
+ * `SceneEvent.transformed`) when invoking the handlers, so each
+ * level's handler sees `e.position` / `e.normal` / `e.pickRay` in
+ * its own local frame. F# parity: `event.Transformed(model)` —
+ * see `Aardvark.Dom/SceneGraph/TraversalState.fs runCapture/runBubble`.
+ */
+export interface LeafPickEntry {
+  readonly handlers: EventHandlers;
+  readonly local2World: aval<Trafo3d>;
+}
+
+/**
  * The scope information captured per leaf at compile time. The
  * picking dispatcher (next milestone) reads this to:
  *   - run the right event handlers when a pixel hit lands here,
@@ -32,7 +59,7 @@ export const PICK_ID_MAX: PickId = (1 << 24) - 1;
  */
 export interface LeafPickScope {
   readonly pickId: PickId;
-  readonly handlers: ReadonlyArray<EventHandlers>;
+  readonly handlers: ReadonlyArray<LeafPickEntry>;
   readonly cursor: string | aval<string> | undefined;
   readonly pickThrough: boolean;
   readonly active: aval<boolean>;
@@ -83,14 +110,25 @@ export class PickRegistry {
   // wrong layout).
   private readonly modes = new Map<PickId, PickMode>();
 
-  // BVH cache invalidation: every `acquire` bumps `_dirtyVersion`;
-  // `buildBvh` rebuilds (and stamps `_bvhVersion = _dirtyVersion`)
-  // only when the two diverge. This is intentionally coarse — a full
-  // rebuild on any acquire — because the registry today is rebuilt
-  // wholesale per scene compile, so churn is bounded by leaf count.
+  // BVH cache invalidation: `_dirtyVersion` bumps on every `acquire`,
+  // on `clear`, AND every time any registered scope's `intersectable`
+  // aval ticks (callback below). `buildBvh` rebuilds (and stamps
+  // `_bvhVersion = _dirtyVersion`) only when the two diverge.
+  //
+  // Why a callback rather than incremental rebuild: every acquire
+  // bumps `_dirtyVersion`, every intersectable tick bumps
+  // `_dirtyVersion`, and the next `buildBvh()` does a full rebuild.
+  // This is intentionally coarse — the registry today is rebuilt
+  // wholesale per scene compile, so the leaf count is bounded; an
+  // incremental refit would only matter for streaming geometry
+  // changes inside a single compile, which we don't have today.
   private _dirtyVersion: number = 0;
   private _bvh: Bvh<PickId, IIntersectable> | undefined = undefined;
   private _bvhVersion: number = -1;
+  // Per-pickId subscription on `intersectable`. Disposed on
+  // `clear` (the only path that invalidates a pickId today —
+  // see "Why no recycling" above).
+  private readonly _intersectableSubs = new Map<PickId, IDisposable>();
 
   // Phase 5 — focus model. `focusedPickId` is observable via aval;
   // dispatcher subscribes to drive OnFocus / OnBlur.
@@ -104,6 +142,19 @@ export class PickRegistry {
     this.entries.set(pickId, full);
     this.modes.set(pickId, mode);
     this._dirtyVersion++;
+    if (scope.intersectable !== undefined && !scope.intersectable.isConstant) {
+      // Tick the dirty counter on every change so `buildBvh()` will
+      // rebuild on its next call. Constants never tick, so we skip
+      // the subscription for them (avoids ConstantObject's no-op
+      // marking-callback path). The version was already bumped by
+      // the acquire above, so the first build picks up the current
+      // bbox without needing a primer call here.
+      const sub = avalAddCallback(scope.intersectable, () => {
+        this._dirtyVersion++;
+        this._bvh = undefined;
+      });
+      this._intersectableSubs.set(pickId, sub);
+    }
     return pickId;
   }
 
@@ -121,6 +172,8 @@ export class PickRegistry {
   }
 
   clear(): void {
+    for (const sub of this._intersectableSubs.values()) sub.dispose();
+    this._intersectableSubs.clear();
     this.entries.clear();
     this.modes.clear();
     this.next = 1;
@@ -146,6 +199,9 @@ export class PickRegistry {
     }
     const scope = this.entries.get(pickId);
     if (scope === undefined) return;
+    // Why force here: `setFocus` is invoked from event-handler code
+    // paths (click, programmatic), not from inside an adaptive
+    // computation; reading the latest value point-in-time is fine.
     if (scope.canFocus === undefined || !AVal.force(scope.canFocus)) return;
     transact(() => { this._focused.value = pickId; });
   }
@@ -160,6 +216,15 @@ export class PickRegistry {
    * that has an `intersectable`. Returns `undefined` when no scope
    * has one — callers can short-circuit ray fall-through. Forces
    * each `aval<IIntersectable>` to extract its `boundingBox`.
+   *
+   * Tradeoff (no incremental rebuild): a single `intersectable` tick
+   * invalidates the entire BVH and the next call rebuilds it from
+   * scratch. The bbox stored in the BVH is in `intersectable`-local
+   * space at acquire/tick time and does NOT track per-scope
+   * `model` trafo changes — `spiralHitTest` / `pointHitTest` still
+   * fetch `AVal.force(scope.model)` at query time and re-test
+   * intersection against every cull-set entry, so a stale bbox only
+   * affects culling efficiency, not correctness.
    */
   buildBvh(): Bvh<PickId, IIntersectable> | undefined {
     if (this._bvhVersion === this._dirtyVersion) return this._bvh;

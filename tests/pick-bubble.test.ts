@@ -73,9 +73,16 @@ async function flush(): Promise<void> {
   await Promise.resolve();
 }
 
-function acquireWith(reg: PickRegistry, handlers: ReadonlyArray<EventHandlers>): number {
+function acquireWith(
+  reg: PickRegistry,
+  handlers: ReadonlyArray<EventHandlers>,
+  localTrafos?: ReadonlyArray<Trafo3d>,
+): number {
   return reg.acquire({
-    handlers,
+    handlers: handlers.map((h, i) => ({
+      handlers: h,
+      local2World: AVal.constant(localTrafos?.[i] ?? Trafo3d.identity),
+    })),
     cursor: undefined,
     pickThrough: false,
     active: AVal.constant(true),

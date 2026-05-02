@@ -69,6 +69,7 @@ import type {
   StencilModeValue,
   TrafoValue,
 } from "./sg.js";
+import type { LeafPickEntry } from "./picking/registry.js";
 
 // ---------------------------------------------------------------------------
 // Helpers — value-or-aval normalisation
@@ -172,8 +173,18 @@ export class TraversalState {
    * by default. Append-only — each new scope appends an entry; the
    * walker dispatches in order for capture phase, reversed for
    * bubble phase.
+   *
+   * Each entry carries both the scope's `EventHandlers` (the
+   * identity carrier — same reference across sibling leaves under
+   * the same On scope, used by the dispatcher's prefix diff) and a
+   * snapshot of `state.model` taken when the scope was pushed (the
+   * trafo accumulated UP TO AND INCLUDING this scope). The
+   * dispatcher applies that local2World during capture/bubble so
+   * each level's handlers see `e.position` etc. in their own local
+   * frame. F# parity: `event.Transformed(model)` —
+   * `Aardvark.Dom/SceneGraph/TraversalState.fs runCapture/runBubble`.
    */
-  readonly handlers: ReadonlyArray<EventHandlers>;
+  readonly handlers: ReadonlyArray<LeafPickEntry>;
 
   // ---------------- Phase 1 — render-state -----------------------------
 
@@ -351,9 +362,13 @@ export class TraversalState {
     });
   }
 
-  /** `<Sg On={...}>`: append to chain. */
+  /** `<Sg On={...}>`: append to chain. Snapshot the current model
+   * trafo as the scope's local2World (model accumulated UP TO AND
+   * INCLUDING this scope) — the dispatcher uses it to push each
+   * handler-level into its own local frame. */
   pushHandlers(handlers: EventHandlers): TraversalState {
-    return this.with({ handlers: [...this.handlers, handlers] });
+    const entry: LeafPickEntry = { handlers, local2World: this.model };
+    return this.with({ handlers: [...this.handlers, entry] });
   }
 
   /** `<Sg.Camera>` (M5): set view+proj at the same time. */
@@ -463,7 +478,7 @@ interface TraversalSpec {
   intersectable: aval<IIntersectable> | undefined;
   pixelSnapRadius: aval<number>;
   active: aval<boolean>;
-  handlers: ReadonlyArray<EventHandlers>;
+  handlers: ReadonlyArray<LeafPickEntry>;
   depthTest: aval<DepthCompare>;
   depthMask: aval<boolean>;
   depthBias: aval<DepthBiasValue> | undefined;

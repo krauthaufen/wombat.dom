@@ -48,7 +48,8 @@ function bubbleOf(rec: Record<string, (e: SceneEvent) => unknown>): EventHandler
 
 function acquire(reg: PickRegistry, handlers: ReadonlyArray<EventHandlers>): number {
   return reg.acquire({
-    handlers, cursor: undefined, pickThrough: false,
+    handlers: handlers.map(h => ({ handlers: h, local2World: AVal.constant(Trafo3d.identity) })),
+    cursor: undefined, pickThrough: false,
     active: AVal.constant(true),
     view: AVal.constant(Trafo3d.identity), proj: AVal.constant(Trafo3d.identity),
     model: AVal.constant(Trafo3d.identity), pixelSnapRadius: AVal.constant(1),

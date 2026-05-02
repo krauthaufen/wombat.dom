@@ -153,15 +153,17 @@ export class SceneEvent {
   readonly panDeltaY?: number;
   readonly rotateRadians?: number;
 
-  // Mutable propagation state.
-  private _propagationStopped = false;
-  private _defaultPrevented = false;
+  // Mutable propagation state. Shared across `transformed()` copies
+  // via a holder object so a handler at any depth that calls
+  // `stopPropagation()` halts dispatch on the originating event the
+  // capture/bubble loop is polling.
+  private readonly _prop: { stopped: boolean; prevented: boolean };
 
   private readonly _scope?: LeafPickScope;
   private readonly _dispatch?: SceneEventDispatch;
   private readonly _init: SceneEventInit;
 
-  constructor(init: SceneEventInit) {
+  constructor(init: SceneEventInit, sharedProp?: { stopped: boolean; prevented: boolean }) {
     this.kind = init.kind;
     this.location = init.location;
     this.raw = init.raw;
@@ -193,6 +195,7 @@ export class SceneEvent {
     if (init.scope !== undefined) this._scope = init.scope;
     if (init.dispatch !== undefined) this._dispatch = init.dispatch;
     this._init = init;
+    this._prop = sharedProp ?? { stopped: false, prevented: false };
   }
 
   // ---- Pass-through location getters --------------------------------------
@@ -221,7 +224,7 @@ export class SceneEvent {
   // ---- Propagation --------------------------------------------------------
 
   /** True once a handler has called `stopPropagation()`. Capture/bubble loops poll this after every handler. */
-  get propagationStopped(): boolean { return this._propagationStopped; }
+  get propagationStopped(): boolean { return this._prop.stopped; }
 
   /**
    * Halts further capture/bubble dispatch on the SceneEvent and ALSO
@@ -230,19 +233,19 @@ export class SceneEvent {
    * inside the originating DOM listener.
    */
   stopPropagation(): void {
-    this._propagationStopped = true;
+    this._prop.stopped = true;
     this.raw.stopPropagation();
     this.raw.stopImmediatePropagation();
   }
 
-  get defaultPrevented(): boolean { return this._defaultPrevented; }
+  get defaultPrevented(): boolean { return this._prop.prevented; }
 
   /**
    * Sets `defaultPrevented` AND calls `preventDefault()` on the
    * underlying DOM event.
    */
   preventDefault(): void {
-    this._defaultPrevented = true;
+    this._prop.prevented = true;
     this.raw.preventDefault();
   }
 
@@ -278,6 +281,9 @@ export class SceneEvent {
    * the event into a child scope's local frame.
    */
   transformed(trafo: Trafo3d): SceneEvent {
-    return new SceneEvent({ ...this._init, location: this.location.transformed(trafo) });
+    return new SceneEvent(
+      { ...this._init, location: this.location.transformed(trafo) },
+      this._prop,
+    );
   }
 }

@@ -736,8 +736,25 @@ function derivePipelineState(state: TraversalState, opts: CompileSceneOptions): 
   // BlendConstant were dropped when PipelineState became fully
   // reactive: we no longer force these avals at compile time, so
   // the warning would now fire lazily on first frame-eval rather
-  // than at scope entry. The non-pipeline-rebuild fields are wired
-  // to per-frame setters in `preparedRenderObject.record`.
+  // than at scope entry. Per-field status:
+  //
+  //   * BlendConstant — wired through to `pass.setBlendConstant` in
+  //     `preparedRenderObject.record` when `PipelineState.blendConstant`
+  //     is present (per-frame, no pipeline rebuild).
+  //   * DepthClamp — folded into `DepthState.clamp` and consumed by
+  //     `buildPipelineForSnap` via `primitive.unclippedDepth`. Falls
+  //     back to "no-op" silently when the WebGPU adapter doesn't
+  //     advertise the `unclippedDepth` feature; the pipeline compile
+  //     itself surfaces the error in that case.
+  //   * Multisample (the `<Sg Multisample={false}>` scope) — INTENTIONALLY
+  //     not wired into `PipelineState`. WebGPU has no per-pipeline
+  //     toggle to disable multisampling below the framebuffer's
+  //     `sampleCount` (you'd need `sampleMask = 0` per fragment, which
+  //     also has no plain pipeline expression). The framebuffer's
+  //     `sampleCount` is the single source of truth; per-leaf
+  //     "disable MSAA" is a known limitation tracked in docs/FUTURE.md.
+  //     `state.multisample` is still accumulated so the scope shape
+  //     stays parity-compatible with Aardvark.Dom.
   void warnedDepthClamp; void warnedMultisample; void warnedBlendConstant;
 
   const depth: DepthState = {
