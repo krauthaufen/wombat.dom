@@ -11,9 +11,11 @@ import { mount } from "@aardworx/wombat.dom";
 import {
   RenderControl,
   Sg,
-  lookAt,
-  orthographic,
+  OrbitController,
+  aspectFromViewport,
+  perspective,
 } from "@aardworx/wombat.dom/scene";
+import type { SceneEvent } from "@aardworx/wombat.dom/scene";
 import {
   AVal, HashMap, type aval,
 } from "@aardworx/wombat.adaptive";
@@ -322,57 +324,6 @@ const TEST_PATH: ReadonlyArray<PathSegment> = [
   ...textRun,
 ];
 
-// SVG mirror — emit a `M…Z` subpath per primitive group so each
-// closed contour stays closed. Supports L / Q / C / A directives.
-// SVG's arc-sweep flag is inverted relative to math-CCW because the
-// outer <svg> wears `transform="scale(1,-1)"` to flip y-down → y-up.
-function pathSegmentsToSvgD(segs: ReadonlyArray<PathSegment>): string {
-  const groups: PathSegment[][] = [];
-  let cur: PathSegment[] = [];
-  for (const s of segs) {
-    const prev = cur[cur.length - 1];
-    const close = prev !== undefined
-      && Math.abs(prev.end.x - s.start.x) < 1e-9
-      && Math.abs(prev.end.y - s.start.y) < 1e-9;
-    if (cur.length === 0 || close) {
-      cur.push(s);
-    } else {
-      groups.push(cur);
-      cur = [s];
-    }
-  }
-  if (cur.length > 0) groups.push(cur);
-
-  const out: string[] = [];
-  for (const g of groups) {
-    out.push(`M ${g[0]!.start.x} ${g[0]!.start.y}`);
-    for (const s of g) {
-      if (s.kind === "line") {
-        out.push(`L ${s.end.x} ${s.end.y}`);
-      } else if (s.kind === "bezier2") {
-        out.push(`Q ${s.control.x} ${s.control.y} ${s.end.x} ${s.end.y}`);
-      } else if (s.kind === "bezier3") {
-        out.push(`C ${s.control1.x} ${s.control1.y} ${s.control2.x} ${s.control2.y} ${s.end.x} ${s.end.y}`);
-      } else if (s.kind === "arc") {
-        const rx = Math.hypot(s.axis0.x, s.axis0.y);
-        const ry = Math.hypot(s.axis1.x, s.axis1.y);
-        const rot = Math.atan2(s.axis0.y, s.axis0.x) * 180 / Math.PI;
-        const largeArc = Math.abs(s.deltaAngle) > Math.PI ? 1 : 0;
-        // sweep-flag in SVG's native y-down: CCW=0, CW=1. Our
-        // viewer flips y, so invert: math-CCW (deltaAngle>0) → 1.
-        const sweep = s.deltaAngle > 0 ? 1 : 0;
-        out.push(`A ${rx} ${ry} ${rot} ${largeArc} ${sweep} ${s.end.x} ${s.end.y}`);
-      }
-    }
-    out.push("Z");
-  }
-  return out.join(" ");
-}
-
-function testPathToSvg(): string {
-  return pathSegmentsToSvgD(TEST_PATH);
-}
-
 // ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
@@ -391,66 +342,53 @@ window.addEventListener("unhandledrejection", (e) => {
   status.style.color = "#ff7777";
 });
 
-// Reference SVG overlay — bottom-right corner so it doesn't clobber
-// the WebGPU canvas's layout. Same `viewBox` as the orthographic
-// frustum (4×4 world units centred at origin) so the path should
-// look identical between the two.
-const svgNS = "http://www.w3.org/2000/svg";
-const svg = document.createElementNS(svgNS, "svg");
-svg.setAttribute("viewBox", "-2 -2 4 4");
-svg.setAttribute("style",
-  "position:absolute; right:8px; bottom:36px;"
-  + "width:384px; height:384px; background:#001828;"
-  + "border:1px solid #555; pointer-events:none;");
-const svgPath = document.createElementNS(svgNS, "path");
-svgPath.setAttribute("d", testPathToSvg());
-svgPath.setAttribute("fill", "rgb(229, 130, 65)");
-svgPath.setAttribute("transform", "scale(1, -1)"); // SVG y-down → math y-up
-svg.appendChild(svgPath);
-document.body.appendChild(svg);
-
 const clear: ClearValues = {
   colors: HashMap.empty<string, V4f>().add("outColor", new V4f(0.0, 0.09, 0.16, 1.0)),
   depth: 1.0,
 };
 
 const test = compilePathSegments(TEST_PATH);
-console.log("test path tris:", test.triangleCount);
 
-// DEBUG: dump the actual triangulated vertex/index data.
-{
-  const r = tessellatePath(TEST_PATH);
-  const tri = triangulateFilledFaces(r.filledFaces, r.extraction, r.graph);
-  const bufs = compileTessellation(tri);
-  console.log("buffer floats:", Array.from(bufs.vertices).map(x => x.toFixed(2)).join(","));
-  console.log("buffer bytes:", bufs.vertices.byteLength,
-    "= 6 f32 *", bufs.vertices.length / 6, "verts");
-  console.log("indices:", Array.from(bufs.indices).join(","));
-}
+// Orbit camera. Wombat.dom's default sky is +Z (z-up), so the path's
+// xy plane already lies on the floor and reads "naturally from above".
+// phi = -π/2 puts the camera on the -y side of the floor, so the
+// path's reading direction (+y in path-frame, i.e. "up" of each
+// glyph) points away from the camera and the text reads naturally.
+const ctl = OrbitController.create({
+  radius: 6,
+  phi: -Math.PI / 2,
+  theta: Math.PI / 4,
+});
+
+const flyToHit = (e: SceneEvent): void => {
+  ctl.flyTo(e.worldPos);
+};
 
 mount(root, (
   <RenderControl
     clear={clear}
-    onReady={() => {
-      status.textContent = "ready — head-on orthographic; webgpu (left) vs svg (right)";
+    onReady={({ canvas, time }) => {
+      ctl.attach(canvas, time);
+      status.textContent = "ready — drag to rotate, wheel zoom, double-tap a glyph to fly to it";
     }}
   >
     <Sg
-      View={lookAt({
-        eye:    new V3d(0, 0, 5),
-        target: new V3d(0, 0, 0),
-        up:     new V3d(0, 1, 0),
+      View={ctl.view}
+      Proj={perspective({
+        fovInRadians: Math.PI / 3,
+        aspect: aspectFromViewport(RenderControl.viewport),
+        near: 0.05,
+        far: 200,
       })}
-      Proj={orthographic({ left: -2, right: 2, bottom: -2, top: 2, near: 0.1, far: 100 })}
       Shader={loopBlinnEffect}
+      OnDoubleTap={flyToHit}
+      PixelSnapRadius={8}
     >
       {/* CullMode="none" because path triangles are CCW in math
           coords (y-up) which WebGPU sees as CW in framebuffer space
-          (y-down) under the default `frontFace="ccw"`, which would
-          cull them. The right long-term fix is to flip the path
-          triangulation to emit framebuffer-CCW order, or to set
-          FrontFace="cw" at the demo level. Disabling culling is the
-          cheapest correct option for a 2D path renderer. */}
+          under the default `frontFace="ccw"`. Disabling culling is
+          the cheapest correct option until the orientation is
+          baked into the triangulator. */}
       <Sg.Leaf
         Uniform={{ PathColor: new V4f(0.9, 0.51, 0.255, 1) }}
         CullMode="none"
