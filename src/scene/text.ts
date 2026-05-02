@@ -35,7 +35,7 @@
 //                        to opt into MSAA, TODO).
 
 import { AVal, HashMap, type aval } from "@aardworx/wombat.adaptive";
-import { V2d, V3d, V4f, Trafo3d } from "@aardworx/wombat.base";
+import { V2d, V2f, V3d, V4f, Trafo3d } from "@aardworx/wombat.base";
 import {
   Font, GlyphCache, GLYPH_FLOATS_PER_VERTEX, layoutText,
 } from "@aardworx/wombat.base/font";
@@ -53,6 +53,7 @@ import type { VNode } from "../vnode.js";
 import { Sg } from "./constructors.js";
 import { sgVNode } from "./sgVNode.js";
 import type { SgScopeProps, SgNamespace } from "./constructors.js";
+import { viewport as ambViewport } from "./ambient.js";
 
 // Module augmentation so callers can write `<Sg.Text .../>` and the
 // TypeScript types know about it. The runtime attachment lives in
@@ -85,46 +86,88 @@ const TM44f:  Type = Mat(Tf32, 4, 4);
 let pathTextEffectAaNone: Effect | undefined;
 let pathTextEffectAaAlphaBlending: Effect | undefined;
 
-const sharedVsSource = `
-  declare const ModelTrafo: M44f;
-  declare const ViewTrafo:  M44f;
-  declare const ProjTrafo:  M44f;
-  declare const PathColor:  V4f;
+// Vertex shader source factory. `expandRibbon` = whether to apply
+// clip-space expansion for `kind = 3` (line-ribbon) outer vertices.
+// For aa="none" the expansion is skipped, so ribbon outer vertices
+// collapse to their inner pair and the GPU rasterises them as
+// zero-area triangles (no visible contribution, no overdraw).
+function vsSource(expandRibbon: boolean): string {
+  const expansion = expandRibbon ? `
+    // Line-ribbon expansion: for kind = 3 vertices, the klm slot
+    // carries (outwardX, outwardY, isOuter). Project the outward
+    // direction into NDC, normalise in screen pixels, and step by
+    // exactly 1 pixel for outer (isOuter=1) vertices. Inner verts
+    // (isOuter=0) stay on the polygon edge.
+    if (input.a_klmKind.w > 2.5) {
+      const outX  = input.a_klmKind.x * sx;
+      const outY  = input.a_klmKind.y;
+      const isOut = input.a_klmKind.z;
+      const outClip = ProjTrafo.mul(ViewTrafo.mul(ModelTrafo.mul(new V4f(outX, outY, 0.0, 0.0))));
+      const outNdc = new V2f(outClip.x, outClip.y).div(max(clip.w, 1e-8));
+      const outPx  = new V2f(outNdc.x * Viewport.x, outNdc.y * Viewport.y);
+      const len    = max(outPx.length(), 1e-8);
+      const stepPx = new V2f(outPx.x / len, outPx.y / len);
+      const stepNdc = new V2f(
+        stepPx.x / Viewport.x * 2.0 * RibbonWidthPx,
+        stepPx.y / Viewport.y * 2.0 * RibbonWidthPx,
+      );
+      clip = new V4f(
+        clip.x + stepNdc.x * clip.w * isOut,
+        clip.y + stepNdc.y * clip.w * isOut,
+        clip.z, clip.w,
+      );
+    }
+` : "";
+  return `
+    declare const ModelTrafo:    M44f;
+    declare const ViewTrafo:     M44f;
+    declare const ProjTrafo:     M44f;
+    declare const PathColor:     V4f;
+    declare const Viewport:      V2f;
+    /** Ribbon expansion width in framebuffer pixels. Production
+     *  rendering uses 1; bump to 5–10 to debug AA gradient direction
+     *  / shape. */
+    declare const RibbonWidthPx: f32;
 
-  function vsMain(input: {
-    a_localPos:   V2f;
-    a_klmKind:    V4f;
-    a_instOffset: V2f;
-  }): { gl_Position: V4f; v_klmKind: V4f } {
-    // Flip detection: project ±x baseline probes through MVP and
-    // compare their screen-x. If +x lands LEFT of -x in screen
-    // space, the text is viewed from behind → mirror around x=0.
-    const pPlus  = ProjTrafo.mul(ViewTrafo.mul(ModelTrafo.mul(new V4f( 1.0, 0.0, 0.0, 1.0))));
-    const pMinus = ProjTrafo.mul(ViewTrafo.mul(ModelTrafo.mul(new V4f(-1.0, 0.0, 0.0, 1.0))));
-    const sx = (pPlus.x / pPlus.w) < (pMinus.x / pMinus.w) ? -1.0 : 1.0;
-    // Per-instance offset (glyph centre in text-frame) and per-
-    // vertex local position (glyph-centred coords) both mirror
-    // around 0 with the same sign.
-    const ofsX = input.a_instOffset.x * sx;
-    const locX = input.a_localPos.x * sx;
-    const text = new V4f(ofsX + locX, input.a_instOffset.y + input.a_localPos.y, 0.0, 1.0);
-    return {
-      gl_Position: ProjTrafo.mul(ViewTrafo.mul(ModelTrafo.mul(text))),
-      v_klmKind: input.a_klmKind,
-    };
-  }
-`;
+    function vsMain(input: {
+      a_localPos:   V2f;
+      a_klmKind:    V4f;
+      a_instOffset: V2f;
+    }): { gl_Position: V4f; v_klmKind: V4f } {
+      // Flip detection: project ±x baseline probes through MVP and
+      // compare their screen-x. If +x lands LEFT of -x in screen
+      // space, the text is viewed from behind → mirror around x=0.
+      const pPlus  = ProjTrafo.mul(ViewTrafo.mul(ModelTrafo.mul(new V4f( 1.0, 0.0, 0.0, 1.0))));
+      const pMinus = ProjTrafo.mul(ViewTrafo.mul(ModelTrafo.mul(new V4f(-1.0, 0.0, 0.0, 1.0))));
+      const sx = (pPlus.x / pPlus.w) < (pMinus.x / pMinus.w) ? -1.0 : 1.0;
+      // Per-instance offset (glyph centre in text-frame) and per-
+      // vertex local position (glyph-centred coords) both mirror
+      // around 0 with the same sign.
+      const ofsX = input.a_instOffset.x * sx;
+      const locX = input.a_localPos.x * sx;
+      const text = new V4f(ofsX + locX, input.a_instOffset.y + input.a_localPos.y, 0.0, 1.0);
+      let clip = ProjTrafo.mul(ViewTrafo.mul(ModelTrafo.mul(text)));
+${expansion}
+      return {
+        gl_Position: clip,
+        v_klmKind: input.a_klmKind,
+      };
+    }
+  `;
+}
 
 function buildPathTextEffectAaNone(): Effect {
   if (pathTextEffectAaNone) return pathTextEffectAaNone;
-  const source = `${sharedVsSource}
+  const source = `${vsSource(false)}
 
     function fsMain(input: { v_klmKind: V4f }): { outColor: V4f } {
       // Loop-Blinn implicit test, m carries the inside/outside sign
       // for inward-bulging curves. Mirrors Aardvark's pathFragment.
-      if (input.v_klmKind.w > 1.7) {
+      // kind=3 (line ribbons) collapse to zero-area triangles when
+      // expansion is off — the FS won't run for them.
+      if (input.v_klmKind.w > 1.7 && input.v_klmKind.w < 2.5) {
         if ((input.v_klmKind.x * input.v_klmKind.x + input.v_klmKind.y * input.v_klmKind.y - 1.0) * input.v_klmKind.z > 0.0) discard;
-      } else if (input.v_klmKind.w > 0.7) {
+      } else if (input.v_klmKind.w > 0.7 && input.v_klmKind.w < 1.5) {
         if ((input.v_klmKind.x * input.v_klmKind.x - input.v_klmKind.y) * input.v_klmKind.z > 0.0) discard;
       }
       return { outColor: PathColor };
@@ -163,25 +206,35 @@ function buildPathTextEffectAaNone(): Effect {
  */
 function buildPathTextEffectAaAlphaBlending(): Effect {
   if (pathTextEffectAaAlphaBlending) return pathTextEffectAaAlphaBlending;
-  const source = `${sharedVsSource}
+  const source = `${vsSource(true)}
 
     function fsMain(input: { v_klmKind: V4f }): { outColor: V4f } {
-      // WGSL requires \`fwidth\` to come from uniform control flow,
-      // so we evaluate f(k,l,m) and its width OUTSIDE any branch.
-      // The per-curve formula is selected with a ternary; interior
-      // fragments (kind=0) get f = -1 so alpha clamps to 1.
+      // Three AA paths share one shader, switched on \`kind\`:
+      //
+      //   kind == 0          → interior, alpha = 1
+      //   kind ∈ (0.7, 1.5)  → bezier2, AA via implicit gradient
+      //   kind ∈ (1.7, 2.5)  → arc,     AA via implicit gradient
+      //   kind  > 2.5        → line ribbon, alpha = 1 - isOuter
+      //
+      // For curves we compute the screen-space gradient with
+      // dpdx/dpdy rather than \`fwidth\` — some WebGPU implementations
+      // (iOS Safari's WebKit backend in particular) mis-handle
+      // fwidth on select-results.
       const fArc = (input.v_klmKind.x * input.v_klmKind.x + input.v_klmKind.y * input.v_klmKind.y - 1.0) * input.v_klmKind.z;
       const fBez = (input.v_klmKind.x * input.v_klmKind.x - input.v_klmKind.y) * input.v_klmKind.z;
-      const f = input.v_klmKind.w > 1.7 ? fArc : (input.v_klmKind.w > 0.7 ? fBez : -1.0);
-      // Compute the screen-space gradient magnitude directly via
-      // dpdx/dpdy rather than \`fwidth\` (= |dpdx| + |dpdy|, manhattan).
-      // Some WebGPU implementations (notably iOS Safari's WebKit
-      // backend) appear to mis-handle \`fwidth\` of a select-result,
-      // collapsing the curve coverage to nothing.
+      const isArc    = input.v_klmKind.w > 1.7 && input.v_klmKind.w < 2.5;
+      const isBez    = input.v_klmKind.w > 0.7 && input.v_klmKind.w < 1.5;
+      const isRibbon = input.v_klmKind.w > 2.5;
+      const f  = isArc ? fArc : (isBez ? fBez : -1.0);
       const dx = dFdx(f);
       const dy = dFdy(f);
-      const w = max(sqrt(dx * dx + dy * dy), 1e-8);
-      const alpha = clamp(0.5 - f / w, 0.0, 1.0);
+      const w  = max(sqrt(dx * dx + dy * dy), 1e-8);
+      const curveAlpha = clamp(0.5 - f / w, 0.0, 1.0);
+      // Line-ribbon alpha = linear ramp from 1 at the polygon edge
+      // (isOuter=0, klmKind.z=0) to 0 at the 1-px outer edge
+      // (isOuter=1, klmKind.z=1).
+      const ribbonAlpha = clamp(1.0 - input.v_klmKind.z, 0.0, 1.0);
+      const alpha = isRibbon ? ribbonAlpha : curveAlpha;
       return { outColor: new V4f(PathColor.x, PathColor.y, PathColor.z, PathColor.w * alpha) };
     }
   `;
@@ -212,18 +265,22 @@ function compilePathTextEffect(source: string): Effect {
   ];
 
   const externalTypes = new Map<string, Type>();
-  externalTypes.set("ModelTrafo", TM44f);
-  externalTypes.set("ViewTrafo",  TM44f);
-  externalTypes.set("ProjTrafo",  TM44f);
-  externalTypes.set("PathColor",  Tvec4f);
+  externalTypes.set("ModelTrafo",    TM44f);
+  externalTypes.set("ViewTrafo",     TM44f);
+  externalTypes.set("ProjTrafo",     TM44f);
+  externalTypes.set("PathColor",     Tvec4f);
+  externalTypes.set("Viewport",      Tvec2f);
+  externalTypes.set("RibbonWidthPx", Tf32);
 
   const camUBO: ValueDef = {
     kind: "Uniform",
     uniforms: [
-      { name: "ModelTrafo", type: TM44f,  group: 0, slot: 0, buffer: "Camera" },
-      { name: "ViewTrafo",  type: TM44f,  group: 0, slot: 0, buffer: "Camera" },
-      { name: "ProjTrafo",  type: TM44f,  group: 0, slot: 0, buffer: "Camera" },
-      { name: "PathColor",  type: Tvec4f, group: 0, slot: 0, buffer: "Camera" },
+      { name: "ModelTrafo",    type: TM44f,  group: 0, slot: 0, buffer: "Camera" },
+      { name: "ViewTrafo",     type: TM44f,  group: 0, slot: 0, buffer: "Camera" },
+      { name: "ProjTrafo",     type: TM44f,  group: 0, slot: 0, buffer: "Camera" },
+      { name: "PathColor",     type: Tvec4f, group: 0, slot: 0, buffer: "Camera" },
+      { name: "Viewport",      type: Tvec2f, group: 0, slot: 0, buffer: "Camera" },
+      { name: "RibbonWidthPx", type: Tf32,   group: 0, slot: 0, buffer: "Camera" },
     ],
   };
 
@@ -276,6 +333,10 @@ export interface SgTextProps {
   kerning?: boolean;
   /** Fill colour, vec4 (rgba). Default: opaque white. */
   Color?: V4f | aval<V4f>;
+  /** Outline-ribbon width in framebuffer pixels (only consulted when
+   *  `aa === "alpha-blending"`). Default: 1. Bump to 5–10 to debug
+   *  AA gradient direction / shape. */
+  ribbonWidthPx?: number | aval<number>;
 }
 
 /** Build a self-contained `<Sg.Text/>` JSX element. */
@@ -284,6 +345,7 @@ export function SgText(
 ): VNode {
   const {
     font, text, align = "left", aa = "none", kerning = true, Color,
+    ribbonWidthPx,
     ...scope
   } = props;
 
@@ -391,9 +453,22 @@ export function SgText(
   // CullMode none (path triangles are math-CCW = framebuffer-CW),
   // alpha-blend BlendMode for the alpha-blending AA mode, user
   // scope props on top.
+  const viewportV2: aval<V2f> = ambViewport.map(
+    (vp) => new V2f(vp.width, vp.height),
+  );
+  const ribbonWidthAval: aval<number> = ribbonWidthPx === undefined
+    ? AVal.constant(1)
+    : (typeof ribbonWidthPx === "number"
+        ? AVal.constant(ribbonWidthPx)
+        : ribbonWidthPx);
+
   const tree = Sg({
     Shader: effect,
-    Uniform: { PathColor: colorAval },
+    Uniform: {
+      PathColor:     colorAval,
+      Viewport:      viewportV2,
+      RibbonWidthPx: ribbonWidthAval,
+    },
     CullMode: "none",
     // alpha-blending: depth-test=less-equal so curve triangles drawn
     // after flat triangles at the same z don't get rejected; depth

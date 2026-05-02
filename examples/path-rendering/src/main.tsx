@@ -21,6 +21,10 @@ import { Font } from "@aardworx/wombat.base/font";
 import type { ClearValues } from "@aardworx/wombat.rendering/core";
 
 import greatVibesUrl from "./great-vibes.ttf?url";
+// Lato exercises plenty of L commands (straight stems, crossbars,
+// sharp corners) — much better than Great Vibes for debugging the
+// line-edge AA ribbons.
+import latoUrl from "./lato.ttf?url";
 
 // ---------------------------------------------------------------------------
 
@@ -43,7 +47,8 @@ const clear: ClearValues = {
   depth: 1.0,
 };
 
-const font = await Font.load(greatVibesUrl);
+const font     = await Font.load(greatVibesUrl);
+const latoFont = await Font.load(latoUrl);
 
 const ctl = OrbitController.create({
   radius: 5,
@@ -81,20 +86,27 @@ mount(root, (
       {/* Three text runs lying on the floor. Scale shrinks the
           em-height; alignment translation is absorbed into ModelTrafo
           inside Sg.Text. */}
+      {/* Sans-serif with crisp straight stems — easy to see whether
+          the line-ribbon AA gradient runs in the right direction.
+          5 px ribbon makes the gradient obvious; switch back to 1 px
+          once it looks correct. */}
       <Sg.Text
-        font={font} text="Hello" align="center" aa="alpha-blending"
+        font={latoFont} text="HELLO WOMBAT" align="center" aa="alpha-blending"
+        ribbonWidthPx={5}
         Color={orange}
-        Trafo={[Sg.translate(new V3d(0, 0.5, 0)), Sg.scale(0.0015)]}
+        Trafo={[Sg.translate(new V3d(0, 1.0, 0)), Sg.scale(0.002)]}
       />
       <Sg.Text
         font={font} text="& wombat" align="center" aa="alpha-blending"
+        ribbonWidthPx={5}
         Color={cream}
         Trafo={[Sg.translate(new V3d(0, -0.5, 0)), Sg.scale(0.0015)]}
       />
       <Sg.Text
-        font={font} text="left-anchored" align="left" aa="alpha-blending"
+        font={latoFont} text="left-anchored" align="left" aa="alpha-blending"
+        ribbonWidthPx={5}
         Color={orange}
-        Trafo={[Sg.translate(new V3d(-1.5, -1.5, 0)), Sg.scale(0.0008)]}
+        Trafo={[Sg.translate(new V3d(-1.5, -1.5, 0)), Sg.scale(0.001)]}
       />
     </Sg>
   </RenderControl>
