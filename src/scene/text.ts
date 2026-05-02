@@ -388,7 +388,13 @@ export function SgText(
     Shader: effect,
     Uniform: { PathColor: colorAval },
     CullMode: "none",
-    ...(aa === "alpha-blending" ? { BlendMode: alphaOverBlendState() } : {}),
+    // alpha-blending: depth-test=less-equal so curve triangles drawn
+    // after flat triangles at the same z don't get rejected; depth
+    // write stays on so opaque paths still occlude geometry behind.
+    ...(aa === "alpha-blending" ? {
+      BlendMode: alphaOverBlendState(),
+      DepthTest: "less-equal" as const,
+    } : {}),
     ...(alignTrafo !== undefined ? { Trafo: alignTrafo } : {}),
     children: leafChildren,
   } as never);
