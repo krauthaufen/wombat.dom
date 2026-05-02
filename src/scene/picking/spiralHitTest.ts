@@ -52,6 +52,133 @@ interface PointerLoc {
   readonly devY: number;
 }
 
+/**
+ * Cursor-only world-pos resolution. Same query as the spiral merge
+ * but at the centre offset only AND without the per-scope
+ * `pixelSnapRadius` gating — used by the captured-pointer branch to
+ * keep `worldPos` live as the cursor wanders over the scene.
+ *
+ * Pixel wins if its validated id depth ≤ BVH depth; else BVH wins;
+ * else returns `undefined`. Mode-sign + 3×3 neighbour validation
+ * mirror the spiral path.
+ */
+export function pointHitTest(
+  region: PickRegion,
+  pointer: PointerLoc,
+  registry: PickRegistry,
+  view: Trafo3d,
+  proj: Trafo3d,
+  viewportSize: V2i,
+): { scope: LeafPickScope | undefined; viewPos: V3d; viewNormal: V3d; partIndex: number; isPixel: boolean } | undefined {
+  const sX = viewportSize.x;
+  const sY = viewportSize.y;
+  if (sX <= 0 || sY <= 0) return undefined;
+
+  const vFwd = view.forward;
+  const vBwd = view.backward;
+  const pBwd = proj.backward;
+  const pFwd = proj.forward;
+  const pxX = pointer.devX;
+  const pxY = pointer.devY;
+  const lx = pxX - region.originX;
+  const ly = pxY - region.originY;
+
+  // Pixel candidate at the centre.
+  const pixIdRaw = readSlotsAt(region, lx, ly).slot0;
+  let pixOk = false;
+  let pixScope: LeafPickScope | undefined;
+  let pixDepth = 0;
+  let pixVp = V3d.zero;
+  let pixN = V3d.zero;
+  let pixPi = 0;
+  if (pixIdRaw !== 0) {
+    const absId = pixIdRaw < 0 ? -pixIdRaw : pixIdRaw;
+    const scope = registry.lookup(absId);
+    const regMode = registry.modeOf(absId);
+    const modeOk = regMode !== undefined && (regMode === "A" ? pixIdRaw > 0 : pixIdRaw < 0);
+    if (modeOk && scope !== undefined && AVal.force(scope.active)) {
+      let matches = 0;
+      outer: for (let ddy = -1; ddy <= 1; ddy++) {
+        for (let ddx = -1; ddx <= 1; ddx++) {
+          if (ddx === 0 && ddy === 0) continue;
+          if (readSlotsAt(region, lx + ddx, ly + ddy).slot0 === pixIdRaw) {
+            matches++;
+            if (matches >= 3) break outer;
+          }
+        }
+      }
+      if (matches >= 3) {
+        const slots = readSlotsAt(region, lx, ly);
+        if (pixIdRaw > 0) {
+          const ndcZ = slots.slot2;
+          pixDepth = ndcZ;
+          const tcX = (pxX + 0.5) / sX;
+          const tcY = (pxY + 0.5) / sY;
+          const ndcX = 2 * tcX - 1;
+          const ndcY = 1 - 2 * tcY;
+          pixVp = transformPosProj(pBwd, ndcX, ndcY, ndcZ);
+          if ((slots.slot1 | 0) === 0) {
+            pixN = V3d.zero;
+          } else {
+            const [nx, ny, nz] = n24DecodeF32(slots.slot1);
+            pixN = new V3d(nx, ny, nz);
+          }
+          pixPi = slots.slot3 | 0;
+        } else {
+          pixVp = new V3d(slots.slot1, slots.slot2, slots.slot3);
+          pixDepth = transformPosProjZ(pFwd, pixVp);
+          pixN = V3d.zero;
+        }
+        pixScope = scope;
+        pixOk = true;
+      }
+    }
+  }
+
+  // BVH candidate at the centre ray. No snap-radius gating.
+  let bvhOk = false;
+  let bvhScope: LeafPickScope | undefined;
+  let bvhDepth = 0;
+  let bvhVp = V3d.zero;
+  let bvhN = V3d.zero;
+  const bvh = registry.buildBvh();
+  if (bvh !== undefined) {
+    const ndcX = (2 * (pxX + 0.5) / sX) - 1;
+    const ndcY = 1 - (2 * (pxY + 0.5) / sY);
+    const near = unprojClipToWorld(ndcX, ndcY, -1, pBwd, vBwd);
+    const far  = unprojClipToWorld(ndcX, ndcY,  1, pBwd, vBwd);
+    const ray = Ray3d.fromPoints(near, far);
+    let bestT = Number.POSITIVE_INFINITY;
+    for (const item of bvh.items()) {
+      const scope = registry.lookup(item.key);
+      if (scope === undefined) continue;
+      if (!AVal.force(scope.active)) continue;
+      const trafo = AVal.force(scope.model);
+      const localRay = ray.transformed(trafo.inverse());
+      const hit = item.value.intersects(localRay, 0, bestT);
+      if (hit !== undefined && hit.t < bestT) {
+        bestT = hit.t;
+        const worldPoint = trafo.transformPos(hit.point);
+        const viewPoint = vFwd.transformPos(worldPoint);
+        bvhDepth = transformPosProjZ(pFwd, viewPoint);
+        bvhVp = viewPoint;
+        const worldN = transposedTransformDir(trafo.backward, hit.normal);
+        bvhN = normalize(transposedTransformDir(vBwd, worldN));
+        bvhScope = scope;
+        bvhOk = true;
+      }
+    }
+  }
+
+  if (pixOk && pixScope !== undefined && (!bvhOk || pixDepth <= bvhDepth)) {
+    return { scope: pixScope, viewPos: pixVp, viewNormal: pixN, partIndex: pixPi, isPixel: true };
+  }
+  if (bvhOk && bvhScope !== undefined) {
+    return { scope: bvhScope, viewPos: bvhVp, viewNormal: bvhN, partIndex: 0, isPixel: false };
+  }
+  return undefined;
+}
+
 export function spiralHitTest(
   region: PickRegion,
   pointer: PointerLoc,

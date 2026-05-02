@@ -23,8 +23,7 @@
 // runs in a `ref` callback on canvas mount and is asynchronous —
 // the first frame appears one rAF after the device is ready.
 
-import { AVal, cval, transact, type aval } from "@aardworx/wombat.adaptive";
-import type { cval as Cval } from "@aardworx/wombat.adaptive";
+import { AVal, type aval } from "@aardworx/wombat.adaptive";
 import { Trafo3d } from "@aardworx/wombat.base";
 import {
   Runtime, attachCanvas, runFrame,
@@ -155,21 +154,12 @@ export interface RenderControlReadyInfo {
 // and via `info.time` from `onReady`.
 // ---------------------------------------------------------------------------
 
-let _globalTime: Cval<number> | undefined;
+// The global per-frame time clock lives in `./ambient.ts` so the
+// ambient `RenderControl.time` getter stays valid even with no
+// control mounted (tests can poke `globalTime()` directly).
+import { globalTime as getGlobalTime, tickGlobalTime } from "./ambient.js";
 let _globalSubs = 0;
 let _globalRaf: number | undefined;
-
-function getGlobalTime(): Cval<number> {
-  if (_globalTime === undefined) {
-    _globalTime = cval(performance.now());
-  }
-  return _globalTime;
-}
-
-function tickGlobalTime(): void {
-  if (_globalTime === undefined) return;
-  transact(() => { _globalTime!.value = performance.now(); });
-}
 
 // (rAF loop is unused for now — we tick from each control's
 // `runFrame` callback. Kept-references suppressed below.)

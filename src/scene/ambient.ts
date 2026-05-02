@@ -9,7 +9,8 @@
 // the function-child form `<Sg>{state => …}</Sg>` instead, which
 // reads the actually-accumulated `TraversalState`.
 
-import { AVal, ChangeableValue, type aval } from "@aardworx/wombat.adaptive";
+import { AVal, ChangeableValue, cval, transact, type aval } from "@aardworx/wombat.adaptive";
+type Cval<T> = ReturnType<typeof cval<T>>;
 import { Trafo3d } from "@aardworx/wombat.base";
 
 /**
@@ -23,11 +24,28 @@ export interface AmbientContext {
   readonly time: aval<number>;
 }
 
+// The global per-frame time clock. Ticked by every active
+// RenderControl's frame loop; lives here (not in renderControl.tsx)
+// so the ambient `time` aval stays valid even when no control is
+// mounted yet — tests can `globalTime.value = …` directly.
+let _globalTime: Cval<number> | undefined;
+export function globalTime(): Cval<number> {
+  if (_globalTime === undefined) {
+    _globalTime = cval(typeof performance !== "undefined" ? performance.now() : 0);
+  }
+  return _globalTime;
+}
+/** Tick the global clock. Called from `runFrame` per frame. */
+export function tickGlobalTime(): void {
+  if (_globalTime === undefined) return;
+  transact(() => { _globalTime!.value = typeof performance !== "undefined" ? performance.now() : 0; });
+}
+
 const fallback: AmbientContext = {
   viewport: AVal.constant({ width: 1, height: 1 }),
   view: AVal.constant(Trafo3d.identity),
   proj: AVal.constant(Trafo3d.identity),
-  time: AVal.constant(0),
+  time: globalTime(),
 };
 
 const current = new ChangeableValue<AmbientContext>(fallback);

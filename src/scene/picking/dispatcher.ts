@@ -41,7 +41,7 @@ import {
   type SceneEventKind,
 } from "./sceneEvent.js";
 import { SceneEventLocation } from "./sceneEventLocation.js";
-import { spiralHitTest, type ResolvedHit } from "./spiralHitTest.js";
+import { spiralHitTest, pointHitTest, type ResolvedHit } from "./spiralHitTest.js";
 
 // --- Tap / long-press / double-tap detection thresholds ----------------
 // Sensible defaults. Exported so callers can read or — eventually —
@@ -216,7 +216,7 @@ export class PickDispatcher implements SceneEventDispatch {
         if (seq < this.lastSettledSeq) return;
         this.lastSettledSeq = seq;
         const hit = region !== undefined ? this.resolve(region, devX, devY) : undefined;
-        this.dispatch(ev, kind, cssX, cssY, hit, rect, sx, sy);
+        this.dispatch(ev, kind, cssX, cssY, hit, rect, sx, sy, region, devX, devY);
       });
     };
 
@@ -485,6 +485,9 @@ export class PickDispatcher implements SceneEventDispatch {
     rect: DOMRect,
     sx: number,
     sy: number,
+    region?: PickRegion,
+    devX?: number,
+    devY?: number,
   ): void {
     const pointerId = ev.pointerId ?? 0;
 
@@ -544,9 +547,26 @@ export class PickDispatcher implements SceneEventDispatch {
       // Route to captured scope; do NOT update lastHit/lastPath. F#
       // `SceneHandler.fs:1700–` skips lastOver updates while a
       // pointer is captured, then re-fires move on release.
-      const viewPos = hit !== undefined && hit.scope === captured ? hit.viewPos : undefined;
+      //
+      // For the dispatched `viewPos` / `worldPos`: query the cursor's
+      // current pixel + BVH ray (no snap) so handlers see the world
+      // position UNDER the cursor regardless of where the captured
+      // geometry is. Strictly more expressive than nothing — same
+      // query the spiral runs at offset (0,0).
+      let viewPos: V3d | undefined;
+      let viewNormal: V3d | undefined;
+      if (region !== undefined && devX !== undefined && devY !== undefined && this.canvasSize !== undefined) {
+        const point = pointHitTest(
+          region, { devX, devY }, this.registry,
+          AVal.force(captured.view), AVal.force(captured.proj), this.canvasSize(),
+        );
+        if (point !== undefined) {
+          viewPos = point.viewPos;
+          viewNormal = point.viewNormal;
+        }
+      }
       const modeB = this.registry.modeOf(captured.pickId) === "B";
-      const sceneEv = this.makeEvent(kind, ev, cssX, cssY, captured, captured.pickId, modeB, viewPos);
+      const sceneEv = this.makeEvent(kind, ev, cssX, cssY, captured, captured.pickId, modeB, viewPos, viewNormal);
       this.runCaptureBubble(captured.handlers, sceneEv);
       return;
     }
