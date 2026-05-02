@@ -973,7 +973,7 @@ function isRawSgNode(value: unknown): value is SgNode {
 // Unified `Sg` namespace — JSX function + imperative + helpers + sub-components
 // ---------------------------------------------------------------------------
 
-interface SgNamespace {
+export interface SgNamespace {
   // JSX call signature
   (props: SgScopeProps): VNode;
 

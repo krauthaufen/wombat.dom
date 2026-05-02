@@ -109,6 +109,21 @@ export {
   basic,
 } from "./defaultSurfaces.js";
 
+export {
+  SgText,
+  type SgTextProps,
+  type TextAlign,
+  type TextAa,
+} from "./text.js";
+
+// Attach `<Sg.Text/>` onto the Sg namespace at module load. This is
+// in `index.ts` rather than `constructors.ts` because `text.ts`
+// itself imports from `constructors.ts`, so wiring it up there
+// would be a cycle.
+import { Sg as _SgForText } from "./constructors.js";
+import { SgText as _SgTextImpl } from "./text.js";
+(_SgForText as unknown as { Text: typeof _SgTextImpl }).Text = _SgTextImpl;
+
 // Ambient context plumbing. The avals themselves live as static
 // members on `RenderControl` (`RenderControl.viewport`, `.view`,
 // `.proj`, `.time`); the helpers here let other layers (tests, etc.)
