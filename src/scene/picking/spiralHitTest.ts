@@ -19,6 +19,11 @@
 //  - winner-by-BVH + scope.pickThrough → re-trace this offset's ray
 //    through scopes that are active AND not pickThrough; if any hit
 //    take the closest, else keep the original.
+//
+// AVal.force policy: this file runs from the dispatcher's pointer
+// event handlers — "now" is the user's tick. Forces of
+// `scope.active`, `scope.model`, `scope.pixelSnapRadius`,
+// `scope.noEvents` are all permitted here.
 
 import { AVal } from "@aardworx/wombat.adaptive";
 import { Ray3d, Trafo3d, V2i, V3d, V4d } from "@aardworx/wombat.base";
@@ -50,6 +55,21 @@ export interface ResolvedHit {
 interface PointerLoc {
   readonly devX: number;
   readonly devY: number;
+}
+
+/**
+ * `scope.noEvents` is set when the compile-time `state.noEvents` was
+ * non-constant — the leaf is registered (so its pickId still exists
+ * and the BVH can prune against its bbox), but the dispatcher should
+ * treat it as if it weren't there. A static `NoEvents=true` leaf
+ * doesn't reach the registry at all (compile.ts collapses it), so
+ * scope.noEvents is `undefined` for those.
+ *
+ * AVal.force OK: spiralHitTest runs from the dispatcher in pointer-
+ * event-handler context — "now" is the user's tick.
+ */
+function scopeNoEvents(scope: LeafPickScope): boolean {
+  return scope.noEvents !== undefined && AVal.force(scope.noEvents);
 }
 
 /**
@@ -96,7 +116,7 @@ export function pointHitTest(
     const scope = registry.lookup(absId);
     const regMode = registry.modeOf(absId);
     const modeOk = regMode !== undefined && (regMode === "A" ? pixIdRaw > 0 : pixIdRaw < 0);
-    if (modeOk && scope !== undefined && AVal.force(scope.active)) {
+    if (modeOk && scope !== undefined && AVal.force(scope.active) && !scopeNoEvents(scope)) {
       let matches = 0;
       outer: for (let ddy = -1; ddy <= 1; ddy++) {
         for (let ddx = -1; ddx <= 1; ddx++) {
@@ -141,8 +161,10 @@ export function pointHitTest(
   let bvhDepth = 0;
   let bvhVp = V3d.zero;
   let bvhN = V3d.zero;
-  const bvh = registry.buildBvh();
-  if (bvh !== undefined) {
+  // AVal.force OK: dispatcher / pointHitTest run in pointer event
+  // handler context — see file-top policy.
+  const bvh = AVal.force(registry.bvhAval);
+  if (bvh.count > 0) {
     const ndcX = (2 * (pxX + 0.5) / sX) - 1;
     const ndcY = 1 - (2 * (pxY + 0.5) / sY);
     const near = unprojClipToWorld(ndcX, ndcY, -1, pBwd, vBwd);
@@ -150,12 +172,12 @@ export function pointHitTest(
     const ray = Ray3d.fromPoints(near, far);
     let bestT = Number.POSITIVE_INFINITY;
     for (const item of bvh.items()) {
-      const scope = registry.lookup(item.key);
-      if (scope === undefined) continue;
+      const scope = item.value.scope;
       if (!AVal.force(scope.active)) continue;
+      if (scopeNoEvents(scope)) continue;
       const trafo = AVal.force(scope.model);
       const localRay = ray.transformed(trafo.inverse());
-      const hit = item.value.intersects(localRay, 0, bestT);
+      const hit = item.value.intersectable.intersects(localRay, 0, bestT);
       if (hit !== undefined && hit.t < bestT) {
         bestT = hit.t;
         const worldPoint = trafo.transformPos(hit.point);
@@ -227,18 +249,18 @@ export function spiralHitTest(
     readonly trafo: Trafo3d;
   }
   const cullSet: Cull[] = [];
-  // PickRegistry doesn't iterate but `buildBvh` does — and F#'s
-  // cullSet matches the BVH's contents exactly. Here we walk the
-  // registry's BVH items via the side door of inspecting all pickIds
-  // we already know about; instead we rebuild the cull set from a
-  // BVH iteration if available.
-  const bvh = registry.buildBvh();
-  if (bvh !== undefined) {
+  // AVal.force OK: dispatcher pointer event handler context — see
+  // file-top policy. Each BvhEntry already carries the scope and the
+  // intersectable; we re-fetch `scope.model` here so the cull-set
+  // trafo reflects the absolute latest tick (the BVH's stored entry
+  // trafo is from when the delta was applied, which lags by one
+  // bvhAval recompute against the current frame's model aval).
+  const bvh = AVal.force(registry.bvhAval);
+  if (bvh.count > 0) {
     for (const item of bvh.items()) {
-      const scope = registry.lookup(item.key);
-      if (scope === undefined) continue;
+      const scope = item.value.scope;
       const trafo = AVal.force(scope.model);
-      cullSet.push({ scope, intersectable: item.value, trafo });
+      cullSet.push({ scope, intersectable: item.value.intersectable, trafo });
     }
   }
   const cullCount = cullSet.length;
@@ -282,7 +304,7 @@ export function spiralHitTest(
       const modeOk = regMode !== undefined
         && (regMode === "A" ? pixIdRaw > 0 : pixIdRaw < 0);
 
-      if (modeOk && scope !== undefined && AVal.force(scope.active) && d2 <= snapR2(scope)) {
+      if (modeOk && scope !== undefined && AVal.force(scope.active) && !scopeNoEvents(scope) && d2 <= snapR2(scope)) {
         // 3×3 same-id neighbour count, ≥ 3 to validate.
         let matches = 0;
         outer: for (let ddy = -1; ddy <= 1; ddy++) {
@@ -341,6 +363,7 @@ export function spiralHitTest(
       for (let k = 0; k < cullCount; k++) {
         const entry = cullSet[k]!;
         if (!AVal.force(entry.scope.active)) continue;
+        if (scopeNoEvents(entry.scope)) continue;
         if (d2 > snapR2(entry.scope)) continue;
         const localRay = ray.transformed(entry.trafo.inverse());
         const hit = entry.intersectable.intersects(localRay, 0, bestT);
@@ -457,6 +480,7 @@ function finalizeWinner(
   let nextN = V3d.zero;
   for (const entry of cullSet) {
     if (!AVal.force(entry.scope.active)) continue;
+    if (scopeNoEvents(entry.scope)) continue;
     if (entry.scope.pickThrough) continue;
     const localRay = ray.transformed(entry.trafo.inverse());
     const hit = entry.intersectable.intersects(localRay, 0, bestT);

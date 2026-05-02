@@ -29,6 +29,12 @@
 // is NOT updated (mirrors `SceneHandler.SetPointerCapture` / F#'s
 // "no lastOver update while captured"). Releasing fires a synthetic
 // pointermove using the last cursor position to re-establish hover.
+//
+// AVal.force policy: every force in this file runs inside a pointer
+// /key/focus event handler or a programmatic API entry called from
+// user code — "now" is the user's tick. The force does not enter
+// any reader's dependency set. Each call site below is in one of
+// those contexts.
 
 import { AVal, avalAddCallback } from "@aardworx/wombat.adaptive";
 import { Trafo3d, V2d, V2i, V3d, V4d } from "@aardworx/wombat.base";
@@ -296,6 +302,7 @@ export class PickDispatcher implements SceneEventDispatch {
       const scope = this.registry.lookup(focused);
       if (scope === undefined) return;
       if (!AVal.force(scope.active)) return;
+      if (scope.noEvents !== undefined && AVal.force(scope.noEvents)) return;
       const sceneEv = new SceneEvent({
         kind,
         location: this.buildEmptyLocation(scope),
@@ -544,6 +551,13 @@ export class PickDispatcher implements SceneEventDispatch {
       }
     }
     if (captured !== undefined) {
+      // AVal.force OK: pointer event handler — see file-top policy.
+      if (captured.noEvents !== undefined && AVal.force(captured.noEvents)) {
+        // The captured scope flipped to noEvents while held; drop the
+        // capture so future events fall back to spiral resolution.
+        this.capturedScopes.delete(pointerId);
+        return;
+      }
       // Route to captured scope; do NOT update lastHit/lastPath. F#
       // `SceneHandler.fs:1700–` skips lastOver updates while a
       // pointer is captured, then re-fires move on release.

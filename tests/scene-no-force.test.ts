@@ -37,8 +37,9 @@ const ALLOWLIST: readonly string[] = [
   "collectByPass(node.child.force(), state, opts, buckets);",
   // Uniform key-set static snapshot at the bucketing boundary.
   "const entries = node.bag.kind === \"Static\" ? node.bag.entries : node.bag.entries.content.force();",
-  // NoEvents → STATIC at compile time (registry-side-effect rationale).
-  "const noEvents = state.noEvents.force();",
+  // state.noEvents.isConstant fast path — force on a constant aval has
+  // no upstream dependency to lose; collapses to skipRegister at compile.
+  "const noEventsNow = constantNoEvents ? state.noEvents.force() : false;",
   // state.active.isConstant fast path — force on a constant aval has
   // no upstream dependency to lose; collapses RenderTree at compile.
   "return state.active.force() ? baseTree : RenderTree.empty;",
@@ -65,8 +66,17 @@ describe("compile.ts — zero force on the live render path", () => {
     ).toEqual([]);
   });
 
-  it("no AVal.force(...) anywhere in compile.ts (only `.force()` method calls remain in the allowlist)", () => {
+  it("no AVal.force(...) call sites in compile.ts (only `.force()` method calls remain in the allowlist; comments mentioning AVal.force are fine)", () => {
     const file = readFileSync(compileTs, "utf8");
-    expect(file).not.toMatch(/AVal\.force\b/);
+    const offenders: string[] = [];
+    const lines = file.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const ln = lines[i]!;
+      if (!/AVal\.force\b/.test(ln)) continue;
+      const trimmed = ln.trimStart();
+      if (trimmed.startsWith("//") || trimmed.startsWith("*")) continue;
+      offenders.push(`${i + 1}: ${ln.trim()}`);
+    }
+    expect(offenders).toEqual([]);
   });
 });

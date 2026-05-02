@@ -4,16 +4,29 @@
 //
 // Mirrors the F# `Aardvark.Dom.SceneHandler.acquireId` /
 // `pickBuffer` capture, minus the recycling. See file footer.
+//
+// AVal.force policy (this file): `setFocus` and the dispatcher's
+// reads of `bvhAval` happen in event-handler / programmatic-API
+// context — "now" is the user's tick. `acquire`, `clear`, and the
+// `bvhAval` AVal.custom body all run during compileScene or as
+// reactive deltas (no force needed).
 
 import {
   AVal,
-  avalAddCallback,
+  ChangeableHashSet,
+  cset,
   cval,
   transact,
+  type aset,
   type aval,
-  type IDisposable,
 } from "@aardworx/wombat.adaptive";
-import { Bvh, type IIntersectable, type Trafo3d } from "@aardworx/wombat.base";
+import {
+  Box3d,
+  Bvh,
+  V3d,
+  type IIntersectable,
+  type Trafo3d,
+} from "@aardworx/wombat.base";
 
 import type { EventHandlers } from "../sg.js";
 
@@ -85,6 +98,15 @@ export interface LeafPickScope {
   readonly forcePixelPicking?: aval<boolean>;
   /** When true, this scope can receive keyboard / focus events. */
   readonly canFocus?: aval<boolean>;
+  /**
+   * When true, the dispatcher SKIPS this scope's events entirely —
+   * the leaf was registered (so its pickId is allocated and the BVH
+   * can still see it for fall-through), but no handlers fire and no
+   * cursor/focus interaction happens. Only set when the compile-time
+   * `state.noEvents` was non-constant — constant-true leaves don't
+   * register at all (see `compile.ts` registration policy).
+   */
+  readonly noEvents?: aval<boolean>;
 }
 
 /**
@@ -100,6 +122,35 @@ export interface LeafPickScope {
  */
 export type PickMode = "A" | "B";
 
+/**
+ * Item stored in the BVH — pickId-keyed scope plus the (now-applied)
+ * trafo and intersectable. The trafo is snapshotted when the BVH
+ * delta was applied; the BVH bbox is in WORLD space (intersectable's
+ * local bbox transformed by `trafo`). `spiralHitTest` reads the
+ * scope's *current* `model` aval at hit time and re-tests
+ * intersection in local space — small staleness vs. trafo ticks
+ * shows up only as an inflated bbox during the (very brief) gap
+ * between an aval tick and the next `bvhAval` re-evaluation, never
+ * as missed hits or wrong intersections.
+ */
+export interface BvhEntry {
+  readonly scope: LeafPickScope;
+  readonly intersectable: IIntersectable;
+  readonly trafo: Trafo3d;
+}
+
+/**
+ * Pick object as stored in the aset — mirrors F# `PickObject`. Each
+ * `acquire` of an intersectable-bearing scope adds one of these to
+ * `_pickObjects`; `clear` empties the set. The aset's `mapA` chains
+ * intersectable-aval AND trafo-aval ticks into the BVH delta stream.
+ */
+interface PickObject {
+  readonly scope: LeafPickScope;
+  readonly intersectable: aval<IIntersectable>;
+  readonly trafo: aval<Trafo3d>;
+}
+
 export class PickRegistry {
   private next: PickId = 1;
   private readonly entries = new Map<PickId, LeafPickScope>();
@@ -110,25 +161,33 @@ export class PickRegistry {
   // wrong layout).
   private readonly modes = new Map<PickId, PickMode>();
 
-  // BVH cache invalidation: `_dirtyVersion` bumps on every `acquire`,
-  // on `clear`, AND every time any registered scope's `intersectable`
-  // aval ticks (callback below). `buildBvh` rebuilds (and stamps
-  // `_bvhVersion = _dirtyVersion`) only when the two diverge.
+  // ------------------------------------------------------------------
+  // Reactive BVH (mirrors Aardvark.Dom SceneHandler.fs:1444-1468).
   //
-  // Why a callback rather than incremental rebuild: every acquire
-  // bumps `_dirtyVersion`, every intersectable tick bumps
-  // `_dirtyVersion`, and the next `buildBvh()` does a full rebuild.
-  // This is intentionally coarse — the registry today is rebuilt
-  // wholesale per scene compile, so the leaf count is bounded; an
-  // incremental refit would only matter for streaming geometry
-  // changes inside a single compile, which we don't have today.
-  private _dirtyVersion: number = 0;
-  private _bvh: Bvh<PickId, IIntersectable> | undefined = undefined;
-  private _bvhVersion: number = -1;
-  // Per-pickId subscription on `intersectable`. Disposed on
-  // `clear` (the only path that invalidates a pickId today —
-  // see "Why no recycling" above).
-  private readonly _intersectableSubs = new Map<PickId, IDisposable>();
+  // Shape:
+  //   _pickObjects : cset<PickObject>           — driven by acquire/clear
+  //   transformed  : aset<BvhEntry>             — _pickObjects.mapA chain
+  //   bvhAval      : aval<Bvh<PickId, BvhEntry>> — incremental, AVal.custom
+  //
+  // The aset's `mapA` projects each PickObject through its
+  // intersectable AND trafo avals (via two nested .map's). On any
+  // tick of either, the projected BvhEntry value's identity changes,
+  // which the inner reader surfaces as a Rem(old) + Add(new) delta
+  // pair. The AVal.custom body folds those deltas into a persistent
+  // BVH (Rem then Add, mirroring F#'s ordering at line 1455-1466).
+  // The bbox stored in the BVH is WORLD-space (intersectable's local
+  // bbox transformed through the current trafo).
+  // ------------------------------------------------------------------
+  private readonly _pickObjects: ChangeableHashSet<PickObject> = cset<PickObject>();
+  /** Underlying aset of pick-objects; exposed for tests. */
+  get pickObjects(): aset<PickObject> { return this._pickObjects; }
+  /**
+   * Reactive world-space BVH over every scope that has an
+   * `intersectable`. The dispatcher force-reads this in pointer-event
+   * context (legal — see file-top policy). The returned BVH is empty
+   * when no intersectable scopes are registered.
+   */
+  readonly bvhAval: aval<Bvh<PickId, BvhEntry>>;
 
   // Phase 5 — focus model. `focusedPickId` is observable via aval;
   // dispatcher subscribes to drive OnFocus / OnBlur.
@@ -136,24 +195,60 @@ export class PickRegistry {
   /** Currently focused scope's PickId, or `undefined`. Observable. */
   readonly focusedPickId: aval<PickId | undefined> = this._focused;
 
+  constructor() {
+    // Project each PickObject through its intersectable + trafo avals.
+    // Two-level chain: intersectable.bind(i => trafo.map(t =>
+    // BvhEntry)). Each tick of either aval surfaces a fresh BvhEntry
+    // identity (different object reference) so the inner reader emits
+    // Rem(old) + Add(new) on the next bvhAval recomputation.
+    const transformed: aset<BvhEntry> = this._pickObjects.mapA((o) =>
+      o.intersectable.bind((i) =>
+        o.trafo.map((t): BvhEntry => ({ scope: o.scope, intersectable: i, trafo: t })),
+      ),
+    );
+    const reader = transformed.getReader();
+    let tree: Bvh<PickId, BvhEntry> = Bvh.empty();
+    // Pending-Add map keyed by pickId — mapA emits Rem(old) + Add(new)
+    // for the SAME key when an inner aval ticks. We collect all Rem's
+    // first (so the BVH drops the stale bbox before re-adding), then
+    // all Add's (with the fresh world bbox).
+    this.bvhAval = AVal.custom((token) => {
+      const ops = reader.getChanges(token);
+      // Apply Rem first, then Add — same ordering as F# SceneHandler.fs.
+      // CountingHashSet deltas: count===-1 is Rem, count===1 is Add.
+      // Each entry surfaces a Rem(old BvhEntry) + Add(new BvhEntry)
+      // with the SAME scope.pickId but a DIFFERENT entry-object
+      // reference, so we must remove by old key and re-add with new
+      // bbox.
+      for (const op of ops) {
+        if (op.count < 0) {
+          tree = tree.remove(op.value.scope.pickId);
+        }
+      }
+      for (const op of ops) {
+        if (op.count > 0) {
+          const e = op.value;
+          const worldBox = transformBox(e.intersectable.boundingBox, e.trafo);
+          tree = tree.add(e.scope.pickId, worldBox, e);
+        }
+      }
+      return tree;
+    });
+  }
+
   acquire(scope: Omit<LeafPickScope, "pickId">, mode: PickMode = "A"): PickId {
     const pickId = this.next++;
     const full: LeafPickScope = { pickId, ...scope };
     this.entries.set(pickId, full);
     this.modes.set(pickId, mode);
-    this._dirtyVersion++;
-    if (scope.intersectable !== undefined && !scope.intersectable.isConstant) {
-      // Tick the dirty counter on every change so `buildBvh()` will
-      // rebuild on its next call. Constants never tick, so we skip
-      // the subscription for them (avoids ConstantObject's no-op
-      // marking-callback path). The version was already bumped by
-      // the acquire above, so the first build picks up the current
-      // bbox without needing a primer call here.
-      const sub = avalAddCallback(scope.intersectable, () => {
-        this._dirtyVersion++;
-        this._bvh = undefined;
+    if (scope.intersectable !== undefined) {
+      transact(() => {
+        this._pickObjects.add({
+          scope: full,
+          intersectable: scope.intersectable!,
+          trafo: scope.model,
+        });
       });
-      this._intersectableSubs.set(pickId, sub);
     }
     return pickId;
   }
@@ -172,15 +267,13 @@ export class PickRegistry {
   }
 
   clear(): void {
-    for (const sub of this._intersectableSubs.values()) sub.dispose();
-    this._intersectableSubs.clear();
+    transact(() => {
+      this._pickObjects.clear();
+      this._focused.value = undefined;
+    });
     this.entries.clear();
     this.modes.clear();
     this.next = 1;
-    this._dirtyVersion++;
-    this._bvh = undefined;
-    this._bvhVersion = -1;
-    transact(() => { this._focused.value = undefined; });
   }
 
   size(): number {
@@ -199,9 +292,8 @@ export class PickRegistry {
     }
     const scope = this.entries.get(pickId);
     if (scope === undefined) return;
-    // Why force here: `setFocus` is invoked from event-handler code
-    // paths (click, programmatic), not from inside an adaptive
-    // computation; reading the latest value point-in-time is fine.
+    // AVal.force OK: programmatic API entry / event handler — see
+    // file-top policy.
     if (scope.canFocus === undefined || !AVal.force(scope.canFocus)) return;
     transact(() => { this._focused.value = pickId; });
   }
@@ -210,32 +302,26 @@ export class PickRegistry {
   clearFocus(): void {
     transact(() => { this._focused.value = undefined; });
   }
+}
 
-  /**
-   * Build (or return the cached) world-space BVH over every scope
-   * that has an `intersectable`. Returns `undefined` when no scope
-   * has one — callers can short-circuit ray fall-through. Forces
-   * each `aval<IIntersectable>` to extract its `boundingBox`.
-   *
-   * Tradeoff (no incremental rebuild): a single `intersectable` tick
-   * invalidates the entire BVH and the next call rebuilds it from
-   * scratch. The bbox stored in the BVH is in `intersectable`-local
-   * space at acquire/tick time and does NOT track per-scope
-   * `model` trafo changes — `spiralHitTest` / `pointHitTest` still
-   * fetch `AVal.force(scope.model)` at query time and re-test
-   * intersection against every cull-set entry, so a stale bbox only
-   * affects culling efficiency, not correctness.
-   */
-  buildBvh(): Bvh<PickId, IIntersectable> | undefined {
-    if (this._bvhVersion === this._dirtyVersion) return this._bvh;
-    const items: { key: PickId; box: import("@aardworx/wombat.base").Box3d; value: IIntersectable }[] = [];
-    for (const [pickId, scope] of this.entries) {
-      if (scope.intersectable === undefined) continue;
-      const it = AVal.force(scope.intersectable);
-      items.push({ key: pickId, box: it.boundingBox, value: it });
-    }
-    this._bvh = items.length === 0 ? undefined : Bvh.build(items);
-    this._bvhVersion = this._dirtyVersion;
-    return this._bvh;
-  }
+/**
+ * Compute the world-space AABB of a local AABB transformed by `t`.
+ * Mirrors `IIntersectable.transformed` in wombat.base — kept as a
+ * small inline helper here so the BVH delta path doesn't allocate a
+ * `TransformedIntersectable` wrapper just to read its `boundingBox`.
+ */
+function transformBox(local: Box3d, t: Trafo3d): Box3d {
+  if (!local.isValid() || local.isEmpty()) return Box3d.empty;
+  const fwd = t.forward;
+  const corners: V3d[] = [
+    new V3d(local.min.x, local.min.y, local.min.z),
+    new V3d(local.max.x, local.min.y, local.min.z),
+    new V3d(local.min.x, local.max.y, local.min.z),
+    new V3d(local.max.x, local.max.y, local.min.z),
+    new V3d(local.min.x, local.min.y, local.max.z),
+    new V3d(local.max.x, local.min.y, local.max.z),
+    new V3d(local.min.x, local.max.y, local.max.z),
+    new V3d(local.max.x, local.max.y, local.max.z),
+  ];
+  return Box3d.fromPoints(corners.map((c) => fwd.transformPos(c)));
 }

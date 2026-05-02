@@ -1,5 +1,5 @@
 // Phase 1 — render-state scopes (DepthTest/Mask/Bias/Clamp, Cull,
-// FrontFace, Fill, Multisample, BlendConstant, ColorMask, Stencil,
+// FrontFace, Fill, BlendConstant, ColorMask, Stencil,
 // Pass). Pin: pipeline-state derivation, override semantics, Pass
 // grouping.
 

@@ -21,6 +21,17 @@
 // a.forward`). M44d.mul, in contrast, is plain matrix-on-vector
 // math (`a · b · v` applies b first, a last). Don't mix the two
 // conventions in this file or you'll trip yourself up.
+//
+// AVal.force policy (this file): `force` is permitted ONLY at sites
+// that are either (a) provably structural one-shots run at
+// compile-scene time, or (b) `isConstant`-guarded reads of avals
+// known to never tick. Every surviving call site carries an
+// `AVal.force OK:` (or `Why force here:`) comment naming the
+// category. Anything else MUST go through reactive plumbing
+// (AVal.custom / map / bind / RenderTree.adaptive). The
+// `tests/scene-no-force.test.ts` audit allowlists each line by
+// substring — adding a new force requires both an explanatory
+// comment and an allowlist entry.
 
 import {
   AList, ASet, AVal,
@@ -142,7 +153,7 @@ function sceneUsesPassStatic(node: SgNode): boolean {
     case "Cursor": case "PickThrough": case "Intersectable":
     case "PixelSnapRadius": case "On": case "Active": case "View": case "Proj":
     case "DepthTest": case "DepthMask": case "DepthBias": case "DepthClamp":
-    case "CullMode": case "FrontFace": case "FillMode": case "Multisample":
+    case "CullMode": case "FrontFace": case "FillMode":
     case "BlendConstant": case "ColorMask": case "StencilMode":
     case "VertexAttributes": case "InstanceAttributes": case "Index": case "Mode":
     case "NoEvents": case "ForcePixelPicking": case "CanFocus":
@@ -236,7 +247,6 @@ function collectByPass(
     case "CullMode": collectByPass(node.child, state.pushCullMode(node.mode), opts, buckets); return;
     case "FrontFace": collectByPass(node.child, state.pushFrontFace(node.mode), opts, buckets); return;
     case "FillMode": collectByPass(node.child, state.pushFillMode(node.mode), opts, buckets); return;
-    case "Multisample": collectByPass(node.child, state.pushMultisample(node.enabled), opts, buckets); return;
     case "BlendConstant": collectByPass(node.child, state.pushBlendConstant(node.value), opts, buckets); return;
     case "ColorMask": collectByPass(node.child, state.pushColorMask(node.mask), opts, buckets); return;
     case "StencilMode": collectByPass(node.child, state.pushStencilMode(node.mode), opts, buckets); return;
@@ -346,7 +356,6 @@ function lower(
     case "CullMode":    return lower(node.child, state.pushCullMode(node.mode), opts);
     case "FrontFace":   return lower(node.child, state.pushFrontFace(node.mode), opts);
     case "FillMode":    return lower(node.child, state.pushFillMode(node.mode), opts);
-    case "Multisample": return lower(node.child, state.pushMultisample(node.enabled), opts);
     case "BlendConstant": return lower(node.child, state.pushBlendConstant(node.value), opts);
     case "ColorMask":   return lower(node.child, state.pushColorMask(node.mask), opts);
     case "StencilMode": return lower(node.child, state.pushStencilMode(node.mode), opts);
@@ -404,15 +413,21 @@ function lowerLeaf(
 
   let effect: Effect = userEffect;
   let pickId: number | undefined;
-  // Why force here: NoEvents is treated as STATIC at compile time —
-  // picking registration is a registry side-effect that builds the
-  // long-lived scope-id table. Re-evaluating registration on every
-  // noEvents flip would tear down and recreate registry entries
-  // (and their downstream BVH) for what is overwhelmingly a build-
-  // time configuration knob. Document: making this reactive is a
-  // separate (heavier) refactor.
-  const noEvents = state.noEvents.force();
-  if (opts.picking !== undefined && !noEvents) {
+  // Pick-registration policy:
+  //   - state.noEvents is a CONSTANT aval (the common case — `<Sg
+  //     NoEvents={true}>` with a static boolean): force-collapse at
+  //     compile time. The force is on a constant aval (no upstream
+  //     dep, never ticks) — analogous to the state.active.isConstant
+  //     fast-path below.
+  //   - state.noEvents is dynamic: register unconditionally and carry
+  //     `noEvents` on the scope. The dispatcher consults it per-event
+  //     (its forces run in event-handler context, where "now" is the
+  //     user's tick and AVal.force is permitted by the policy).
+  const constantNoEvents = state.noEvents.isConstant;
+  // AVal.force OK: isConstant guard — value is by definition immutable.
+  const noEventsNow = constantNoEvents ? state.noEvents.force() : false;
+  const skipRegister = constantNoEvents && noEventsNow;
+  if (opts.picking !== undefined && !skipRegister) {
     const geomHas = opts.picking.geomHas ?? defaultGeomHas(merged);
     const composed = composePickChainWithChoice(userEffect, geomHas);
     effect = composed.effect;
@@ -428,6 +443,7 @@ function lowerLeaf(
       pixelSnapRadius: state.pixelSnapRadius,
       forcePixelPicking: state.forcePixelPicking,
       canFocus: state.canFocus,
+      ...(constantNoEvents ? {} : { noEvents: state.noEvents }),
       ...(state.intersectable !== undefined ? { intersectable: state.intersectable } : {}),
     }, mode);
   }
@@ -441,9 +457,7 @@ function lowerLeaf(
   // state.active is dynamic, wrap in `RenderTree.adaptive` so the
   // walker observes flips reactively without a force.
   if (state.active.isConstant) {
-    // Why force here: state.active is a constant aval (no upstream
-    // dep); the read happens once at compile-scene time and
-    // simplifies the resulting RenderTree.
+    // AVal.force OK: isConstant guard — value is by definition immutable.
     return state.active.force() ? baseTree : RenderTree.empty;
   }
   return RenderTree.adaptive(state.active.map(a => (a ? baseTree : RenderTree.empty)));
@@ -606,7 +620,6 @@ const defaultRasterizer: PlainRasterizerState = {
 function fillModeWarning(): void { /* no-op stub; logged-once below */ }
 let warnedNonFillFillMode = false;
 let warnedDepthClamp = false;
-let warnedMultisample = false;
 let warnedBlendConstant = false;
 
 function topologyForMode(mode: ModeValue, fill: "fill" | "line" | "point"): Topology {
@@ -732,11 +745,11 @@ function derivePipelineState(state: TraversalState, opts: CompileSceneOptions): 
     };
   }
 
-  // Phase 1's compile-time warnings for DepthClamp / Multisample /
-  // BlendConstant were dropped when PipelineState became fully
-  // reactive: we no longer force these avals at compile time, so
-  // the warning would now fire lazily on first frame-eval rather
-  // than at scope entry. Per-field status:
+  // Phase 1's compile-time warnings for DepthClamp / BlendConstant
+  // were dropped when PipelineState became fully reactive: we no
+  // longer force these avals at compile time, so the warning would
+  // now fire lazily on first frame-eval rather than at scope entry.
+  // Per-field status:
   //
   //   * BlendConstant — wired through to `pass.setBlendConstant` in
   //     `preparedRenderObject.record` when `PipelineState.blendConstant`
@@ -746,16 +759,7 @@ function derivePipelineState(state: TraversalState, opts: CompileSceneOptions): 
   //     back to "no-op" silently when the WebGPU adapter doesn't
   //     advertise the `unclippedDepth` feature; the pipeline compile
   //     itself surfaces the error in that case.
-  //   * Multisample (the `<Sg Multisample={false}>` scope) — INTENTIONALLY
-  //     not wired into `PipelineState`. WebGPU has no per-pipeline
-  //     toggle to disable multisampling below the framebuffer's
-  //     `sampleCount` (you'd need `sampleMask = 0` per fragment, which
-  //     also has no plain pipeline expression). The framebuffer's
-  //     `sampleCount` is the single source of truth; per-leaf
-  //     "disable MSAA" is a known limitation tracked in docs/FUTURE.md.
-  //     `state.multisample` is still accumulated so the scope shape
-  //     stays parity-compatible with Aardvark.Dom.
-  void warnedDepthClamp; void warnedMultisample; void warnedBlendConstant;
+  void warnedDepthClamp; void warnedBlendConstant;
 
   const depth: DepthState = {
     write: state.depthMask,

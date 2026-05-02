@@ -202,8 +202,6 @@ export class TraversalState {
   readonly frontFace: aval<FrontFaceValue>;
   /** Fill mode (override). Defaults to `"fill"`. */
   readonly fillMode: aval<FillModeValue>;
-  /** Multisample enable (override). Defaults to `true`. */
-  readonly multisample: aval<boolean>;
   /** Per-pass blend constant, or `undefined` if unset. */
   readonly blendConstant: aval<BlendConstantValue> | undefined;
   /** Per-attachment color-write masks (innermost wins). */
@@ -252,7 +250,6 @@ export class TraversalState {
     this.cullMode = spec.cullMode;
     this.frontFace = spec.frontFace;
     this.fillMode = spec.fillMode;
-    this.multisample = spec.multisample;
     this.blendConstant = spec.blendConstant;
     this.colorMask = spec.colorMask;
     this.stencilMode = spec.stencilMode;
@@ -289,7 +286,6 @@ export class TraversalState {
     cullMode: AVal.constant<CullValue>("none"),
     frontFace: AVal.constant<FrontFaceValue>("ccw"),
     fillMode: AVal.constant<FillModeValue>("fill"),
-    multisample: AVal.constant(true),
     blendConstant: undefined,
     colorMask: AVal.constant(HashMap.empty<string, ColorMaskValue>()),
     stencilMode: undefined,
@@ -390,7 +386,6 @@ export class TraversalState {
   pushCullMode(mode: aval<CullValue>): TraversalState { return this.with({ cullMode: mode }); }
   pushFrontFace(mode: aval<FrontFaceValue>): TraversalState { return this.with({ frontFace: mode }); }
   pushFillMode(mode: aval<FillModeValue>): TraversalState { return this.with({ fillMode: mode }); }
-  pushMultisample(enabled: aval<boolean>): TraversalState { return this.with({ multisample: enabled }); }
   pushBlendConstant(value: aval<BlendConstantValue>): TraversalState { return this.with({ blendConstant: value }); }
   pushColorMask(mask: aval<HashMap<string, ColorMaskValue>>): TraversalState { return this.with({ colorMask: mask }); }
   pushStencilMode(mode: aval<StencilModeValue>): TraversalState { return this.with({ stencilMode: mode }); }
@@ -448,7 +443,6 @@ export class TraversalState {
       cullMode: patch.cullMode ?? this.cullMode,
       frontFace: patch.frontFace ?? this.frontFace,
       fillMode: patch.fillMode ?? this.fillMode,
-      multisample: patch.multisample ?? this.multisample,
       blendConstant: "blendConstant" in patch ? patch.blendConstant : this.blendConstant,
       colorMask: patch.colorMask ?? this.colorMask,
       stencilMode: "stencilMode" in patch ? patch.stencilMode : this.stencilMode,
@@ -486,7 +480,6 @@ interface TraversalSpec {
   cullMode: aval<CullValue>;
   frontFace: aval<FrontFaceValue>;
   fillMode: aval<FillModeValue>;
-  multisample: aval<boolean>;
   blendConstant: aval<BlendConstantValue> | undefined;
   colorMask: aval<HashMap<string, ColorMaskValue>>;
   stencilMode: aval<StencilModeValue> | undefined;

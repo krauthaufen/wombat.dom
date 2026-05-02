@@ -108,8 +108,6 @@ export function forEachLeaf(
       forEachLeaf(node.child, state.pushFrontFace(node.mode), visit); return;
     case "FillMode":
       forEachLeaf(node.child, state.pushFillMode(node.mode), visit); return;
-    case "Multisample":
-      forEachLeaf(node.child, state.pushMultisample(node.enabled), visit); return;
     case "BlendConstant":
       forEachLeaf(node.child, state.pushBlendConstant(node.value), visit); return;
     case "ColorMask":

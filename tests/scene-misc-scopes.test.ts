@@ -121,18 +121,18 @@ describe("Phase 3 — ForcePixelPicking suppresses BVH fall-through", () => {
     const calls: number[] = [];
     // No way to register a global handler; just confirm registry sees no hit.
     // Use the BVH directly to test the closestHit filter behaviour.
-    const bvh = reg.buildBvh()!;
-    expect(bvh).toBeDefined();
+    const bvh = AVal.force(reg.bvhAval);
+    expect(bvh.count).toBeGreaterThan(0);
     // Cursor ray (identity view+proj). Hit predicate inside dispatcher
     // returns undefined for forcePixelPicking. Mirror that here.
     const hit = bvh.closestHit(
       // ray pointing through origin along +z
       { origin: new V3d(0, 0, -10), direction: new V3d(0, 0, 1) } as never,
       0, Number.POSITIVE_INFINITY,
-      (key, value) => {
-        const s = reg.lookup(key)!;
+      (_key, entry) => {
+        const s = entry.scope;
         if (s.forcePixelPicking !== undefined && AVal.force(s.forcePixelPicking)) return undefined;
-        return value.intersects({ origin: new V3d(0, 0, -10), direction: new V3d(0, 0, 1) } as never, 0, Number.POSITIVE_INFINITY);
+        return entry.intersectable.intersects({ origin: new V3d(0, 0, -10), direction: new V3d(0, 0, 1) } as never, 0, Number.POSITIVE_INFINITY);
       },
     );
     expect(hit).toBeUndefined();

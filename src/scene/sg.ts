@@ -71,7 +71,6 @@ export type SgNode =
   | SgCullMode
   | SgFrontFace
   | SgFillMode
-  | SgMultisample
   | SgBlendConstant
   | SgColorMask
   | SgStencilMode
@@ -352,12 +351,6 @@ export type FillModeValue = "fill" | "line" | "point";
 export interface SgFillMode {
   readonly kind: "FillMode";
   readonly mode: aval<FillModeValue>;
-  readonly child: SgNode;
-}
-
-export interface SgMultisample {
-  readonly kind: "Multisample";
-  readonly enabled: aval<boolean>;
   readonly child: SgNode;
 }
 

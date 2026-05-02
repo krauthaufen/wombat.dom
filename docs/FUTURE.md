@@ -25,7 +25,6 @@ Tracking deferred work and stretch ideas. Living document — entries get crosse
 ## Render state
 - [x] Render-state scopes (DepthTest/Mask/Bias/Clamp, CullMode, FrontFace, FillMode, Multisample, BlendConstant, ColorMask, StencilMode, Pass) — Phase 1.
 - [ ] **Reactive PipelineState**: render-state scope avals are forced once at compile time. Dynamic state changes require swapping the subtree via `Sg.adaptive` so a fresh RenderObject is produced. A direct aval pipeline state would avoid the reflow.
-- [ ] **Multisample (`<Sg Multisample={false}>`)** — NOT wired into `PipelineState`. WebGPU has no per-pipeline switch to disable multisampling below the framebuffer's `sampleCount`, and the closest equivalent (`sampleMask = 0`) has no plain pipeline expression either. The framebuffer's `sampleCount` is the single source of truth; per-leaf "disable MSAA" is a known limitation. (See compile.ts `derivePipelineState`.)
 - [ ] **DepthClamp** — gated on the `unclippedDepth` adapter feature; consumed via `primitive.unclippedDepth` in the snapshot path. Pipeline compile fails when the feature is absent (no silent fallback).
 - [ ] **FillMode line/point** — approximated by topology override; no real polygon-mode wireframe (WebGPU limitation).
 

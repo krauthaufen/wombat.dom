@@ -244,10 +244,6 @@ function fillMode(mode: FillModeValue | aval<FillModeValue>): (child: SgNode) =>
   const m = liftAval(mode);
   return (child: SgNode): SgNode => ({ kind: "FillMode", mode: m, child });
 }
-function multisample(enabled: boolean | aval<boolean>): (child: SgNode) => SgNode {
-  const e = liftAval(enabled);
-  return (child: SgNode): SgNode => ({ kind: "Multisample", enabled: e, child });
-}
 function blendConstant(value: BlendConstantValue | aval<BlendConstantValue>): (child: SgNode) => SgNode {
   const v = liftAval(value);
   return (child: SgNode): SgNode => ({ kind: "BlendConstant", value: v, child });
@@ -383,7 +379,6 @@ export interface SgScopeProps {
   CullMode?: CullValue | aval<CullValue>;
   FrontFace?: FrontFaceValue | aval<FrontFaceValue>;
   FillMode?: FillModeValue | aval<FillModeValue>;
-  Multisample?: boolean | aval<boolean>;
   BlendConstant?: BlendConstantValue | aval<BlendConstantValue>;
   ColorMask?:
     | ColorMaskValue
@@ -490,7 +485,6 @@ function applyScopeAttrs(node: SgNode, props: SgScopeProps): SgNode {
   if (props.CullMode !== undefined)    n = cullMode(props.CullMode)(n);
   if (props.FrontFace !== undefined)   n = frontFace(props.FrontFace)(n);
   if (props.FillMode !== undefined)    n = fillMode(props.FillMode)(n);
-  if (props.Multisample !== undefined) n = multisample(props.Multisample)(n);
   if (props.BlendConstant !== undefined) n = blendConstant(props.BlendConstant)(n);
   if (props.ColorMask !== undefined)   n = colorMask(props.ColorMask)(n);
   if (props.StencilMode !== undefined) n = stencilMode(props.StencilMode)(n);
@@ -711,7 +705,6 @@ interface SgNamespace {
   cullMode:     typeof cullMode;
   frontFace:    typeof frontFace;
   fillMode:     typeof fillMode;
-  multisample:  typeof multisample;
   blendConstant: typeof blendConstant;
   colorMask:    typeof colorMask;
   stencilMode:  typeof stencilMode;
@@ -775,7 +768,6 @@ export const Sg: SgNamespace = (() => {
   fn.cullMode     = cullMode;
   fn.frontFace    = frontFace;
   fn.fillMode     = fillMode;
-  fn.multisample  = multisample;
   fn.blendConstant = blendConstant;
   fn.colorMask    = colorMask;
   fn.stencilMode  = stencilMode;
