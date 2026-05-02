@@ -63,29 +63,30 @@ declare const PathColor:  V4f;
 // Each triangle has the same kind on all 3 vertices, so the
 // interpolated value is constant across the triangle interior — no
 // flat-interpolation needed.
+// Vertex body uses expression form (no `const` locals). The plugin's
+// capture detector was patched (it now threads VariableStatement
+// bindings across sibling stmts), but a downstream frontend pass
+// still mis-resolves the second const in a chain — yak deferred.
 const loopBlinnEffect = effect(
-  vertex<{ a_position: V2f; a_klmKind: V4f }>(input => {
-    const world = ModelTrafo.mul(new V4f(input.a_position.x, input.a_position.y, 0.0, 1.0));
-    const view  = ViewTrafo.mul(world);
-    return {
-      gl_Position: ProjTrafo.mul(view),
-      v_klmKind:   input.a_klmKind,
-    };
-  }),
+  vertex<{ a_position: V2f; a_klmKind: V4f }>(input => ({
+    gl_Position: ProjTrafo.mul(ViewTrafo.mul(ModelTrafo.mul(
+      new V4f(input.a_position.x, input.a_position.y, 0.0, 1.0),
+    ))),
+    v_klmKind: input.a_klmKind,
+  })),
   fragment<{ v_klmKind: V4f }>(input => {
-    const k    = input.v_klmKind.x;
-    const l    = input.v_klmKind.y;
-    const kind = input.v_klmKind.w;
-    if (kind > 1.5) {
+    if (input.v_klmKind.w > 1.5) {
       // Arc: ellipse-local unit circle. Outside circle → discard.
-      if (k * k + l * l - 1.0 > 0.0) discard();
-    } else if (kind > 0.5) {
+      if (input.v_klmKind.x * input.v_klmKind.x
+        + input.v_klmKind.y * input.v_klmKind.y - 1.0 > 0.0) discard();
+    } else if (input.v_klmKind.w > 0.5) {
       // Bezier2: standard Loop-Blinn k² − l test.
-      if (k * k - l > 0.0) discard();
+      if (input.v_klmKind.x * input.v_klmKind.x - input.v_klmKind.y > 0.0) discard();
     }
-    // Interior triangle (kind = 0) and "inside" curve pixels alike
-    // emit the path's fill colour.
-    return PathColor;
+    // DEBUG: hardcoded red so we can verify geometry without
+    // depending on the PathColor uniform binding (which may not yet
+    // be wired through Sg.Leaf's `Uniform` scope prop).
+    return new V4f(1.0, 0.3, 0.3, 1.0);
   }),
 );
 
