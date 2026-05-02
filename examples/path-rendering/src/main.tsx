@@ -82,17 +82,17 @@ mount(root, (
           em-height; alignment translation is absorbed into ModelTrafo
           inside Sg.Text. */}
       <Sg.Text
-        font={font} text="Hello" align="center" aa="none"
+        font={font} text="Hello" align="center" aa="alpha-blending"
         Color={orange}
         Trafo={[Sg.translate(new V3d(0, 0.5, 0)), Sg.scale(0.0015)]}
       />
       <Sg.Text
-        font={font} text="& wombat" align="center" aa="none"
+        font={font} text="& wombat" align="center" aa="alpha-blending"
         Color={cream}
         Trafo={[Sg.translate(new V3d(0, -0.5, 0)), Sg.scale(0.0015)]}
       />
       <Sg.Text
-        font={font} text="left-anchored" align="left" aa="none"
+        font={font} text="left-anchored" align="left" aa="alpha-blending"
         Color={orange}
         Trafo={[Sg.translate(new V3d(-1.5, -1.5, 0)), Sg.scale(0.0008)]}
       />

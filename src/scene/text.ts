@@ -40,7 +40,7 @@ import {
   Font, GlyphCache, GLYPH_FLOATS_PER_VERTEX, layoutText,
 } from "@aardworx/wombat.base/font";
 import {
-  IBuffer, type BufferView, type DrawCall,
+  IBuffer, type BufferView, type DrawCall, type BlendState,
 } from "@aardworx/wombat.rendering/core";
 import type { Effect } from "@aardworx/wombat.shader";
 import { stage } from "@aardworx/wombat.shader";
@@ -83,37 +83,41 @@ const Tvec4f: Type = Vec(Tf32, 4);
 const TM44f:  Type = Mat(Tf32, 4, 4);
 
 let pathTextEffectAaNone: Effect | undefined;
+let pathTextEffectAaAlphaBlending: Effect | undefined;
+
+const sharedVsSource = `
+  declare const ModelTrafo: M44f;
+  declare const ViewTrafo:  M44f;
+  declare const ProjTrafo:  M44f;
+  declare const PathColor:  V4f;
+
+  function vsMain(input: {
+    a_localPos:   V2f;
+    a_klmKind:    V4f;
+    a_instOffset: V2f;
+  }): { gl_Position: V4f; v_klmKind: V4f } {
+    // Flip detection: project ±x baseline probes through MVP and
+    // compare their screen-x. If +x lands LEFT of -x in screen
+    // space, the text is viewed from behind → mirror around x=0.
+    const pPlus  = ProjTrafo.mul(ViewTrafo.mul(ModelTrafo.mul(new V4f( 1.0, 0.0, 0.0, 1.0))));
+    const pMinus = ProjTrafo.mul(ViewTrafo.mul(ModelTrafo.mul(new V4f(-1.0, 0.0, 0.0, 1.0))));
+    const sx = (pPlus.x / pPlus.w) < (pMinus.x / pMinus.w) ? -1.0 : 1.0;
+    // Per-instance offset (glyph centre in text-frame) and per-
+    // vertex local position (glyph-centred coords) both mirror
+    // around 0 with the same sign.
+    const ofsX = input.a_instOffset.x * sx;
+    const locX = input.a_localPos.x * sx;
+    const text = new V4f(ofsX + locX, input.a_instOffset.y + input.a_localPos.y, 0.0, 1.0);
+    return {
+      gl_Position: ProjTrafo.mul(ViewTrafo.mul(ModelTrafo.mul(text))),
+      v_klmKind: input.a_klmKind,
+    };
+  }
+`;
 
 function buildPathTextEffectAaNone(): Effect {
   if (pathTextEffectAaNone) return pathTextEffectAaNone;
-  const source = `
-    declare const ModelTrafo: M44f;
-    declare const ViewTrafo:  M44f;
-    declare const ProjTrafo:  M44f;
-    declare const PathColor:  V4f;
-
-    function vsMain(input: {
-      a_localPos:   V2f;
-      a_klmKind:    V4f;
-      a_instOffset: V2f;
-    }): { gl_Position: V4f; v_klmKind: V4f } {
-      // Flip detection: project ±x baseline probes through MVP and
-      // compare their screen-x. If +x lands LEFT of -x in screen
-      // space, the text is viewed from behind → mirror around x=0.
-      const pPlus  = ProjTrafo.mul(ViewTrafo.mul(ModelTrafo.mul(new V4f( 1.0, 0.0, 0.0, 1.0))));
-      const pMinus = ProjTrafo.mul(ViewTrafo.mul(ModelTrafo.mul(new V4f(-1.0, 0.0, 0.0, 1.0))));
-      const sx = (pPlus.x / pPlus.w) < (pMinus.x / pMinus.w) ? -1.0 : 1.0;
-      // Per-instance offset (glyph centre in text-frame) and per-
-      // vertex local position (glyph-centred coords) both mirror
-      // around 0 with the same sign.
-      const ofsX = input.a_instOffset.x * sx;
-      const locX = input.a_localPos.x * sx;
-      const text = new V4f(ofsX + locX, input.a_instOffset.y + input.a_localPos.y, 0.0, 1.0);
-      return {
-        gl_Position: ProjTrafo.mul(ViewTrafo.mul(ModelTrafo.mul(text))),
-        v_klmKind: input.a_klmKind,
-      };
-    }
+  const source = `${sharedVsSource}
 
     function fsMain(input: { v_klmKind: V4f }): { outColor: V4f } {
       // Loop-Blinn implicit test, m carries the inside/outside sign
@@ -127,6 +131,58 @@ function buildPathTextEffectAaNone(): Effect {
     }
   `;
 
+  pathTextEffectAaNone = compilePathTextEffect(source);
+  return pathTextEffectAaNone;
+}
+
+/**
+ * Analytic anti-aliasing via the screen-space gradient of the
+ * Loop-Blinn implicit. For each fragment in a curve triangle:
+ *
+ *   f(k,l,m) = (k² − l) · m       (bezier2)
+ *   f(k,l,m) = (k² + l² − 1) · m  (arc)
+ *
+ * The screen-space gradient `fwidth(f)` ≈ how much `f` changes
+ * across one pixel. Signed distance in pixels ≈ `f / fwidth(f)`.
+ * Alpha = `clamp(0.5 − sd, 0, 1)` gives a smooth 1px ramp at the
+ * curve boundary (alpha=0.5 exactly on the curve, fully filled
+ * one pixel inside, fully transparent one pixel outside).
+ *
+ * Caveats / TODO for v1:
+ *
+ *   - Line edges of the polygon are NOT yet anti-aliased — they
+ *     still have hard pixel boundaries. Adding line ribbons
+ *     requires tessellator changes; tracked separately.
+ *
+ *   - On the chord-side of a curve, AA only fades pixels within
+ *     the curve triangle's coverage. Pixels just inside the
+ *     polygon (covered by flat-fill, not the curve triangle)
+ *     stay opaque — so the fade is only on the bulge side. This
+ *     is acceptable for thin glyph strokes where both sides of
+ *     the stroke are curves, but visible on isolated boundaries.
+ */
+function buildPathTextEffectAaAlphaBlending(): Effect {
+  if (pathTextEffectAaAlphaBlending) return pathTextEffectAaAlphaBlending;
+  const source = `${sharedVsSource}
+
+    function fsMain(input: { v_klmKind: V4f }): { outColor: V4f } {
+      // WGSL requires \`fwidth\` to come from uniform control flow,
+      // so we evaluate f(k,l,m) and its width OUTSIDE any branch.
+      // The per-curve formula is selected with a ternary; interior
+      // fragments (kind=0) get f = -1 so alpha clamps to 1.
+      const fArc = (input.v_klmKind.x * input.v_klmKind.x + input.v_klmKind.y * input.v_klmKind.y - 1.0) * input.v_klmKind.z;
+      const fBez = (input.v_klmKind.x * input.v_klmKind.x - input.v_klmKind.y) * input.v_klmKind.z;
+      const f = input.v_klmKind.w > 1.7 ? fArc : (input.v_klmKind.w > 0.7 ? fBez : -1.0);
+      const w = max(fwidth(f), 1e-8);
+      const alpha = clamp(0.5 - f / w, 0.0, 1.0);
+      return { outColor: new V4f(PathColor.x, PathColor.y, PathColor.z, PathColor.w * alpha) };
+    }
+  `;
+  pathTextEffectAaAlphaBlending = compilePathTextEffect(source);
+  return pathTextEffectAaAlphaBlending;
+}
+
+function compilePathTextEffect(source: string): Effect {
   const entries: EntryRequest[] = [
     {
       name: "vsMain", stage: "vertex",
@@ -166,8 +222,29 @@ function buildPathTextEffectAaNone(): Effect {
 
   const parsed = parseShader({ source, entries, externalTypes });
   const merged: Module = { ...parsed, values: [camUBO, ...parsed.values] };
-  pathTextEffectAaNone = stage(merged);
-  return pathTextEffectAaNone;
+  return stage(merged);
+}
+
+// Standard alpha-over blending state for the analytic-AA mode.
+// Cached at module level — every `<Sg.Text aa="alpha-blending"/>`
+// reuses the same BlendState instance.
+let alphaOverBlend: BlendState | undefined;
+function alphaOverBlendState(): BlendState {
+  if (alphaOverBlend) return alphaOverBlend;
+  alphaOverBlend = {
+    color: {
+      operation: AVal.constant<GPUBlendOperation>("add"),
+      srcFactor: AVal.constant<GPUBlendFactor>("src-alpha"),
+      dstFactor: AVal.constant<GPUBlendFactor>("one-minus-src-alpha"),
+    },
+    alpha: {
+      operation: AVal.constant<GPUBlendOperation>("add"),
+      srcFactor: AVal.constant<GPUBlendFactor>("one"),
+      dstFactor: AVal.constant<GPUBlendFactor>("one-minus-src-alpha"),
+    },
+    writeMask: AVal.constant(0xf),
+  };
+  return alphaOverBlend;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -297,17 +374,21 @@ export function SgText(
     ? undefined
     : Trafo3d.translation(new V3d(alignDx, 0, 0));
 
-  const effect = aa === "none"
-    ? buildPathTextEffectAaNone()
-    : buildPathTextEffectAaNone(); // TODO: alpha-blending / sample-shading variants
+  const effect
+    = aa === "alpha-blending" ? buildPathTextEffectAaAlphaBlending()
+    : /* sample-shading uses the same shader as none; the AA work
+         happens via per-sample frequency at pipeline-state level. */
+      buildPathTextEffectAaNone();
 
   // Compose under one Sg scope: shader, color uniform, default
   // CullMode none (path triangles are math-CCW = framebuffer-CW),
-  // user scope props on top.
+  // alpha-blend BlendMode for the alpha-blending AA mode, user
+  // scope props on top.
   const tree = Sg({
     Shader: effect,
     Uniform: { PathColor: colorAval },
     CullMode: "none",
+    ...(aa === "alpha-blending" ? { BlendMode: alphaOverBlendState() } : {}),
     ...(alignTrafo !== undefined ? { Trafo: alignTrafo } : {}),
     children: leafChildren,
   } as never);
