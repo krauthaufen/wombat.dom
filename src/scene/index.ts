@@ -109,14 +109,11 @@ export {
   basic,
 } from "./defaultSurfaces.js";
 
-// Ambient avals — drop-in references to the active RenderControl's
-// viewport / view / proj / time. Reads anywhere without threading
-// the surrounding `TraversalState`. See `./ambient.ts`.
+// Ambient context plumbing. The avals themselves live as static
+// members on `RenderControl` (`RenderControl.viewport`, `.view`,
+// `.proj`, `.time`); the helpers here let other layers (tests, etc.)
+// publish/clear the context manually if they need to.
 export {
-  viewport as ambientViewport,
-  view as ambientView,
-  proj as ambientProj,
-  time as ambientTime,
   setAmbient, clearAmbient,
   type AmbientContext,
 } from "./ambient.js";

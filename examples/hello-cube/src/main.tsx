@@ -14,7 +14,6 @@ import {
   OrbitController,
   RenderControl,
   Sg,
-  ambientViewport,
   aspectFromViewport,
   perspective,
 } from "@aardworx/wombat.dom/scene";
@@ -84,7 +83,7 @@ mount(root, (
       Shader={DefaultSurfaces.basic()}
       Proj={perspective({
         fovInRadians: Math.PI / 3,
-        aspect: aspectFromViewport(ambientViewport),
+        aspect: aspectFromViewport(RenderControl.viewport),
         near: 0.1,
         far: 100,
       })}

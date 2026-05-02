@@ -396,16 +396,28 @@ async function initialise(
 }
 
 /**
- * Static accessor for the global per-frame time clock. Lazy-init on
- * first read; tied to every active RenderControl's frame loop. While
- * a control is mounted its rAF tick advances `time`; without one,
- * the value freezes at the last render's timestamp.
+ * Static accessors that flatten the *active* RenderControl's avals
+ * — `viewport` / `view` / `proj` / `time`. Each tracks the most-
+ * recently-mounted control via the ambient context (`./ambient.ts`);
+ * unmount restores the fallback (1×1 viewport, identity view+proj,
+ * frozen time). Multiple controls mounted simultaneously: the LAST
+ * mount wins. For per-control isolation, read from the JSX function
+ * child's `state` (which carries the actual TraversalState).
  */
-Object.defineProperty(RenderControl, "time", {
-  configurable: true,
-  enumerable: true,
-  get(): aval<number> { return getGlobalTime(); },
-});
+import {
+  viewport as ambViewport,
+  view as ambView,
+  proj as ambProj,
+  time as ambTime,
+} from "./ambient.js";
+
+// eslint-disable-next-line @typescript-eslint/no-namespace
+export namespace RenderControl {
+  export const viewport: aval<{ width: number; height: number }> = ambViewport;
+  export const view: aval<Trafo3d> = ambView;
+  export const proj: aval<Trafo3d> = ambProj;
+  export const time: aval<number> = ambTime;
+}
 
 /** Manually tick the global clock — useful for tests with fake timers. */
 export function _tickRenderControlTime(): void { tickGlobalTime(); }
