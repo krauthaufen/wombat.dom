@@ -210,28 +210,23 @@ function buildPathTextEffectAaAlphaBlending(): Effect {
 
     function fsMain(input: { v_klmKind: V4f }): { outColor: V4f } {
       // Take screen-space derivatives of the BARE interpolated
-      // attributes (k, l, m) and apply the chain rule analytically.
-      // Each is a simple linear interpolation across the triangle,
-      // so dpdx/dpdy returns a constant the WGSL→MSL translator on
-      // every WebGPU backend (incl. iOS Safari/WebKit) handles
-      // identically. The previous approach took dpdx/dpdy of a
-      // select-chain result, which WebKit produced as 0 → curves
-      // disappeared.
+      // attributes (k, l, m) using the EXPLICIT \`Fine\` variant —
+      // WebKit's Metal backend translates the implementation-defined
+      // plain dpdx/dpdy unreliably. Fine derivatives are spec'd to
+      // use the literal 2×2 quad differences and translate to
+      // Metal's \`dfdx\`/\`dfdy\` directly, which works.
       //
       //   bez2: f = (k²-l)·m
       //         ∂f = (2k·∂k - ∂l)·m + (k²-l)·∂m
       //   arc:  f = (k²+l²-1)·m
       //         ∂f = (2k·∂k + 2l·∂l)·m + (k²+l²-1)·∂m
-      //
-      // step() masks pick the right branch arithmetically (no
-      // conditionals around the derivative call).
       const k = input.v_klmKind.x;
       const l = input.v_klmKind.y;
       const m = input.v_klmKind.z;
       const kind = input.v_klmKind.w;
-      const dkx = dFdx(k); const dky = dFdy(k);
-      const dlx = dFdx(l); const dly = dFdy(l);
-      const dmx = dFdx(m); const dmy = dFdy(m);
+      const dkx = dFdxFine(k); const dky = dFdyFine(k);
+      const dlx = dFdxFine(l); const dly = dFdyFine(l);
+      const dmx = dFdxFine(m); const dmy = dFdyFine(m);
       const fBez = (k * k - l) * m;
       const fArc = (k * k + l * l - 1.0) * m;
       const dfBezX = (2.0 * k * dkx - dlx) * m + (k * k - l) * dmx;
@@ -244,9 +239,8 @@ function buildPathTextEffectAaAlphaBlending(): Effect {
       const f   = fBez * mBez + fArc * mArc + (-1.0) * (1.0 - mBez - mArc - mRibbon);
       const dfX = dfBezX * mBez + dfArcX * mArc;
       const dfY = dfBezY * mBez + dfArcY * mArc;
-      const w   = max(sqrt(dfX * dfX + dfY * dfY), 1e-6);
+      const w   = sqrt(dfX * dfX + dfY * dfY) + 1e-6;
       const curveAlpha = clamp(0.5 - f / w, 0.0, 1.0);
-      // Line-ribbon ramp: alpha = 1 - isOuter (encoded in klm.z).
       const ribbonAlpha = clamp(1.0 - m, 0.0, 1.0);
       const alpha = curveAlpha * (1.0 - mRibbon) + ribbonAlpha * mRibbon;
       return { outColor: new V4f(PathColor.x, PathColor.y, PathColor.z, PathColor.w * alpha) };
