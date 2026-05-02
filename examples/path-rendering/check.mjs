@@ -54,4 +54,10 @@ if (canvasPng) {
   console.log(`/tmp/path-rendering.png (${buf.length} bytes)`);
 }
 
+// Full-page screenshot so the SVG reference (overlaid bottom-right) is
+// captured alongside the WebGPU canvas.
+const fullPng = await page.screenshot({ fullPage: true });
+fs.writeFileSync("/tmp/path-rendering-full.png", fullPng);
+console.log(`/tmp/path-rendering-full.png (${fullPng.length} bytes)`);
+
 await browser.close();

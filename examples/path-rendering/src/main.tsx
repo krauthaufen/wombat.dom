@@ -19,7 +19,7 @@ import {
 } from "@aardworx/wombat.adaptive";
 import {
   V2d, V3d, V4f,
-  LineSegment, Bezier2Segment, ArcSegment, Path,
+  LineSegment, Bezier2Segment, Bezier3Segment, ArcSegment, Path,
   type PathSegment,
   tessellatePath, triangulateFilledFaces, compileTessellation,
 } from "@aardworx/wombat.base";
@@ -71,13 +71,15 @@ function buildLoopBlinnEffect(): Effect {
     }
 
     function fsMain(input: { v_klmKind: V4f }): { outColor: V4f } {
-      // Inline klmKind component access to dodge the frontend's
-      // sibling-binding bug — using \`const k = …; const l = …\` and
-      // referencing them in nested ifs makes them unresolved.
+      // Loop-Blinn implicit test, with the M-component carrying a
+      // ±1 sign that flips inside/outside discard for curves whose
+      // "extra" vertex (bez2 control, arc apex) lies inside the
+      // chord polygon (= curve bulges into the solid → subtractive).
+      // Mirrors Aardvark.Rendering.Text's pathFragment shader.
       if (input.v_klmKind.w > 1.7) {
-        if (input.v_klmKind.x * input.v_klmKind.x + input.v_klmKind.y * input.v_klmKind.y - 1.0 > 0.0) discard;
+        if ((input.v_klmKind.x * input.v_klmKind.x + input.v_klmKind.y * input.v_klmKind.y - 1.0) * input.v_klmKind.z > 0.0) discard;
       } else if (input.v_klmKind.w > 0.7) {
-        if (input.v_klmKind.x * input.v_klmKind.x - input.v_klmKind.y > 0.0) discard;
+        if ((input.v_klmKind.x * input.v_klmKind.x - input.v_klmKind.y) * input.v_klmKind.z > 0.0) discard;
       }
       return { outColor: PathColor };
     }
@@ -186,42 +188,224 @@ function compilePathSegments(input: ReadonlyArray<Path | PathSegment>): Compiled
 // no holes, no curves: the simplest possible filled polygon.
 // ---------------------------------------------------------------------------
 
-// Rounded square: 4 lines + 4 quadratic-Bezier corners. Exercises
-// both the flat triangulation and the Loop-Blinn curve test.
-const R = 0.4;        // corner radius
-const E = 1.0;        // half-edge of the square
-const TEST_PATH: ReadonlyArray<PathSegment> = [
-  // bottom edge (left → right)
-  new LineSegment(new V2d(-E + R, -E), new V2d( E - R, -E)),
-  // bottom-right corner
-  new Bezier2Segment(new V2d( E - R, -E), new V2d( E, -E), new V2d( E, -E + R)),
-  // right edge
-  new LineSegment(new V2d( E, -E + R), new V2d( E,  E - R)),
-  // top-right corner
-  new Bezier2Segment(new V2d( E,  E - R), new V2d( E,  E), new V2d( E - R,  E)),
-  // top edge
-  new LineSegment(new V2d( E - R,  E), new V2d(-E + R,  E)),
-  // top-left corner
-  new Bezier2Segment(new V2d(-E + R,  E), new V2d(-E,  E), new V2d(-E,  E - R)),
-  // left edge
-  new LineSegment(new V2d(-E,  E - R), new V2d(-E, -E + R)),
-  // bottom-left corner
-  new Bezier2Segment(new V2d(-E, -E + R), new V2d(-E, -E), new V2d(-E + R, -E)),
-];
+// Test paths.
+//
+//   Row of 4 primitive shapes across the top — one per segment kind:
+//     lines (triangle), bezier2 (lens), bezier3 (leaf), arc (circle).
+//   Bottom half: a Great Vibes script-font ampersand glyph, lowered
+//     from the font's quadratic-Bezier outline. Exercises real-world
+//     multi-subpath topology (outer body + interior loop).
+//
+// Coordinate system: (-2..2)² math y-up. Top row sits at y≈1.4, the
+// glyph occupies the lower ~2.4 vertical units centred at (0, -0.5).
 
-// SVG mirror — same path traced as `M / L / Q / Z` directives.
-function testPathToSvg(): string {
-  const head = TEST_PATH[0]!;
-  let d = `M ${head.start.x} ${head.start.y}`;
-  for (const s of TEST_PATH) {
-    if (s.kind === "line") {
-      d += ` L ${s.end.x} ${s.end.y}`;
-    } else if (s.kind === "bezier2") {
-      d += ` Q ${s.control.x} ${s.control.y} ${s.end.x} ${s.end.y}`;
+import glyphAmpData from "./glyph-amp.json";
+
+// Affine transform of a list of segments. Endpoints shared by V2d
+// identity in the input are preserved in the output (required by the
+// planar-graph spatial-hash for arcs whose start / end are computed
+// once via cos/sin and reused across two halves).
+function transformSegs(
+  segs: ReadonlyArray<PathSegment>,
+  dx: number, dy: number,
+  sx: number, sy: number = sx,
+): PathSegment[] {
+  const cache = new Map<V2d, V2d>();
+  const t = (p: V2d): V2d => {
+    let q = cache.get(p);
+    if (!q) { q = new V2d(p.x * sx + dx, p.y * sy + dy); cache.set(p, q); }
+    return q;
+  };
+  return segs.map((s): PathSegment => {
+    switch (s.kind) {
+      case "line":    return new LineSegment(t(s.start), t(s.end));
+      case "bezier2": return new Bezier2Segment(t(s.start), t(s.control), t(s.end));
+      case "bezier3": return new Bezier3Segment(t(s.start), t(s.control1), t(s.control2), t(s.end));
+      case "arc":     return new ArcSegment(
+        t(s.start), t(s.end), t(s.center),
+        new V2d(s.axis0.x * sx, s.axis0.y * sy),
+        new V2d(s.axis1.x * sx, s.axis1.y * sy),
+        s.startAngle, s.deltaAngle,
+      );
+    }
+  });
+}
+
+// Translate a path so its bbox-centre lands at (newCx, newCy) and is
+// uniformly scaled by `scale`.
+function place(
+  segs: ReadonlyArray<PathSegment>,
+  oldCx: number, oldCy: number,
+  newCx: number, newCy: number,
+  scale: number, scaleY: number = scale,
+): PathSegment[] {
+  return transformSegs(segs, newCx - oldCx * scale, newCy - oldCy * scaleY, scale, scaleY);
+}
+
+// --- Top row: 4 primitive kinds, half-size, packed at y≈1.4 -------
+
+const lineTri0: ReadonlyArray<PathSegment> = (() => {
+  const a = new V2d(-1.6,  0.4);
+  const b = new V2d(-0.4,  0.4);
+  const c = new V2d(-1.0,  1.6);
+  return [
+    new LineSegment(a, b),
+    new LineSegment(b, c),
+    new LineSegment(c, a),
+  ];
+})();
+const lineTri = place(lineTri0, -1, 1, -1.5, 1.4, 0.40);
+
+const bez2Lens0: ReadonlyArray<PathSegment> = (() => {
+  const l = new V2d(0.4, 1);
+  const r = new V2d(1.6, 1);
+  return [
+    new Bezier2Segment(l, new V2d(1, 1.7), r),
+    new Bezier2Segment(r, new V2d(1, 0.3), l),
+  ];
+})();
+const bez2Lens = place(bez2Lens0, 1, 1, -0.5, 1.4, 0.40);
+
+const bez3Leaf0: ReadonlyArray<PathSegment> = (() => {
+  const top = new V2d(-1, -0.4);
+  const bot = new V2d(-1, -1.6);
+  return [
+    new Bezier3Segment(top, new V2d(-0.3, -0.5), new V2d(-0.3, -1.5), bot),
+    new Bezier3Segment(bot, new V2d(-1.7, -1.5), new V2d(-1.7, -0.5), top),
+  ];
+})();
+const bez3Leaf = place(bez3Leaf0, -1, -1, 0.5, 1.4, 0.40);
+
+const arcCircle0: ReadonlyArray<PathSegment> = (() => {
+  const cx = 1, cy = -1, r = 0.6;
+  return [
+    ArcSegment.circular(new V2d(cx, cy), r, 0,        Math.PI),
+    ArcSegment.circular(new V2d(cx, cy), r, Math.PI,  Math.PI),
+  ];
+})();
+const arcCircle = place(arcCircle0, 1, -1, 1.5, 1.4, 0.40);
+
+// --- Glyph: Great Vibes ampersand ----------------------------------
+
+// Convert opentype.js path commands to PathSegments.
+//   - opentype emits coords in screen-y-down; flip to math y-up.
+//   - L commands of zero length (very common artefact in this font's
+//     command stream) are dropped.
+//   - Z closes back to the current sub-path's M anchor with a
+//     LineSegment if needed.
+type GlyphCmd = ["M", number, number] | ["L", number, number]
+  | ["Q", number, number, number, number]
+  | ["C", number, number, number, number, number, number]
+  | ["Z"];
+
+function commandsToSegments(
+  commands: ReadonlyArray<GlyphCmd>,
+  xform: (x: number, y: number) => V2d,
+): PathSegment[] {
+  const out: PathSegment[] = [];
+  let pen: V2d | undefined;
+  let anchor: V2d | undefined;
+  const closeIfOpen = (): void => {
+    if (pen && anchor && (Math.abs(pen.x - anchor.x) > 1e-12 || Math.abs(pen.y - anchor.y) > 1e-12)) {
+      out.push(new LineSegment(pen, anchor));
+    }
+  };
+  for (const c of commands) {
+    if (c[0] === "M") {
+      const p = xform(c[1], c[2]);
+      pen = p; anchor = p;
+    } else if (c[0] === "L") {
+      const p = xform(c[1], c[2]);
+      if (pen && (Math.abs(pen.x - p.x) > 1e-12 || Math.abs(pen.y - p.y) > 1e-12)) {
+        out.push(new LineSegment(pen, p));
+        pen = p;
+      }
+    } else if (c[0] === "Q") {
+      const ctrl = xform(c[1], c[2]);
+      const p = xform(c[3], c[4]);
+      if (pen) { out.push(new Bezier2Segment(pen, ctrl, p)); pen = p; }
+    } else if (c[0] === "C") {
+      const c1 = xform(c[1], c[2]);
+      const c2 = xform(c[3], c[4]);
+      const p = xform(c[5], c[6]);
+      if (pen) { out.push(new Bezier3Segment(pen, c1, c2, p)); pen = p; }
+    } else if (c[0] === "Z") {
+      closeIfOpen();
+      pen = anchor;
     }
   }
-  d += " Z";
-  return d;
+  closeIfOpen();
+  return out;
+}
+
+const ampGlyph: ReadonlyArray<PathSegment> = (() => {
+  // Glyph bbox in opentype.js coords (y-down): x∈[11,749], y∈[-706,45].
+  // After y flip → math y-up: x∈[11,749], y∈[-45,706]. Centre (380,330.5),
+  // size 738×751.
+  const oldCx = 380, oldCy = 330.5;
+  const newCx = 0, newCy = -0.5;
+  const targetH = 2.2;
+  const scale = targetH / 751;
+  return commandsToSegments(
+    glyphAmpData as unknown as ReadonlyArray<GlyphCmd>,
+    (x, y) => new V2d((x - oldCx) * scale + newCx, (-y - oldCy) * scale + newCy),
+  );
+})();
+
+const TEST_PATH: ReadonlyArray<PathSegment> = [
+  ...lineTri, ...bez2Lens, ...bez3Leaf, ...arcCircle,
+  ...ampGlyph,
+];
+
+// SVG mirror — emit a `M…Z` subpath per primitive group so each
+// closed contour stays closed. Supports L / Q / C / A directives.
+// SVG's arc-sweep flag is inverted relative to math-CCW because the
+// outer <svg> wears `transform="scale(1,-1)"` to flip y-down → y-up.
+function pathSegmentsToSvgD(segs: ReadonlyArray<PathSegment>): string {
+  const groups: PathSegment[][] = [];
+  let cur: PathSegment[] = [];
+  for (const s of segs) {
+    const prev = cur[cur.length - 1];
+    const close = prev !== undefined
+      && Math.abs(prev.end.x - s.start.x) < 1e-9
+      && Math.abs(prev.end.y - s.start.y) < 1e-9;
+    if (cur.length === 0 || close) {
+      cur.push(s);
+    } else {
+      groups.push(cur);
+      cur = [s];
+    }
+  }
+  if (cur.length > 0) groups.push(cur);
+
+  const out: string[] = [];
+  for (const g of groups) {
+    out.push(`M ${g[0]!.start.x} ${g[0]!.start.y}`);
+    for (const s of g) {
+      if (s.kind === "line") {
+        out.push(`L ${s.end.x} ${s.end.y}`);
+      } else if (s.kind === "bezier2") {
+        out.push(`Q ${s.control.x} ${s.control.y} ${s.end.x} ${s.end.y}`);
+      } else if (s.kind === "bezier3") {
+        out.push(`C ${s.control1.x} ${s.control1.y} ${s.control2.x} ${s.control2.y} ${s.end.x} ${s.end.y}`);
+      } else if (s.kind === "arc") {
+        const rx = Math.hypot(s.axis0.x, s.axis0.y);
+        const ry = Math.hypot(s.axis1.x, s.axis1.y);
+        const rot = Math.atan2(s.axis0.y, s.axis0.x) * 180 / Math.PI;
+        const largeArc = Math.abs(s.deltaAngle) > Math.PI ? 1 : 0;
+        // sweep-flag in SVG's native y-down: CCW=0, CW=1. Our
+        // viewer flips y, so invert: math-CCW (deltaAngle>0) → 1.
+        const sweep = s.deltaAngle > 0 ? 1 : 0;
+        out.push(`A ${rx} ${ry} ${rot} ${largeArc} ${sweep} ${s.end.x} ${s.end.y}`);
+      }
+    }
+    out.push("Z");
+  }
+  return out.join(" ");
+}
+
+function testPathToSvg(): string {
+  return pathSegmentsToSvgD(TEST_PATH);
 }
 
 // ---------------------------------------------------------------------------
@@ -251,7 +435,7 @@ const svg = document.createElementNS(svgNS, "svg");
 svg.setAttribute("viewBox", "-2 -2 4 4");
 svg.setAttribute("style",
   "position:absolute; right:8px; bottom:36px;"
-  + "width:200px; height:200px; background:#001828;"
+  + "width:384px; height:384px; background:#001828;"
   + "border:1px solid #555; pointer-events:none;");
 const svgPath = document.createElementNS(svgNS, "path");
 svgPath.setAttribute("d", testPathToSvg());
