@@ -206,36 +206,28 @@ function buildPathTextEffectAaNone(): Effect {
  */
 function buildPathTextEffectAaAlphaBlending(): Effect {
   if (pathTextEffectAaAlphaBlending) return pathTextEffectAaAlphaBlending;
-  const source = `${vsSource(true)}
+  // DIAGNOSTIC: temporarily route alpha-blending through the SAME
+  // vertex shader as "none" (no ribbon expansion) and a fragment
+  // shader that just outputs PathColor with alpha=1. This isolates
+  // whether iOS Safari's WebGPU is rejecting the AA shader pieces
+  // (dpdx/dpdy, ribbon expansion math) or the alpha-blending
+  // pipeline state itself. If this renders curves/ribbons normally
+  // on iOS, the shader is the issue. If it still renders nothing,
+  // the pipeline state (BlendMode, DepthTest) is the issue.
+  const source = `${vsSource(false)}
 
     function fsMain(input: { v_klmKind: V4f }): { outColor: V4f } {
-      // Three AA paths share one shader, switched on \`kind\`:
-      //
-      //   kind == 0          → interior, alpha = 1
-      //   kind ∈ (0.7, 1.5)  → bezier2, AA via implicit gradient
-      //   kind ∈ (1.7, 2.5)  → arc,     AA via implicit gradient
-      //   kind  > 2.5        → line ribbon, alpha = 1 - isOuter
-      //
-      // For curves we compute the screen-space gradient with
-      // dpdx/dpdy rather than \`fwidth\` — some WebGPU implementations
-      // (iOS Safari's WebKit backend in particular) mis-handle
-      // fwidth on select-results.
-      const fArc = (input.v_klmKind.x * input.v_klmKind.x + input.v_klmKind.y * input.v_klmKind.y - 1.0) * input.v_klmKind.z;
-      const fBez = (input.v_klmKind.x * input.v_klmKind.x - input.v_klmKind.y) * input.v_klmKind.z;
-      const isArc    = input.v_klmKind.w > 1.7 && input.v_klmKind.w < 2.5;
-      const isBez    = input.v_klmKind.w > 0.7 && input.v_klmKind.w < 1.5;
-      const isRibbon = input.v_klmKind.w > 2.5;
-      const f  = isArc ? fArc : (isBez ? fBez : -1.0);
-      const dx = dFdx(f);
-      const dy = dFdy(f);
-      const w  = max(sqrt(dx * dx + dy * dy), 1e-8);
-      const curveAlpha = clamp(0.5 - f / w, 0.0, 1.0);
-      // Line-ribbon alpha = linear ramp from 1 at the polygon edge
-      // (isOuter=0, klmKind.z=0) to 0 at the 1-px outer edge
-      // (isOuter=1, klmKind.z=1).
-      const ribbonAlpha = clamp(1.0 - input.v_klmKind.z, 0.0, 1.0);
-      const alpha = isRibbon ? ribbonAlpha : curveAlpha;
-      return { outColor: new V4f(PathColor.x, PathColor.y, PathColor.z, PathColor.w * alpha) };
+      // DIAGNOSTIC: discard outside-curve / ribbon-outer fragments
+      // the SAME way aa="none" does. No derivatives, no alpha calc,
+      // no ribbon ramp. The only difference from aa="none" is the
+      // alpha-blending pipeline state. If iOS shows curves now, we
+      // know dpdx/dpdy / select-chains are the real failure.
+      if (input.v_klmKind.w > 1.7 && input.v_klmKind.w < 2.5) {
+        if ((input.v_klmKind.x * input.v_klmKind.x + input.v_klmKind.y * input.v_klmKind.y - 1.0) * input.v_klmKind.z > 0.0) discard;
+      } else if (input.v_klmKind.w > 0.7 && input.v_klmKind.w < 1.5) {
+        if ((input.v_klmKind.x * input.v_klmKind.x - input.v_klmKind.y) * input.v_klmKind.z > 0.0) discard;
+      }
+      return { outColor: PathColor };
     }
   `;
   pathTextEffectAaAlphaBlending = compilePathTextEffect(source);

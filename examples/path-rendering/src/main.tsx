@@ -83,28 +83,24 @@ mount(root, (
       OnDoubleTap={flyToHit}
       PixelSnapRadius={8}
     >
-      {/* Three text runs lying on the floor. Scale shrinks the
-          em-height; alignment translation is absorbed into ModelTrafo
-          inside Sg.Text. */}
-      {/* Sans-serif with crisp straight stems — easy to see whether
-          the line-ribbon AA gradient runs in the right direction.
-          5 px ribbon makes the gradient obvious; switch back to 1 px
-          once it looks correct. */}
+      {/* Three runs in alpha-blending mode. The shader is temporarily
+          reduced to discard-only logic (no AA, no ribbon expansion)
+          so we can tell whether iOS Safari is rejecting the AA
+          fragment math (dpdx/dpdy/select-chains) vs the alpha-
+          blending pipeline state itself. If iOS now shows the same
+          rendering as Chromium, the AA shader is the real culprit. */}
       <Sg.Text
-        font={latoFont} text="HELLO WOMBAT" align="center" aa="alpha-blending"
-        ribbonWidthPx={5}
+        font={latoFont} text="HELLO" align="center" aa="alpha-blending"
         Color={orange}
-        Trafo={[Sg.translate(new V3d(0, 1.0, 0)), Sg.scale(0.002)]}
+        Trafo={[Sg.translate(new V3d(0, 1.0, 0)), Sg.scale(0.0015)]}
       />
       <Sg.Text
         font={font} text="& wombat" align="center" aa="alpha-blending"
-        ribbonWidthPx={5}
         Color={cream}
         Trafo={[Sg.translate(new V3d(0, -0.5, 0)), Sg.scale(0.0015)]}
       />
       <Sg.Text
         font={latoFont} text="left-anchored" align="left" aa="alpha-blending"
-        ribbonWidthPx={5}
         Color={orange}
         Trafo={[Sg.translate(new V3d(-1.5, -1.5, 0)), Sg.scale(0.001)]}
       />
