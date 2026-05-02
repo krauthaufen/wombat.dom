@@ -23,7 +23,7 @@ import {
   type PathSegment,
   tessellatePath, triangulateFilledFaces, compileTessellation,
 } from "@aardworx/wombat.base";
-import { Font } from "@aardworx/wombat.base/font";
+import { Font, textToSegments } from "@aardworx/wombat.base/font";
 
 // Vite asset URL — emitted at build time, loaded at runtime.
 import greatVibesUrl from "./great-vibes.ttf?url";
@@ -293,19 +293,33 @@ const arcCircle = place(arcCircle0, 1, -1, 1.5, 1.4, 0.40);
 const font = await Font.load(greatVibesUrl);
 const ampGlyph: ReadonlyArray<PathSegment> = (() => {
   // Lower the glyph in raw font units, then place its bbox-centre
-  // at (0, -0.5) scaled to fit a target height of 2.2 viewport units.
+  // around y=0 scaled to fit a target height of 1.5 viewport units.
   const raw = font.charToSegments("&");
   const bb = font.charBoundingBox("&");
   const oldCx = (bb.min.x + bb.max.x) * 0.5;
   const oldCy = (bb.min.y + bb.max.y) * 0.5;
-  const targetH = 2.2;
+  const targetH = 1.5;
   const scale = targetH / (bb.max.y - bb.min.y);
-  return place(raw, oldCx, oldCy, 0, -0.5, scale);
+  return place(raw, oldCx, oldCy, 0, 0, scale);
+})();
+
+// --- Text run: "Hello" via wombat.base/font layout ----------------
+
+const textRun: ReadonlyArray<PathSegment> = (() => {
+  const { segments, layout } = textToSegments(font, "Hello");
+  // Centre the laid-out run horizontally and place its baseline at
+  // y ≈ -1.5 with a target em-height of 0.7 viewport units.
+  const targetH = 0.7;
+  const scale = targetH / font.unitsPerEm;
+  // `place` interprets oldCx in SOURCE units (pre-scale), so the
+  // run's mid-x in font units is `layout.advance * 0.5`.
+  return place(segments, layout.advance * 0.5, 0, 0, -1.5, scale);
 })();
 
 const TEST_PATH: ReadonlyArray<PathSegment> = [
   ...lineTri, ...bez2Lens, ...bez3Leaf, ...arcCircle,
   ...ampGlyph,
+  ...textRun,
 ];
 
 // SVG mirror — emit a `M…Z` subpath per primitive group so each
