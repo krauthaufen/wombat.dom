@@ -173,7 +173,14 @@ function buildPathTextEffectAaAlphaBlending(): Effect {
       const fArc = (input.v_klmKind.x * input.v_klmKind.x + input.v_klmKind.y * input.v_klmKind.y - 1.0) * input.v_klmKind.z;
       const fBez = (input.v_klmKind.x * input.v_klmKind.x - input.v_klmKind.y) * input.v_klmKind.z;
       const f = input.v_klmKind.w > 1.7 ? fArc : (input.v_klmKind.w > 0.7 ? fBez : -1.0);
-      const w = max(fwidth(f), 1e-8);
+      // Compute the screen-space gradient magnitude directly via
+      // dpdx/dpdy rather than \`fwidth\` (= |dpdx| + |dpdy|, manhattan).
+      // Some WebGPU implementations (notably iOS Safari's WebKit
+      // backend) appear to mis-handle \`fwidth\` of a select-result,
+      // collapsing the curve coverage to nothing.
+      const dx = dFdx(f);
+      const dy = dFdy(f);
+      const w = max(sqrt(dx * dx + dy * dy), 1e-8);
       const alpha = clamp(0.5 - f / w, 0.0, 1.0);
       return { outColor: new V4f(PathColor.x, PathColor.y, PathColor.z, PathColor.w * alpha) };
     }
