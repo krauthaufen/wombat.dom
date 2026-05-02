@@ -119,9 +119,102 @@ export function basic(): Effect {
 }
 
 // ---------------------------------------------------------------------------
+// headlight — Blinn-Phong with a single light coincident with the eye
+// ---------------------------------------------------------------------------
+
+let headlightCache: Effect | undefined;
+
+/**
+ * Vertex-coloured Blinn-Phong with a "camera headlight": the light
+ * is fixed at the eye in view space, so `L = V = normalize(-viewPos)`
+ * and the halfway vector collapses to `L`. Expects:
+ *
+ *   - `a_position : V3f`
+ *   - `a_normal   : V3f`
+ *   - `a_color    : V4f` (base / diffuse colour, supplied per primitive)
+ *
+ * Assumes the model+view trafo has uniform scale (translations +
+ * rotations only) so the upper-3×3 transports normals without an
+ * explicit normal matrix — true for the primitive layouts produced
+ * by `Sg.translate` / `Sg.scale` with uniform scale factors.
+ */
+export function headlight(): Effect {
+  if (headlightCache !== undefined) return headlightCache;
+
+  const source = `
+    declare const ModelTrafo: M44f;
+    declare const ViewTrafo:  M44f;
+    declare const ProjTrafo:  M44f;
+
+    function vsMain(input: { a_position: V3f; a_normal: V3f; a_color: V4f })
+      : { gl_Position: V4f; v_viewPos: V3f; v_viewNormal: V3f; v_color: V4f } {
+      const world    = ModelTrafo.mul(new V4f(input.a_position.x, input.a_position.y, input.a_position.z, 1.0));
+      const view4    = ViewTrafo.mul(world);
+      const clip     = ProjTrafo.mul(view4);
+      const nWorld4  = ModelTrafo.mul(new V4f(input.a_normal.x, input.a_normal.y, input.a_normal.z, 0.0));
+      const nView4   = ViewTrafo.mul(new V4f(nWorld4.x, nWorld4.y, nWorld4.z, 0.0));
+      return {
+        gl_Position: clip,
+        v_viewPos:   new V3f(view4.x, view4.y, view4.z),
+        v_viewNormal: new V3f(nView4.x, nView4.y, nView4.z),
+        v_color:     input.a_color,
+      };
+    }
+
+    function fsMain(input: { v_viewPos: V3f; v_viewNormal: V3f; v_color: V4f }): { outColor: V4f } {
+      const N = normalize(input.v_viewNormal);
+      const L = normalize(new V3f(-input.v_viewPos.x, -input.v_viewPos.y, -input.v_viewPos.z));
+      const ndotl = max(N.dot(L), 0.0);
+      const ambient = 0.15;
+      const diffuse = ndotl;
+      const spec    = pow(ndotl, 48.0) * 0.4;
+      const r = input.v_color.x * (ambient + diffuse) + spec;
+      const g = input.v_color.y * (ambient + diffuse) + spec;
+      const b = input.v_color.z * (ambient + diffuse) + spec;
+      return { outColor: new V4f(r, g, b, input.v_color.w) };
+    }
+  `;
+
+  const entries: EntryRequest[] = [
+    {
+      name: "vsMain", stage: "vertex",
+      inputs: [
+        { name: "a_position", type: Tvec3f, semantic: "Position", decorations: [{ kind: "Location", value: 0 }] },
+        { name: "a_normal",   type: Tvec3f, semantic: "Normal",   decorations: [{ kind: "Location", value: 1 }] },
+        { name: "a_color",    type: Tvec4f, semantic: "Color",    decorations: [{ kind: "Location", value: 2 }] },
+      ],
+      outputs: [
+        { name: "gl_Position",  type: Tvec4f, semantic: "Position", decorations: [{ kind: "Builtin", value: "position" }] },
+        { name: "v_viewPos",    type: Tvec3f, semantic: "ViewPosition", decorations: [{ kind: "Location", value: 0 }] },
+        { name: "v_viewNormal", type: Tvec3f, semantic: "ViewNormal",   decorations: [{ kind: "Location", value: 1 }] },
+        { name: "v_color",      type: Tvec4f, semantic: "Color",        decorations: [{ kind: "Location", value: 2 }] },
+      ],
+    },
+    {
+      name: "fsMain", stage: "fragment",
+      outputs: [
+        { name: "outColor", type: Tvec4f, semantic: "Color", decorations: [{ kind: "Location", value: 0 }] },
+      ],
+    },
+  ];
+
+  const externalTypes = new Map<string, Type>();
+  externalTypes.set("ModelTrafo", TM44f);
+  externalTypes.set("ViewTrafo",  TM44f);
+  externalTypes.set("ProjTrafo",  TM44f);
+
+  const camUBO = cameraUniformBlock();
+  const parsed = parseShader({ source, entries, externalTypes });
+  const merged: Module = { ...parsed, values: [camUBO, ...parsed.values] };
+  headlightCache = stage(merged);
+  return headlightCache;
+}
+
+// ---------------------------------------------------------------------------
 // Combined namespace
 // ---------------------------------------------------------------------------
 
 export const DefaultSurfaces = {
   basic,
+  headlight,
 } as const;

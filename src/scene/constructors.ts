@@ -862,6 +862,36 @@ function SgWireCone(props: TessProps & PrimitiveColorProps & SgScopeProps = {}):
 
 // ---- Fullscreen / Screen quads ----
 
+// ---- Generic leaf with caller-supplied geometry ----
+
+interface SgLeafJsxProps {
+  vertexAttributes:   HashMap<string, aval<BufferView>>;
+  instanceAttributes?: HashMap<string, aval<BufferView>>;
+  indices?:           aval<BufferView> | aval<BufferView | undefined>;
+  drawCall:           aval<DrawCall>;
+}
+
+/**
+ * `<Sg.Leaf vertexAttributes={…} indices={…} drawCall={…} />`
+ *
+ * A leaf with caller-provided geometry — the equivalent of the
+ * imperative `Sg.leaf({…})` factory but mountable as a JSX element so
+ * it can carry scope props (`Trafo`, `Uniform`, `Shader`, render-state,
+ * event handlers, …) and read like the rest of the Sg tree.
+ *
+ * `props.children` is ignored (a leaf has no scene-graph children).
+ */
+function SgLeafComponent(props: SgLeafJsxProps & SgScopeProps): VNode {
+  const { vertexAttributes, instanceAttributes, indices, drawCall, ...scope } = props;
+  const node = leaf({
+    vertexAttributes,
+    ...(instanceAttributes !== undefined ? { instanceAttributes } : {}),
+    ...(indices !== undefined ? { indices } : {}),
+    drawCall,
+  });
+  return sgVNode(applyScopeAttrs(node, scope as SgScopeProps));
+}
+
 function SgFullscreenQuad(props: PrimitiveColorProps & SgScopeProps = {}): VNode {
   const { Color, ...scope } = props;
   const leaf = leafFromHandle(getFullscreenQuadGeometry(), Color);
@@ -963,6 +993,7 @@ interface SgNamespace {
   WireCylinder: typeof SgWireCylinder;
   Cone:        typeof SgCone;
   WireCone:    typeof SgWireCone;
+  Leaf:        typeof SgLeafComponent;
   FullscreenQuad: typeof SgFullscreenQuad;
   ScreenQuad:  typeof SgScreenQuad;
 
@@ -1048,6 +1079,7 @@ export const Sg: SgNamespace = (() => {
   fn.WireCylinder = SgWireCylinder;
   fn.Cone = SgCone;
   fn.WireCone = SgWireCone;
+  fn.Leaf = SgLeafComponent;
   fn.FullscreenQuad = SgFullscreenQuad;
   fn.ScreenQuad = SgScreenQuad;
   fn.empty       = empty;
