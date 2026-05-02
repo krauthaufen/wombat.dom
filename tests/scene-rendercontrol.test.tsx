@@ -75,7 +75,11 @@ describe("RenderControl — DOM", () => {
 describe("Sg JSX wrappers", () => {
   it("<Sg.Box/> wraps the box leaf in a tagged Fragment", () => {
     const got = collectSgChildren(<Sg.Box/>);
-    expect(got.kind).toBe("Leaf");
+    // Sg.Box auto-wires an Intersectable scope around the leaf.
+    expect(got.kind).toBe("Intersectable");
+    if (got.kind === "Intersectable") {
+      expect(got.child.kind).toBe("Leaf");
+    }
   });
 
   it("<Sg Trafo Shader>...</Sg> wraps children with attribute scopes (innermost-out)", async () => {
@@ -94,7 +98,11 @@ describe("Sg JSX wrappers", () => {
     if (node.kind === "Trafo") {
       expect(node.child.kind).toBe("Shader");
       if (node.child.kind === "Shader") {
-        expect(node.child.child.kind).toBe("Leaf");
+        // Sg.Box auto-wires an Intersectable scope around the leaf.
+        expect(node.child.child.kind).toBe("Intersectable");
+        if (node.child.child.kind === "Intersectable") {
+          expect(node.child.child.child.kind).toBe("Leaf");
+        }
       }
     }
   });

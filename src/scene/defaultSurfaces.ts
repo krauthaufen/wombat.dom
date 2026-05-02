@@ -62,20 +62,24 @@ let basicCache: Effect | undefined;
 export function basic(): Effect {
   if (basicCache !== undefined) return basicCache;
 
+  // a_color is V4f (RGBA) — matches Aardvark.Dom's
+  // `DefaultSemantic.Colors` convention. Primitives feed this with a
+  // single-value (stride-0) vertex buffer carrying one V4f read by
+  // every vertex.
   const source = `
     declare const ModelTrafo: M44f;
     declare const ViewTrafo:  M44f;
     declare const ProjTrafo:  M44f;
 
-    function vsMain(input: { a_position: V3f; a_color: V3f }): { gl_Position: V4f; v_color: V3f } {
+    function vsMain(input: { a_position: V3f; a_color: V4f }): { gl_Position: V4f; v_color: V4f } {
       const world = ModelTrafo.mul(new V4f(input.a_position.x, input.a_position.y, input.a_position.z, 1.0));
       const view  = ViewTrafo.mul(world);
       const clip  = ProjTrafo.mul(view);
       return { gl_Position: clip, v_color: input.a_color };
     }
 
-    function fsMain(input: { v_color: V3f }): { outColor: V4f } {
-      return { outColor: new V4f(input.v_color.x, input.v_color.y, input.v_color.z, 1.0) };
+    function fsMain(input: { v_color: V4f }): { outColor: V4f } {
+      return { outColor: input.v_color };
     }
   `;
 
@@ -84,11 +88,11 @@ export function basic(): Effect {
       name: "vsMain", stage: "vertex",
       inputs: [
         { name: "a_position", type: Tvec3f, semantic: "Position", decorations: [{ kind: "Location", value: 0 }] },
-        { name: "a_color",    type: Tvec3f, semantic: "Color",    decorations: [{ kind: "Location", value: 1 }] },
+        { name: "a_color",    type: Tvec4f, semantic: "Color",    decorations: [{ kind: "Location", value: 1 }] },
       ],
       outputs: [
         { name: "gl_Position", type: Tvec4f, semantic: "Position", decorations: [{ kind: "Builtin", value: "position" }] },
-        { name: "v_color",     type: Tvec3f, semantic: "Color",    decorations: [{ kind: "Location", value: 0 }] },
+        { name: "v_color",     type: Tvec4f, semantic: "Color",    decorations: [{ kind: "Location", value: 0 }] },
       ],
     },
     {

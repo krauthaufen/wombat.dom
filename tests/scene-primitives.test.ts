@@ -23,20 +23,27 @@ describe("primitives", () => {
       if (dc.kind === "indexed") expect(dc.indexCount).toBe(36);
     });
 
-    it("size scales the corner positions", () => {
+    it("size scales positions to span [-size, +size]", () => {
       const leaf = box({ size: new V3d(2, 3, 4) });
       const view = AVal.force(leaf.vertexAttributes.tryFind("a_position")!);
       const data = view.buffer;
       if (data.kind !== "host") throw new Error("expected host buffer");
-      const positions = new Float32Array((data.data as ArrayBuffer));
-      // Corner 0 is (-sx, -sy, -sz) = (-2, -3, -4).
-      expect(positions[0]).toBeCloseTo(-2, 6);
-      expect(positions[1]).toBeCloseTo(-3, 6);
-      expect(positions[2]).toBeCloseTo(-4, 6);
-      // Corner 6 (positions index 18..20) is (+sx, +sy, +sz).
-      expect(positions[18]).toBeCloseTo(2, 6);
-      expect(positions[19]).toBeCloseTo(3, 6);
-      expect(positions[20]).toBeCloseTo(4, 6);
+      const ab = data.data as ArrayBuffer;
+      const positions = new Float32Array(ab);
+      // Compute min/max of each axis across all vertices.
+      let mnx = Infinity, mny = Infinity, mnz = Infinity;
+      let mxx = -Infinity, mxy = -Infinity, mxz = -Infinity;
+      for (let i = 0; i < positions.length; i += 3) {
+        if (positions[i]!     < mnx) mnx = positions[i]!;
+        if (positions[i + 1]! < mny) mny = positions[i + 1]!;
+        if (positions[i + 2]! < mnz) mnz = positions[i + 2]!;
+        if (positions[i]!     > mxx) mxx = positions[i]!;
+        if (positions[i + 1]! > mxy) mxy = positions[i + 1]!;
+        if (positions[i + 2]! > mxz) mxz = positions[i + 2]!;
+      }
+      expect(mnx).toBeCloseTo(-2, 6); expect(mxx).toBeCloseTo(2, 6);
+      expect(mny).toBeCloseTo(-3, 6); expect(mxy).toBeCloseTo(3, 6);
+      expect(mnz).toBeCloseTo(-4, 6); expect(mxz).toBeCloseTo(4, 6);
     });
   });
 

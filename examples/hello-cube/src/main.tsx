@@ -89,8 +89,12 @@ mount(root, (
       })}
       OnDoubleTap={flyTarget}
     >
-      {/* Cube A — picked via the rgba32f pickId attachment. */}
-      <Sg.Box Trafo={Sg.translate(new V3d(-1.5, 0, 0))} />
+      {/* Cube A — picked via the rgba32f pickId attachment. Colour
+          is broadcast from a single-V4f stride-0 vertex buffer. */}
+      <Sg.Box
+        Trafo={Sg.translate(new V3d(-1.5, 0, 0))}
+        Color={new V4f(1, 0.5, 0.2, 1)}
+      />
       {/* Cube B — picked geometrically via an Intersectable. The
           intersectable is local to its scope (bbox `[-1,1]³`); the
           enclosing Trafo translates it to (+1.5, 0, 0) and the
@@ -99,6 +103,7 @@ mount(root, (
           needed. */}
       <Sg.Box
         Trafo={Sg.translate(new V3d(1.5, 0, 0))}
+        Color={new V4f(0.4, 0.6, 1, 1)}
         Intersectable={Intersectable.box(Box3d.fromMinMax(new V3d(-1, -1, -1), new V3d(1, 1, 1)))}
       />
     </Sg>
