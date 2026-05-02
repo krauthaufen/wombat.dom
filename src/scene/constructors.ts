@@ -24,7 +24,8 @@ import {
   AList, ASet, AVal,
   HashMap, type alist, type amap, type aset, type aval,
 } from "@aardworx/wombat.adaptive";
-import { Trafo3d, V3d, V4f, Rot3d, Scale3d, Shift3d, Box3d, Sphere3d, Intersectable, type IIntersectable } from "@aardworx/wombat.base";
+import { Trafo3d, V3d, V4f, Rot3d, Scale3d, Shift3d, Box3d, Sphere3d, Cylinder3d, Cone3d, Intersectable, type IIntersectable } from "@aardworx/wombat.base";
+import { tetrahedronCornersV3, octahedronCornersV3 } from "./primitives/geometry.js";
 import type { Effect } from "@aardworx/wombat.shader";
 import type {
   BlendState, BufferView, DrawCall,
@@ -650,25 +651,52 @@ interface PrimitiveColorProps { Color?: V4f | aval<V4f>; }
 
 // ---- Tetrahedron / Octahedron ----
 
+// Auto-Intersectable for tetra/oct: read the canonical local-space
+// corner positions from the shared geometry builders so the
+// intersectable matches the rendered geometry exactly.
+const tetraIntersectable = (): IIntersectable => {
+  const c = tetrahedronCornersV3();
+  return Intersectable.tetrahedron(
+    new V3d(c.p0[0], c.p0[1], c.p0[2]), new V3d(c.p1[0], c.p1[1], c.p1[2]),
+    new V3d(c.p2[0], c.p2[1], c.p2[2]), new V3d(c.p3[0], c.p3[1], c.p3[2]),
+  );
+};
+const octaIntersectable = (): IIntersectable => {
+  const c = octahedronCornersV3();
+  return Intersectable.octahedron(
+    new V3d(c.p00[0], c.p00[1], c.p00[2]), new V3d(c.p10[0], c.p10[1], c.p10[2]),
+    new V3d(c.p11[0], c.p11[1], c.p11[2]), new V3d(c.p01[0], c.p01[1], c.p01[2]),
+    new V3d(c.top[0], c.top[1], c.top[2]), new V3d(c.bottom[0], c.bottom[1], c.bottom[2]),
+  );
+};
+
 function SgTetrahedron(props: PrimitiveColorProps & SgScopeProps = {}): VNode {
   const { Color, ...scope } = props;
   const leaf = leafFromHandle(getTetrahedronGeometry(), Color);
-  return sgVNode(applyScopeAttrs(leaf, scope as SgScopeProps));
+  let scopeProps = scope as SgScopeProps;
+  if (scopeProps.Intersectable === undefined) scopeProps = { ...scopeProps, Intersectable: tetraIntersectable() };
+  return sgVNode(applyScopeAttrs(leaf, scopeProps));
 }
 function SgWireTetrahedron(props: PrimitiveColorProps & SgScopeProps = {}): VNode {
   const { Color, ...scope } = props;
   const leaf = leafFromHandle(getWireTetrahedronGeometry(), Color);
-  return sgVNode(applyScopeAttrs(modeWrap(leaf, "line-list"), scope as SgScopeProps));
+  let scopeProps = scope as SgScopeProps;
+  if (scopeProps.Intersectable === undefined) scopeProps = { ...scopeProps, Intersectable: tetraIntersectable() };
+  return sgVNode(applyScopeAttrs(modeWrap(leaf, "line-list"), scopeProps));
 }
 function SgOctahedron(props: PrimitiveColorProps & SgScopeProps = {}): VNode {
   const { Color, ...scope } = props;
   const leaf = leafFromHandle(getOctahedronGeometry(), Color);
-  return sgVNode(applyScopeAttrs(leaf, scope as SgScopeProps));
+  let scopeProps = scope as SgScopeProps;
+  if (scopeProps.Intersectable === undefined) scopeProps = { ...scopeProps, Intersectable: octaIntersectable() };
+  return sgVNode(applyScopeAttrs(leaf, scopeProps));
 }
 function SgWireOctahedron(props: PrimitiveColorProps & SgScopeProps = {}): VNode {
   const { Color, ...scope } = props;
   const leaf = leafFromHandle(getWireOctahedronGeometry(), Color);
-  return sgVNode(applyScopeAttrs(modeWrap(leaf, "line-list"), scope as SgScopeProps));
+  let scopeProps = scope as SgScopeProps;
+  if (scopeProps.Intersectable === undefined) scopeProps = { ...scopeProps, Intersectable: octaIntersectable() };
+  return sgVNode(applyScopeAttrs(modeWrap(leaf, "line-list"), scopeProps));
 }
 
 // ---- Wire Box ----
@@ -781,33 +809,55 @@ function SgWireSphere(props: SphereSizeProps & PrimitiveColorProps & SgScopeProp
   return sgVNode(applyScopeAttrs(n, scopeProps));
 }
 
-// ---- Cylinder / Cone (no auto-Intersectable; not in wombat.base) ----
+// ---- Cylinder / Cone ----
+//
+// Canonical local space (matches the shared geometry):
+//   Cylinder: radius 1, axis from (0,0,0) to (0,0,1).
+//   Cone:     apex at (0,0,0), base disc at z=1 of radius 1
+//             (45° half-angle).
+//
+// Auto-Intersectable wires the matching shape. Callers that scale
+// non-uniformly or replace the geometry can pass an explicit
+// Intersectable scope prop to override.
 
 interface TessProps { tessellation?: number }
+
+const unitCylinderIntersectable = (): IIntersectable =>
+  Intersectable.cylinder(new Cylinder3d(new V3d(0, 0, 0), new V3d(0, 0, 1), 1));
+const unitConeIntersectable = (): IIntersectable =>
+  Intersectable.cone(new Cone3d(new V3d(0, 0, 0), new V3d(0, 0, 1), Math.atan2(1, 1)));
 
 function SgCylinder(props: TessProps & PrimitiveColorProps & SgScopeProps = {}): VNode {
   const { Color, tessellation, ...scope } = props;
   const handle = getCylinderGeometry(tessellation ?? 32);
   const leaf = leafFromHandle(handle, Color);
-  return sgVNode(applyScopeAttrs(leaf, scope as SgScopeProps));
+  let scopeProps = scope as SgScopeProps;
+  if (scopeProps.Intersectable === undefined) scopeProps = { ...scopeProps, Intersectable: unitCylinderIntersectable() };
+  return sgVNode(applyScopeAttrs(leaf, scopeProps));
 }
 function SgWireCylinder(props: TessProps & PrimitiveColorProps & SgScopeProps = {}): VNode {
   const { Color, tessellation, ...scope } = props;
   const handle = getWireCylinderGeometry(tessellation ?? 32);
   const leaf = leafFromHandle(handle, Color);
-  return sgVNode(applyScopeAttrs(modeWrap(leaf, "line-list"), scope as SgScopeProps));
+  let scopeProps = scope as SgScopeProps;
+  if (scopeProps.Intersectable === undefined) scopeProps = { ...scopeProps, Intersectable: unitCylinderIntersectable() };
+  return sgVNode(applyScopeAttrs(modeWrap(leaf, "line-list"), scopeProps));
 }
 function SgCone(props: TessProps & PrimitiveColorProps & SgScopeProps = {}): VNode {
   const { Color, tessellation, ...scope } = props;
   const handle = getConeGeometry(tessellation ?? 32);
   const leaf = leafFromHandle(handle, Color);
-  return sgVNode(applyScopeAttrs(leaf, scope as SgScopeProps));
+  let scopeProps = scope as SgScopeProps;
+  if (scopeProps.Intersectable === undefined) scopeProps = { ...scopeProps, Intersectable: unitConeIntersectable() };
+  return sgVNode(applyScopeAttrs(leaf, scopeProps));
 }
 function SgWireCone(props: TessProps & PrimitiveColorProps & SgScopeProps = {}): VNode {
   const { Color, tessellation, ...scope } = props;
   const handle = getWireConeGeometry(tessellation ?? 32);
   const leaf = leafFromHandle(handle, Color);
-  return sgVNode(applyScopeAttrs(modeWrap(leaf, "line-list"), scope as SgScopeProps));
+  let scopeProps = scope as SgScopeProps;
+  if (scopeProps.Intersectable === undefined) scopeProps = { ...scopeProps, Intersectable: unitConeIntersectable() };
+  return sgVNode(applyScopeAttrs(modeWrap(leaf, "line-list"), scopeProps));
 }
 
 // ---- Fullscreen / Screen quads ----

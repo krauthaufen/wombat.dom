@@ -113,6 +113,15 @@ export function tetrahedronCornersV3(): {
   return tetrahedronCorners();
 }
 
+// Octahedron corner positions (used for Intersectable.octahedron).
+export function octahedronCornersV3(): {
+  p00: [number, number, number]; p10: [number, number, number];
+  p11: [number, number, number]; p01: [number, number, number];
+  top: [number, number, number]; bottom: [number, number, number];
+} {
+  return octahedronCorners();
+}
+
 // ---------------------------------------------------------------------------
 // Octahedron — F# octahedronScene
 // ---------------------------------------------------------------------------
