@@ -23,6 +23,10 @@ import {
   type PathSegment,
   tessellatePath, triangulateFilledFaces, compileTessellation,
 } from "@aardworx/wombat.base";
+import { Font } from "@aardworx/wombat.base/font";
+
+// Vite asset URL — emitted at build time, loaded at runtime.
+import greatVibesUrl from "./great-vibes.ttf?url";
 import {
   IBuffer,
   type BufferView, type DrawCall,
@@ -192,14 +196,13 @@ function compilePathSegments(input: ReadonlyArray<Path | PathSegment>): Compiled
 //
 //   Row of 4 primitive shapes across the top — one per segment kind:
 //     lines (triangle), bezier2 (lens), bezier3 (leaf), arc (circle).
-//   Bottom half: a Great Vibes script-font ampersand glyph, lowered
-//     from the font's quadratic-Bezier outline. Exercises real-world
-//     multi-subpath topology (outer body + interior loop).
+//   Bottom half: a Great Vibes script-font ampersand glyph, parsed
+//     live at boot via `wombat.base/font` (Stage 7 TTF lowering)
+//     and lowered to PathSegments. Exercises real-world multi-
+//     subpath topology (outer body + interior loop).
 //
 // Coordinate system: (-2..2)² math y-up. Top row sits at y≈1.4, the
 // glyph occupies the lower ~2.4 vertical units centred at (0, -0.5).
-
-import glyphAmpData from "./glyph-amp.json";
 
 // Affine transform of a list of segments. Endpoints shared by V2d
 // identity in the input are preserved in the output (required by the
@@ -285,71 +288,19 @@ const arcCircle0: ReadonlyArray<PathSegment> = (() => {
 })();
 const arcCircle = place(arcCircle0, 1, -1, 1.5, 1.4, 0.40);
 
-// --- Glyph: Great Vibes ampersand ----------------------------------
+// --- Glyph: Great Vibes ampersand (live TTF lowering) -------------
 
-// Convert opentype.js path commands to PathSegments.
-//   - opentype emits coords in screen-y-down; flip to math y-up.
-//   - L commands of zero length (very common artefact in this font's
-//     command stream) are dropped.
-//   - Z closes back to the current sub-path's M anchor with a
-//     LineSegment if needed.
-type GlyphCmd = ["M", number, number] | ["L", number, number]
-  | ["Q", number, number, number, number]
-  | ["C", number, number, number, number, number, number]
-  | ["Z"];
-
-function commandsToSegments(
-  commands: ReadonlyArray<GlyphCmd>,
-  xform: (x: number, y: number) => V2d,
-): PathSegment[] {
-  const out: PathSegment[] = [];
-  let pen: V2d | undefined;
-  let anchor: V2d | undefined;
-  const closeIfOpen = (): void => {
-    if (pen && anchor && (Math.abs(pen.x - anchor.x) > 1e-12 || Math.abs(pen.y - anchor.y) > 1e-12)) {
-      out.push(new LineSegment(pen, anchor));
-    }
-  };
-  for (const c of commands) {
-    if (c[0] === "M") {
-      const p = xform(c[1], c[2]);
-      pen = p; anchor = p;
-    } else if (c[0] === "L") {
-      const p = xform(c[1], c[2]);
-      if (pen && (Math.abs(pen.x - p.x) > 1e-12 || Math.abs(pen.y - p.y) > 1e-12)) {
-        out.push(new LineSegment(pen, p));
-        pen = p;
-      }
-    } else if (c[0] === "Q") {
-      const ctrl = xform(c[1], c[2]);
-      const p = xform(c[3], c[4]);
-      if (pen) { out.push(new Bezier2Segment(pen, ctrl, p)); pen = p; }
-    } else if (c[0] === "C") {
-      const c1 = xform(c[1], c[2]);
-      const c2 = xform(c[3], c[4]);
-      const p = xform(c[5], c[6]);
-      if (pen) { out.push(new Bezier3Segment(pen, c1, c2, p)); pen = p; }
-    } else if (c[0] === "Z") {
-      closeIfOpen();
-      pen = anchor;
-    }
-  }
-  closeIfOpen();
-  return out;
-}
-
+const font = await Font.load(greatVibesUrl);
 const ampGlyph: ReadonlyArray<PathSegment> = (() => {
-  // Glyph bbox in opentype.js coords (y-down): x∈[11,749], y∈[-706,45].
-  // After y flip → math y-up: x∈[11,749], y∈[-45,706]. Centre (380,330.5),
-  // size 738×751.
-  const oldCx = 380, oldCy = 330.5;
-  const newCx = 0, newCy = -0.5;
+  // Lower the glyph in raw font units, then place its bbox-centre
+  // at (0, -0.5) scaled to fit a target height of 2.2 viewport units.
+  const raw = font.charToSegments("&");
+  const bb = font.charBoundingBox("&");
+  const oldCx = (bb.min.x + bb.max.x) * 0.5;
+  const oldCy = (bb.min.y + bb.max.y) * 0.5;
   const targetH = 2.2;
-  const scale = targetH / 751;
-  return commandsToSegments(
-    glyphAmpData as unknown as ReadonlyArray<GlyphCmd>,
-    (x, y) => new V2d((x - oldCx) * scale + newCx, (-y - oldCy) * scale + newCy),
-  );
+  const scale = targetH / (bb.max.y - bb.min.y);
+  return place(raw, oldCx, oldCy, 0, -0.5, scale);
 })();
 
 const TEST_PATH: ReadonlyArray<PathSegment> = [
