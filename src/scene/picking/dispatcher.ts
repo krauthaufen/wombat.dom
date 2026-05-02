@@ -185,6 +185,33 @@ export class PickDispatcher implements SceneEventDispatch {
   /** Canvas backing-store size in device pixels — used as `viewportSize` when building the SceneEventLocation. Set on `attach`. */
   private canvasSize: () => V2i = () => V2i.zero;
 
+  /** Canvas reference set on attach so `applyCursor` can write `canvas.style.cursor` without an extra arg. */
+  private canvas: HTMLCanvasElement | undefined;
+  /** Most-recently written `canvas.style.cursor`; tracked to avoid redundant writes. */
+  private currentCursor: string | undefined;
+
+  /**
+   * Resolve the desired cursor for `scope` and write it to
+   * `canvas.style.cursor` if different from the last applied value.
+   * AVal.force is OK here — runs in pointer-event handler context.
+   */
+  private applyCursor(scope: LeafPickScope | undefined): void {
+    if (this.canvas === undefined) return;
+    let desired: string;
+    const c = scope?.cursor;
+    if (c === undefined) {
+      desired = "";
+    } else if (typeof c === "string") {
+      desired = c;
+    } else {
+      desired = AVal.force(c);
+    }
+    if (desired !== this.currentCursor) {
+      this.canvas.style.cursor = desired;
+      this.currentCursor = desired;
+    }
+  }
+
   constructor(
     private readonly registry: PickRegistry,
     /** Used by BVH ray fall-through to construct the world-space cursor ray. */
@@ -207,6 +234,7 @@ export class PickDispatcher implements SceneEventDispatch {
    */
   attach(canvas: HTMLCanvasElement, readRegion: ReadRegion): () => void {
     this.canvasSize = () => new V2i(canvas.width, canvas.height);
+    this.canvas = canvas;
     const handle = (ev: PointerEvent, kind: SceneEventKind): void => {
       const seq = ++this.seq;
       const rect = this.getCanvasRect();
@@ -374,6 +402,9 @@ export class PickDispatcher implements SceneEventDispatch {
       // Cancel any pending long-press timers so the disposer is clean.
       for (const id of [...this.presses.keys()]) this.cancelPress(id);
       this.cancelHover();
+      canvas.style.cursor = "";
+      this.currentCursor = "";
+      this.canvas = undefined;
     };
   }
 
@@ -582,6 +613,9 @@ export class PickDispatcher implements SceneEventDispatch {
       const modeB = this.registry.modeOf(captured.pickId) === "B";
       const sceneEv = this.makeEvent(kind, ev, cssX, cssY, captured, captured.pickId, modeB, viewPos, viewNormal);
       this.runCaptureBubble(captured.handlers, sceneEv);
+      if (kind === "OnPointerMove" || kind === "OnPointerEnter") {
+        this.applyCursor(captured);
+      }
       return;
     }
 
@@ -624,6 +658,7 @@ export class PickDispatcher implements SceneEventDispatch {
     }
 
     if (hitScope === undefined) {
+      if (kind === "OnPointerMove" || kind === "OnPointerEnter") this.applyCursor(undefined);
       if (kind === "OnPointerMove") this.cancelHover();
       // No scope under cursor: still let pointermove cancel a press
       // that drifted off-target (movement check below). Pointerdown /
@@ -652,6 +687,10 @@ export class PickDispatcher implements SceneEventDispatch {
       : false;
     const sceneEv = this.makeEvent(kind, ev, cssX, cssY, hitScope, hitScope.pickId, modeB, viewPos, viewNormal, partIndex);
     this.runCaptureBubble(hitScope.handlers, sceneEv);
+
+    if (kind === "OnPointerMove" || kind === "OnPointerEnter") {
+      this.applyCursor(hitScope);
+    }
 
     // Hover dwell: a move that resolves to a known scope re-arms the
     // hover timer. The cancel above handles transitions to a different

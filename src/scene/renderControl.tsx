@@ -373,7 +373,7 @@ async function initialise(
   // Publish this control's avals as the ambient context so callers
   // can read `viewport` / `view` / `proj` / `time` from
   // `@aardworx/wombat.dom/scene/ambient` without threading state.
-  setAmbient({ viewport: attachment.size, view, proj, time: getGlobalTime() });
+  setAmbient({ viewport: attachment.size, view, proj, time: getGlobalTime(), registry });
   scope.onDispose(() => clearAmbient());
 
   props.onReady?.({
@@ -399,7 +399,9 @@ import {
   view as ambView,
   proj as ambProj,
   time as ambTime,
+  query as ambQuery,
 } from "./ambient.js";
+import type { SceneQuery } from "./picking/sceneQuery.js";
 
 // eslint-disable-next-line @typescript-eslint/no-namespace
 export namespace RenderControl {
@@ -407,6 +409,13 @@ export namespace RenderControl {
   export const view: aval<Trafo3d> = ambView;
   export const proj: aval<Trafo3d> = ambProj;
   export const time: aval<number> = ambTime;
+  /**
+   * Reactive scene query bound to the active control's
+   * view/proj/viewport + pick registry. Mirrors the single-active-
+   * control assumption documented for the other ambient avals: the
+   * LAST mounted RenderControl wins.
+   */
+  export const query: SceneQuery = ambQuery;
 }
 
 /** Manually tick the global clock — useful for tests with fake timers. */
