@@ -244,16 +244,16 @@ function buildPathTextEffectAaAlphaBlending(): Effect {
       const curveAlpha = clamp(0.5 - f / w, 0.0, 1.0);
       const ribbonAlpha = clamp(1.0 - m, 0.0, 1.0);
       const alpha = curveAlpha * (1.0 - mRibbon) + ribbonAlpha * mRibbon;
-      // ★ ANOTHER iOS DIAGNOSTIC ★
-      // The previous attempt that put PathColor.w * alpha into the
-      // alpha channel rendered nothing on iOS (even though alpha
-      // computes correctly to 1 inside curves — proven by the
-      // alpha-as-RGB visualisation pass). Skip the PathColor.w
-      // multiplication entirely and use just \`alpha\`. If iOS shows
-      // orange glyphs, WebKit specifically rejected the
-      // PathColor.w * alpha expression, not alpha-blending in
-      // general.
-      return { outColor: new V4f(PathColor.x, PathColor.y, PathColor.z, alpha) };
+      // PRE-MULTIPLIED ALPHA output — alpha is multiplied into the
+      // RGB channels too. iOS Safari rejected the standard
+      // (PathColor.xyz, alpha) form even when alpha computed to 1
+      // (proven by alpha-as-RGB visualisation pass); referencing
+      // alpha in the RGB channels seems to keep WebKit's optimiser
+      // from dropping it. Pair with the premultiplied blend state
+      // below (src=ONE, dst=ONE_MINUS_SRC_ALPHA) so composition
+      // is correct.
+      const aA = alpha * PathColor.w;
+      return { outColor: new V4f(PathColor.x * aA, PathColor.y * aA, PathColor.z * aA, aA) };
     }
   `;
   pathTextEffectAaAlphaBlending = compilePathTextEffect(source);
@@ -316,7 +316,10 @@ function alphaOverBlendState(): BlendState {
   alphaOverBlend = {
     color: {
       operation: AVal.constant<GPUBlendOperation>("add"),
-      srcFactor: AVal.constant<GPUBlendFactor>("src-alpha"),
+      // PREMULTIPLIED-alpha source: shader outputs RGB * alpha
+      // already, so source factor is ONE (don't multiply by alpha
+      // again).
+      srcFactor: AVal.constant<GPUBlendFactor>("one"),
       dstFactor: AVal.constant<GPUBlendFactor>("one-minus-src-alpha"),
     },
     alpha: {
