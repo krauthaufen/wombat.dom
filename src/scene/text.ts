@@ -244,12 +244,16 @@ function buildPathTextEffectAaAlphaBlending(): Effect {
       const curveAlpha = clamp(0.5 - f / w, 0.0, 1.0);
       const ribbonAlpha = clamp(1.0 - m, 0.0, 1.0);
       const alpha = curveAlpha * (1.0 - mRibbon) + ribbonAlpha * mRibbon;
-      // Some iOS Safari WGSL→MSL builds rejected the inline form
-      // \`new V4f(PathColor.x, PathColor.y, PathColor.z, PathColor.w * alpha)\`
-      // (curves disappeared even though alpha computed correctly).
-      // Stage the multiplication into a local first.
-      const finalA = PathColor.w * alpha;
-      return { outColor: new V4f(PathColor.x, PathColor.y, PathColor.z, finalA) };
+      // ★ ANOTHER iOS DIAGNOSTIC ★
+      // The previous attempt that put PathColor.w * alpha into the
+      // alpha channel rendered nothing on iOS (even though alpha
+      // computes correctly to 1 inside curves — proven by the
+      // alpha-as-RGB visualisation pass). Skip the PathColor.w
+      // multiplication entirely and use just \`alpha\`. If iOS shows
+      // orange glyphs, WebKit specifically rejected the
+      // PathColor.w * alpha expression, not alpha-blending in
+      // general.
+      return { outColor: new V4f(PathColor.x, PathColor.y, PathColor.z, alpha) };
     }
   `;
   pathTextEffectAaAlphaBlending = compilePathTextEffect(source);
