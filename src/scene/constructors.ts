@@ -270,7 +270,7 @@ function colorMask(
     m = AVal.constant(mask as HashMap<string, ColorMaskValue>);
   } else {
     const single = mask as ColorMaskValue;
-    m = AVal.constant(HashMap.empty<string, ColorMaskValue>().add("color", single));
+    m = AVal.constant(HashMap.empty<string, ColorMaskValue>().add("outColor", single));
   }
   return (child: SgNode): SgNode => ({ kind: "ColorMask", mask: m, child });
 }
