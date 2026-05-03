@@ -244,16 +244,16 @@ function buildPathTextEffectAaAlphaBlending(): Effect {
       const curveAlpha = clamp(0.5 - f / w, 0.0, 1.0);
       const ribbonAlpha = clamp(1.0 - m, 0.0, 1.0);
       const alpha = curveAlpha * (1.0 - mRibbon) + ribbonAlpha * mRibbon;
-      // PRE-MULTIPLIED ALPHA output — alpha is multiplied into the
-      // RGB channels too. iOS Safari rejected the standard
-      // (PathColor.xyz, alpha) form even when alpha computed to 1
-      // (proven by alpha-as-RGB visualisation pass); referencing
-      // alpha in the RGB channels seems to keep WebKit's optimiser
-      // from dropping it. Pair with the premultiplied blend state
-      // below (src=ONE, dst=ONE_MINUS_SRC_ALPHA) so composition
-      // is correct.
-      const aA = alpha * PathColor.w;
-      return { outColor: new V4f(PathColor.x * aA, PathColor.y * aA, PathColor.z * aA, aA) };
+      // Premultiplied-alpha output (RGB pre-scaled by alpha).
+      // iOS Safari WebGPU silently dropped the curve fragments when
+      // we used the conventional non-premultiplied form
+      // \`new V4f(PathColor.x, PathColor.y, PathColor.z, alpha)\`,
+      // even though the alpha calc was correct (visualising alpha
+      // as RGB rendered fine). Referencing alpha in every channel
+      // keeps WebKit's optimiser honest and matches the pipeline-
+      // state's premultiplied blend factors below.
+      const aa_ = alpha * PathColor.w;
+      return { outColor: new V4f(PathColor.x * aa_, PathColor.y * aa_, PathColor.z * aa_, aa_) };
     }
   `;
   pathTextEffectAaAlphaBlending = compilePathTextEffect(source);
