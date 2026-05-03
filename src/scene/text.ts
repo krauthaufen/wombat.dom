@@ -494,9 +494,16 @@ export function SgText(
     // alpha-blending: depth-test=less-equal so curve triangles drawn
     // after flat triangles at the same z don't get rejected; depth
     // write stays on so opaque paths still occlude geometry behind.
+    // alpha-blending: keep depth-test=less-equal so the curve and
+    // flat triangles inside a single glyph don't tie-break against
+    // each other, and DISABLE depth-write so adjacent glyphs (which
+    // all sit at the same z=0 in text-frame, often overlap in
+    // kerned / connecting scripts) composite via the alpha-blend
+    // stage in draw order instead of z-fighting.
     ...(aa === "alpha-blending" ? {
       BlendMode: alphaOverBlendState(),
       DepthTest: "less-equal" as const,
+      DepthMask: false,
     } : {}),
     ...(alignTrafo !== undefined ? { Trafo: alignTrafo } : {}),
     children: leafChildren,
