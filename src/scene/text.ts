@@ -244,14 +244,23 @@ function buildPathTextEffectAaAlphaBlending(): Effect {
       const curveAlpha = clamp(0.5 - f / w, 0.0, 1.0);
       const ribbonAlpha = clamp(1.0 - m, 0.0, 1.0);
       const alpha = curveAlpha * (1.0 - mRibbon) + ribbonAlpha * mRibbon;
+      // Discard fully-transparent fragments BEFORE the blend stage.
+      // The Loop-Blinn curve triangle covers (start, control, end);
+      // pixels in the wedge BETWEEN the curve and the control vertex
+      // get α=0 because they're outside the curve's filled half.
+      // That wedge often extends into an adjacent glyph's polygon,
+      // so blending α=0 over a neighbour's pixel WOULD preserve dst
+      // mathematically — but discarding here also keeps depth-write
+      // honest: the wedge area shouldn't claim any pixels at all.
+      if (alpha <= 0.0) discard;
       // Premultiplied-alpha output (RGB pre-scaled by alpha).
-      // iOS Safari WebGPU silently dropped the curve fragments when
-      // we used the conventional non-premultiplied form
+      // iOS Safari WebGPU silently dropped curve fragments when we
+      // used the conventional non-premultiplied form
       // \`new V4f(PathColor.x, PathColor.y, PathColor.z, alpha)\`,
       // even though the alpha calc was correct (visualising alpha
       // as RGB rendered fine). Referencing alpha in every channel
-      // keeps WebKit's optimiser honest and matches the pipeline-
-      // state's premultiplied blend factors below.
+      // keeps WebKit's optimiser honest and matches the premultiplied
+      // blend factors (src=ONE, dst=ONE_MINUS_SRC_ALPHA).
       const aa_ = alpha * PathColor.w;
       return { outColor: new V4f(PathColor.x * aa_, PathColor.y * aa_, PathColor.z * aa_, aa_) };
     }
@@ -494,16 +503,17 @@ export function SgText(
     // alpha-blending: depth-test=less-equal so curve triangles drawn
     // after flat triangles at the same z don't get rejected; depth
     // write stays on so opaque paths still occlude geometry behind.
-    // alpha-blending: keep depth-test=less-equal so the curve and
-    // flat triangles inside a single glyph don't tie-break against
-    // each other, and DISABLE depth-write so adjacent glyphs (which
-    // all sit at the same z=0 in text-frame, often overlap in
-    // kerned / connecting scripts) composite via the alpha-blend
-    // stage in draw order instead of z-fighting.
+    // alpha-blending: depth-test=less-equal lets curve and flat
+    // triangles inside a single glyph (and adjacent glyphs at the
+    // same z) compose without z-fighting; depth-write stays ON so
+    // text properly occludes geometry behind it. Fully-transparent
+    // fragments (α=0) are discarded in the FS so they don't write
+    // depth either — that prevents a curve triangle's wedge-outside-
+    // curve area (α=0 by construction) from "hole-punching" through
+    // an overlapping neighbour glyph.
     ...(aa === "alpha-blending" ? {
       BlendMode: alphaOverBlendState(),
       DepthTest: "less-equal" as const,
-      DepthMask: false,
     } : {}),
     ...(alignTrafo !== undefined ? { Trafo: alignTrafo } : {}),
     children: leafChildren,
