@@ -209,41 +209,32 @@ function buildPathTextEffectAaAlphaBlending(): Effect {
   const source = `${vsSource(true)}
 
     function fsMain(input: { v_klmKind: V4f }): { outColor: V4f } {
-      // Take screen-space derivatives of the BARE interpolated
-      // attributes (k, l, m) using the EXPLICIT \`Fine\` variant —
-      // WebKit's Metal backend translates the implementation-defined
-      // plain dpdx/dpdy unreliably. Fine derivatives are spec'd to
-      // use the literal 2×2 quad differences and translate to
-      // Metal's \`dfdx\`/\`dfdy\` directly, which works.
+      // ★ DERIVATIVE-VIABILITY DIAGNOSTIC ★
       //
-      //   bez2: f = (k²-l)·m
-      //         ∂f = (2k·∂k - ∂l)·m + (k²-l)·∂m
-      //   arc:  f = (k²+l²-1)·m
-      //         ∂f = (2k·∂k + 2l·∂l)·m + (k²+l²-1)·∂m
+      // Visualise dpdx/dpdy of the bare interpolated \`k\` attribute.
+      // R = |dpdx(k)| × 1000, G = |dpdy(k)| × 1000, B = 0, A = 1.
+      //
+      // Expected output if WebKit's WGSL→MSL handles derivatives
+      // correctly: glyph interiors show gradient colour (R/G varying
+      // across each curve triangle, since k varies linearly across
+      // it). Interior flat triangles have k ≡ 0 → uniform black
+      // (dpdx = dpdy = 0 there). Line ribbons reinterpret klm so
+      // their k is the outwardX → also varying gradient.
+      //
+      // If iOS shows everything as uniform black or no glyphs at all,
+      // derivatives are broken full-stop on this WebKit build and we
+      // need a derivative-free AA path.
       const k = input.v_klmKind.x;
-      const l = input.v_klmKind.y;
-      const m = input.v_klmKind.z;
-      const kind = input.v_klmKind.w;
-      const dkx = dFdxFine(k); const dky = dFdyFine(k);
-      const dlx = dFdxFine(l); const dly = dFdyFine(l);
-      const dmx = dFdxFine(m); const dmy = dFdyFine(m);
-      const fBez = (k * k - l) * m;
-      const fArc = (k * k + l * l - 1.0) * m;
-      const dfBezX = (2.0 * k * dkx - dlx) * m + (k * k - l) * dmx;
-      const dfBezY = (2.0 * k * dky - dly) * m + (k * k - l) * dmy;
-      const dfArcX = (2.0 * k * dkx + 2.0 * l * dlx) * m + (k * k + l * l - 1.0) * dmx;
-      const dfArcY = (2.0 * k * dky + 2.0 * l * dly) * m + (k * k + l * l - 1.0) * dmy;
-      const mBez    = step(0.7, kind) - step(1.5, kind);
-      const mArc    = step(1.7, kind) - step(2.5, kind);
-      const mRibbon = step(2.5, kind);
-      const f   = fBez * mBez + fArc * mArc + (-1.0) * (1.0 - mBez - mArc - mRibbon);
-      const dfX = dfBezX * mBez + dfArcX * mArc;
-      const dfY = dfBezY * mBez + dfArcY * mArc;
-      const w   = sqrt(dfX * dfX + dfY * dfY) + 1e-6;
-      const curveAlpha = clamp(0.5 - f / w, 0.0, 1.0);
-      const ribbonAlpha = clamp(1.0 - m, 0.0, 1.0);
-      const alpha = curveAlpha * (1.0 - mRibbon) + ribbonAlpha * mRibbon;
-      return { outColor: new V4f(PathColor.x, PathColor.y, PathColor.z, PathColor.w * alpha) };
+      const dx = dFdx(k);
+      const dy = dFdy(k);
+      return {
+        outColor: new V4f(
+          abs(dx) * 1000.0,
+          abs(dy) * 1000.0,
+          0.0,
+          1.0,
+        ),
+      };
     }
   `;
   pathTextEffectAaAlphaBlending = compilePathTextEffect(source);
