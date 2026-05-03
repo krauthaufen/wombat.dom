@@ -85,6 +85,7 @@ const TM44f:  Type = Mat(Tf32, 4, 4);
 
 let pathTextEffectAaNone: Effect | undefined;
 let pathTextEffectAaAlphaBlending: Effect | undefined;
+let pathTextEffectWireframe: Effect | undefined;
 
 // Vertex shader source factory. `expandRibbon` = whether to apply
 // clip-space expansion for `kind = 3` (line-ribbon) outer vertices.
@@ -269,6 +270,40 @@ function buildPathTextEffectAaAlphaBlending(): Effect {
   return pathTextEffectAaAlphaBlending;
 }
 
+/**
+ * Wireframe debug effect: no discard, no blend, no AA math. Each
+ * fragment is coloured by its triangle's `kind`:
+ *
+ *   kind = 0 (interior)        → green
+ *   kind = 1 (bezier2 / halo)  → red
+ *   kind = 2 (arc)             → blue
+ *   kind = 3 (line ribbon)     → yellow
+ *
+ * Used with `Mode = "line-list"` and a 3-line-per-triangle index
+ * buffer to draw the raw mesh structure for diagnosis. Ribbon
+ * verts still get expanded by the VS so collapsed (zero-area) lines
+ * don't disappear in screen space.
+ */
+function buildPathTextEffectWireframe(): Effect {
+  if (pathTextEffectWireframe) return pathTextEffectWireframe;
+  const source = `${vsSource(true)}
+
+    function fsMain(input: { v_klmKind: V4f }): { outColor: V4f } {
+      const k    = input.v_klmKind.w;
+      const m0   = step(-0.5, k) - step(0.5, k);     // 1 if kind=0
+      const m1   = step(0.5,  k) - step(1.5, k);     // 1 if kind=1
+      const m2   = step(1.5,  k) - step(2.5, k);     // 1 if kind=2
+      const m3   = step(2.5,  k);                    // 1 if kind=3
+      const r = 0.20 * m0 + 0.95 * m1 + 0.20 * m2 + 0.95 * m3;
+      const g = 0.85 * m0 + 0.30 * m1 + 0.40 * m2 + 0.85 * m3;
+      const b = 0.30 * m0 + 0.30 * m1 + 0.95 * m2 + 0.20 * m3;
+      return { outColor: new V4f(r, g, b, 1.0) };
+    }
+  `;
+  pathTextEffectWireframe = compilePathTextEffect(source);
+  return pathTextEffectWireframe;
+}
+
 function compilePathTextEffect(source: string): Effect {
   const entries: EntryRequest[] = [
     {
@@ -367,6 +402,9 @@ export interface SgTextProps {
    *  `aa === "alpha-blending"`). Default: 1. Bump to 5–10 to debug
    *  AA gradient direction / shape. */
   ribbonWidthPx?: number | aval<number>;
+  /** Render every triangle as a wireframe outline (three lines per
+   *  triangle). Debug aid only. Default: `false`. */
+  wireframe?: boolean;
 }
 
 /** Build a self-contained `<Sg.Text/>` JSX element. */
@@ -375,7 +413,7 @@ export function SgText(
 ): VNode {
   const {
     font, text, align = "left", aa = "none", kerning = true, Color,
-    ribbonWidthPx,
+    ribbonWidthPx, wireframe = false,
     ...scope
   } = props;
 
@@ -415,7 +453,20 @@ export function SgText(
   }
   const posBuf = IBuffer.fromHost(positions);
   const klmBuf = IBuffer.fromHost(klmKinds);
-  const idxBuf = IBuffer.fromHost(indices);
+  // For wireframe, expand each triangle (3 indices) into 3 line
+  // segments (6 indices: a,b, b,c, c,a). Per-glyph drawcall ranges
+  // map firstIndex/indexCount × 2 to address the line-list buffer.
+  const wireIndices = wireframe ? new Uint32Array(indices.length * 2) : undefined;
+  if (wireIndices !== undefined) {
+    for (let t = 0; t < indices.length; t += 3) {
+      const a = indices[t]!, b = indices[t + 1]!, c = indices[t + 2]!;
+      const w = t * 2;
+      wireIndices[w + 0] = a; wireIndices[w + 1] = b;
+      wireIndices[w + 2] = b; wireIndices[w + 3] = c;
+      wireIndices[w + 4] = c; wireIndices[w + 5] = a;
+    }
+  }
+  const idxBuf = IBuffer.fromHost(wireframe ? wireIndices! : indices);
 
   const vertexAttrs = HashMap.empty<string, aval<BufferView>>()
     .add("a_localPos", AVal.constant<BufferView>({
@@ -425,7 +476,9 @@ export function SgText(
       buffer: klmBuf, offset: 0, count: totalVerts, stride: 16, format: "float32x4",
     }));
   const indexBV: BufferView = {
-    buffer: idxBuf, offset: 0, count: indices.length, stride: 4, format: "uint32",
+    buffer: idxBuf, offset: 0,
+    count: wireframe ? wireIndices!.length : indices.length,
+    stride: 4, format: "uint32",
   };
 
   // One `<Sg.Leaf>` per unique glyph in the run; all share the
@@ -447,9 +500,9 @@ export function SgText(
       }));
     const draw: DrawCall = {
       kind: "indexed",
-      indexCount:    record.indexCount,
+      indexCount:    wireframe ? record.indexCount * 2 : record.indexCount,
       instanceCount: instCount,
-      firstIndex:    record.firstIndex,
+      firstIndex:    wireframe ? record.firstIndex * 2 : record.firstIndex,
       baseVertex:    record.baseVertex,
       firstInstance: 0,
     };
@@ -474,7 +527,8 @@ export function SgText(
     : Trafo3d.translation(new V3d(alignDx, 0, 0));
 
   const effect
-    = aa === "alpha-blending" ? buildPathTextEffectAaAlphaBlending()
+    = wireframe                 ? buildPathTextEffectWireframe()
+    : aa === "alpha-blending"   ? buildPathTextEffectAaAlphaBlending()
     : /* sample-shading uses the same shader as none; the AA work
          happens via per-sample frequency at pipeline-state level. */
       buildPathTextEffectAaNone();
@@ -511,7 +565,9 @@ export function SgText(
     // depth either — that prevents a curve triangle's wedge-outside-
     // curve area (α=0 by construction) from "hole-punching" through
     // an overlapping neighbour glyph.
-    ...(aa === "alpha-blending" ? {
+    ...(wireframe ? {
+      Mode: "line-list" as const,
+    } : aa === "alpha-blending" ? {
       BlendMode: alphaOverBlendState(),
       DepthTest: "less-equal" as const,
     } : {}),

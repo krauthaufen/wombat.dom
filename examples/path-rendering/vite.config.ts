@@ -26,4 +26,9 @@ export default defineConfig({
     jsx: "automatic",
     jsxImportSource: "@aardworx/wombat.dom",
   },
+  define: {
+    // poly2tri's UMD entry references node's `global`. Polyfill so
+    // it initialises in the browser.
+    global: "globalThis",
+  },
 });
