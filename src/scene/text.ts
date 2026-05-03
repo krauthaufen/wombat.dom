@@ -244,15 +244,7 @@ function buildPathTextEffectAaAlphaBlending(): Effect {
       const curveAlpha = clamp(0.5 - f / w, 0.0, 1.0);
       const ribbonAlpha = clamp(1.0 - m, 0.0, 1.0);
       const alpha = curveAlpha * (1.0 - mRibbon) + ribbonAlpha * mRibbon;
-      // ★ VISUALISE COMPUTED ALPHA ★
-      // Output the computed alpha as the RGB color so we can see it
-      // on iOS regardless of whether alpha-blending composites it.
-      // White = alpha 1, black = alpha 0, gray = mid. If iOS shows
-      // black glyphs, the alpha computation is producing 0 there
-      // (somewhere f/w is going wrong). If iOS shows white glyphs
-      // matching the geometry, alpha works but its USE in the alpha-
-      // blend stage is the problem.
-      return { outColor: new V4f(alpha, alpha, alpha, 1.0) };
+      return { outColor: new V4f(PathColor.x, PathColor.y, PathColor.z, PathColor.w * alpha) };
     }
   `;
   pathTextEffectAaAlphaBlending = compilePathTextEffect(source);
