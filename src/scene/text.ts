@@ -244,7 +244,12 @@ function buildPathTextEffectAaAlphaBlending(): Effect {
       const curveAlpha = clamp(0.5 - f / w, 0.0, 1.0);
       const ribbonAlpha = clamp(1.0 - m, 0.0, 1.0);
       const alpha = curveAlpha * (1.0 - mRibbon) + ribbonAlpha * mRibbon;
-      return { outColor: new V4f(PathColor.x, PathColor.y, PathColor.z, PathColor.w * alpha) };
+      // Some iOS Safari WGSL→MSL builds rejected the inline form
+      // \`new V4f(PathColor.x, PathColor.y, PathColor.z, PathColor.w * alpha)\`
+      // (curves disappeared even though alpha computed correctly).
+      // Stage the multiplication into a local first.
+      const finalA = PathColor.w * alpha;
+      return { outColor: new V4f(PathColor.x, PathColor.y, PathColor.z, finalA) };
     }
   `;
   pathTextEffectAaAlphaBlending = compilePathTextEffect(source);
