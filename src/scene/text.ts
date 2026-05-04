@@ -54,6 +54,7 @@ import { Sg } from "./constructors.js";
 import { sgVNode } from "./sgVNode.js";
 import type { SgScopeProps, SgNamespace } from "./constructors.js";
 import { viewport as ambViewport } from "./ambient.js";
+import { buildSdfTextScene } from "./text-sdf.js";
 
 // Module augmentation so callers can write `<Sg.Text .../>` and the
 // TypeScript types know about it. The runtime attachment lives in
@@ -95,10 +96,11 @@ let pathTextEffectWireframe: Effect | undefined;
 function vsSource(expandRibbon: boolean): string {
   const expansion = expandRibbon ? `
     // Line-ribbon expansion: for kind = 3 vertices, the klm slot
-    // carries (outwardX, outwardY, isOuter). Project the outward
-    // direction into NDC, normalise in screen pixels, and step by
-    // exactly 1 pixel for outer (isOuter=1) vertices. Inner verts
-    // (isOuter=0) stay on the polygon edge.
+    // carries (outwardX, outwardY, isOuter). The polygon edge sits
+    // at the CENTRE of the AA ramp — inner verts (isOuter=0) get
+    // pushed INWARD by AaWidthPx/2 and outer verts (isOuter=1) get
+    // pushed OUTWARD by AaWidthPx/2, so the linear m=isOuter ramp
+    // (1→0 in the FS) makes α=0.5 land exactly on the polygon edge.
     if (input.a_klmKind.w > 2.5) {
       const outX  = input.a_klmKind.x * sx;
       const outY  = input.a_klmKind.y;
@@ -108,13 +110,15 @@ function vsSource(expandRibbon: boolean): string {
       const outPx  = new V2f(outNdc.x * Viewport.x, outNdc.y * Viewport.y);
       const len    = max(outPx.length(), 1e-8);
       const stepPx = new V2f(outPx.x / len, outPx.y / len);
+      // Map isOuter ∈ {0, 1} to signedHalf ∈ {-0.5, +0.5}.
+      const signedHalf = isOut - 0.5;
       const stepNdc = new V2f(
-        stepPx.x / Viewport.x * 2.0 * RibbonWidthPx,
-        stepPx.y / Viewport.y * 2.0 * RibbonWidthPx,
+        stepPx.x / Viewport.x * 2.0 * AaWidthPx,
+        stepPx.y / Viewport.y * 2.0 * AaWidthPx,
       );
       clip = new V4f(
-        clip.x + stepNdc.x * clip.w * isOut,
-        clip.y + stepNdc.y * clip.w * isOut,
+        clip.x + stepNdc.x * clip.w * signedHalf,
+        clip.y + stepNdc.y * clip.w * signedHalf,
         clip.z, clip.w,
       );
     }
@@ -128,7 +132,7 @@ function vsSource(expandRibbon: boolean): string {
     /** Ribbon expansion width in framebuffer pixels. Production
      *  rendering uses 1; bump to 5–10 to debug AA gradient direction
      *  / shape. */
-    declare const RibbonWidthPx: f32;
+    declare const AaWidthPx: f32;
 
     function vsMain(input: {
       a_localPos:   V2f;
@@ -237,12 +241,21 @@ function buildPathTextEffectAaAlphaBlending(): Effect {
       const dfArcY = (2.0 * k * dky + 2.0 * l * dly) * m + (k * k + l * l - 1.0) * dmy;
       const mBez    = step(0.7, kind) - step(1.5, kind);
       const mArc    = step(1.7, kind) - step(2.5, kind);
-      const mRibbon = step(2.5, kind);
-      const f   = fBez * mBez + fArc * mArc + (-1.0) * (1.0 - mBez - mArc - mRibbon);
-      const dfX = dfBezX * mBez + dfArcX * mArc;
-      const dfY = dfBezY * mBez + dfArcY * mArc;
+      const mRibbon = step(2.5, kind) - step(3.5, kind);
+      const mDist   = step(3.5, kind);   // kind=4: signed-distance halo
+      // For kind=4 the linear distance field is klm.x directly,
+      // and its screen-space gradient is fwidth(klm.x). We mix
+      // that into the bezier f so the same 0.5-f/w AA recipe gives
+      // the right ramp without a separate code path.
+      const f   = fBez * mBez + fArc * mArc + k * mDist + (-1.0) * (1.0 - mBez - mArc - mRibbon - mDist);
+      const dfX = dfBezX * mBez + dfArcX * mArc + dkx * mDist;
+      const dfY = dfBezY * mBez + dfArcY * mArc + dky * mDist;
       const w   = sqrt(dfX * dfX + dfY * dfY) + 1e-6;
-      const curveAlpha = clamp(0.5 - f / w, 0.0, 1.0);
+      // 1-pixel ramp scaled by AaWidthPx, centred on the curve
+      // (α=0.5 exactly on f=0). Same uniform also drives the line-
+      // ribbon geometric expansion in the VS and the halo distance-
+      // field encoding, so all three share one width knob.
+      const curveAlpha = clamp(0.5 - f / (w * AaWidthPx), 0.0, 1.0);
       const ribbonAlpha = clamp(1.0 - m, 0.0, 1.0);
       const alpha = curveAlpha * (1.0 - mRibbon) + ribbonAlpha * mRibbon;
       // Discard fully-transparent fragments BEFORE the blend stage.
@@ -332,7 +345,7 @@ function compilePathTextEffect(source: string): Effect {
   externalTypes.set("ProjTrafo",     TM44f);
   externalTypes.set("PathColor",     Tvec4f);
   externalTypes.set("Viewport",      Tvec2f);
-  externalTypes.set("RibbonWidthPx", Tf32);
+  externalTypes.set("AaWidthPx", Tf32);
 
   const camUBO: ValueDef = {
     kind: "Uniform",
@@ -342,7 +355,7 @@ function compilePathTextEffect(source: string): Effect {
       { name: "ProjTrafo",     type: TM44f,  group: 0, slot: 0, buffer: "Camera" },
       { name: "PathColor",     type: Tvec4f, group: 0, slot: 0, buffer: "Camera" },
       { name: "Viewport",      type: Tvec2f, group: 0, slot: 0, buffer: "Camera" },
-      { name: "RibbonWidthPx", type: Tf32,   group: 0, slot: 0, buffer: "Camera" },
+      { name: "AaWidthPx", type: Tf32,   group: 0, slot: 0, buffer: "Camera" },
     ],
   };
 
@@ -398,10 +411,12 @@ export interface SgTextProps {
   kerning?: boolean;
   /** Fill colour, vec4 (rgba). Default: opaque white. */
   Color?: V4f | aval<V4f>;
-  /** Outline-ribbon width in framebuffer pixels (only consulted when
-   *  `aa === "alpha-blending"`). Default: 1. Bump to 5–10 to debug
-   *  AA gradient direction / shape. */
-  ribbonWidthPx?: number | aval<number>;
+  /** Width of the AA ramp in framebuffer pixels (only consulted when
+   *  `aa === "alpha-blending"`). Drives BOTH the curve-AA ramp width
+   *  and the line-ribbon geometric expansion — the polygon edge sits
+   *  at the centre, ramp 1→0 over `aaWidthPx` pixels. Default: 1.
+   *  Bump to 5–10 to debug AA gradient direction / shape. */
+  aaWidthPx?: number | aval<number>;
   /** Render every triangle as a wireframe outline (three lines per
    *  triangle). Debug aid only. Default: `false`. */
   wireframe?: boolean;
@@ -413,26 +428,48 @@ export function SgText(
 ): VNode {
   const {
     font, text, align = "left", aa = "none", kerning = true, Color,
-    ribbonWidthPx, wireframe = false,
+    aaWidthPx, wireframe = false,
     ...scope
   } = props;
 
   const cache = cacheFor(font);
+  // Triangle-SDF alpha-blending path: per-pixel barycentric inside-
+  // test against the cached triangulation, evaluating klm + kind
+  // directly. Reuses the existing curve implicit; no segment Newton.
+  if (aa === "alpha-blending" && !wireframe) {
+    const colorAvalSdf: aval<V4f> = Color === undefined
+      ? AVal.constant(new V4f(1, 1, 1, 1))
+      : (Color instanceof V4f ? AVal.constant(Color) : Color);
+    const aaWidthAvalSdf: aval<number> = aaWidthPx === undefined
+      ? AVal.constant(1)
+      : (typeof aaWidthPx === "number"
+          ? AVal.constant(aaWidthPx)
+          : aaWidthPx);
+    return buildSdfTextScene({
+      font, text, align, kerning,
+      cache, color: colorAvalSdf, aaWidth: aaWidthAvalSdf,
+      scope: scope as SgScopeProps,
+    });
+  }
   const layout = layoutText(font, text, { kerning });
+  // GlyphCache stores em-scaled geometry (1 em = 1 world unit), so
+  // layout positions (font units) need the same conversion before
+  // they're used as per-instance offsets.
+  const emScale = 1 / (font.unitsPerEm || 1);
 
   // Build, per unique glyph, an instance buffer of (centerX, baseY)
   // for every occurrence in the run. Geometry stays centred around
   // x = 0; alignment is a ModelTrafo translation applied below.
-  const totalAdvance = layout.advance;
+  const totalAdvance = layout.advance * emScale;
   const groups = new Map<number, { record: ReturnType<GlyphCache["get"]>; offsets: number[] }>();
   for (const g of layout.glyphs) {
     const record = cache.get(g.codepoint);
     if (record.empty) continue; // whitespace contributes nothing visible
-    const centerX = g.x + record.advance * 0.5 - totalAdvance * 0.5;
+    const centerX = g.x * emScale + record.advance * 0.5 - totalAdvance * 0.5;
     let entry = groups.get(g.codepoint);
     if (!entry) { entry = { record, offsets: [] }; groups.set(g.codepoint, entry); }
     entry.offsets.push(centerX);
-    entry.offsets.push(g.y);
+    entry.offsets.push(g.y * emScale);
   }
 
   // Snapshot the cache's atlas. Shared across all per-glyph leaves
@@ -540,18 +577,18 @@ export function SgText(
   const viewportV2: aval<V2f> = ambViewport.map(
     (vp) => new V2f(vp.width, vp.height),
   );
-  const ribbonWidthAval: aval<number> = ribbonWidthPx === undefined
+  const aaWidthAval: aval<number> = aaWidthPx === undefined
     ? AVal.constant(1)
-    : (typeof ribbonWidthPx === "number"
-        ? AVal.constant(ribbonWidthPx)
-        : ribbonWidthPx);
+    : (typeof aaWidthPx === "number"
+        ? AVal.constant(aaWidthPx)
+        : aaWidthPx);
 
   const tree = Sg({
     Shader: effect,
     Uniform: {
       PathColor:     colorAval,
       Viewport:      viewportV2,
-      RibbonWidthPx: ribbonWidthAval,
+      AaWidthPx: aaWidthAval,
     },
     CullMode: "none",
     // alpha-blending: depth-test=less-equal so curve triangles drawn

@@ -489,6 +489,7 @@ function buildRenderObject(
     uniforms,
     textures: HashMap.empty<string, aval<ITexture>>(),
     samplers: HashMap.empty<string, aval<ISampler>>(),
+    ...(leaf.storageBuffers !== undefined ? { storageBuffers: leaf.storageBuffers } : {}),
     ...(leaf.indices !== undefined ? { indices: leaf.indices.map(v => v as BufferView) } : {}),
     drawCall: leaf.drawCall,
   };
@@ -535,6 +536,7 @@ function mergeLeafGeometry(leaf: SgLeaf, state: TraversalState): SgLeaf {
     ...(instance !== undefined ? { instanceAttributes: instance } : {}),
     indices,
     drawCall: leaf.drawCall,
+    ...(leaf.storageBuffers !== undefined ? { storageBuffers: leaf.storageBuffers } : {}),
   };
 }
 

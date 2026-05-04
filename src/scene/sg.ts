@@ -37,7 +37,7 @@ import type { IIntersectable, Trafo3d } from "@aardworx/wombat.base";
 // peer-deps. Importers of /scene must have them installed.
 import type { Effect } from "@aardworx/wombat.shader";
 import type {
-  BufferView, BlendState, DrawCall,
+  BufferView, BlendState, DrawCall, IBuffer,
 } from "@aardworx/wombat.rendering/core";
 
 // ---------------------------------------------------------------------------
@@ -128,6 +128,10 @@ export interface SgLeaf {
   readonly instanceAttributes?: HashMap<string, aval<BufferView>>;
   readonly indices?: aval<BufferView | undefined>;
   readonly drawCall: aval<DrawCall>;
+  /** Storage buffers bound to the shader (read-only or read-write).
+   *  Keyed by name, matched against the shader's declared storage
+   *  buffer bindings. */
+  readonly storageBuffers?: HashMap<string, aval<IBuffer>>;
 }
 
 /**

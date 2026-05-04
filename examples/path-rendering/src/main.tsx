@@ -15,7 +15,7 @@ import {
   perspective,
 } from "@aardworx/wombat.dom/scene";
 import type { SceneEvent } from "@aardworx/wombat.dom/scene";
-import { HashMap } from "@aardworx/wombat.adaptive";
+import { HashMap, cval, transact } from "@aardworx/wombat.adaptive";
 import { V3d, V4f } from "@aardworx/wombat.base";
 import { Font } from "@aardworx/wombat.base/font";
 import type { ClearValues } from "@aardworx/wombat.rendering/core";
@@ -25,12 +25,51 @@ import greatVibesUrl from "./great-vibes.ttf?url";
 // sharp corners) — much better than Great Vibes for debugging the
 // line-edge AA ribbons.
 import latoUrl from "./lato.ttf?url";
+import robotoMonoUrl from "./roboto-mono.ttf?url";
 
 // ---------------------------------------------------------------------------
 
 const root = document.getElementById("app")!;
 const status = document.getElementById("status")!;
 status.textContent = "starting…";
+
+// Debug AA mode toggle: render both subtrees, gate each with an
+// `Active={cval}` so we just flip booleans on click — no remount,
+// camera state survives.
+const aaIsBlend = cval(true);
+const aaBtn = document.createElement("button");
+aaBtn.style.cssText = "position:fixed; top:12px; right:12px; z-index:10; padding:6px 10px; font: 12px system-ui; background:#222; color:#ddd; border:1px solid #444; border-radius:6px; cursor:pointer;";
+const setAaBtn = (): void => { aaBtn.textContent = `aa: ${aaIsBlend.value ? "alpha-blending" : "none"} (toggle)`; };
+setAaBtn();
+aaBtn.onclick = () => {
+  transact(() => { aaIsBlend.value = !aaIsBlend.value; });
+  setAaBtn();
+};
+document.body.appendChild(aaBtn);
+
+// AA ramp width slider (only meaningful in alpha-blending mode).
+const aaWidthPx = cval(1.0);
+const aaWidthBox = document.createElement("div");
+aaWidthBox.style.cssText = "position:fixed; top:50px; right:12px; z-index:10; padding:6px 10px; font: 12px system-ui; background:#222; color:#ddd; border:1px solid #444; border-radius:6px; display:flex; gap:8px; align-items:center;";
+const aaWidthLbl = document.createElement("span");
+const slider = document.createElement("input");
+slider.type = "range";
+slider.min = "0.5";
+slider.max = "10";
+slider.step = "0.1";
+slider.value = "1";
+slider.style.cssText = "width:140px;";
+const setAaWidthLbl = (): void => {
+  aaWidthLbl.textContent = `AA: ${aaWidthPx.value.toFixed(1)} px`;
+};
+setAaWidthLbl();
+slider.oninput = () => {
+  transact(() => { aaWidthPx.value = parseFloat(slider.value); });
+  setAaWidthLbl();
+};
+aaWidthBox.appendChild(aaWidthLbl);
+aaWidthBox.appendChild(slider);
+document.body.appendChild(aaWidthBox);
 
 window.addEventListener("error", (e) => {
   status.textContent = "error: " + (e.error?.message ?? e.message);
@@ -47,8 +86,9 @@ const clear: ClearValues = {
   depth: 1.0,
 };
 
-const font     = await Font.load(greatVibesUrl);
-const latoFont = await Font.load(latoUrl);
+const font           = await Font.load(greatVibesUrl);
+const latoFont       = await Font.load(latoUrl);
+const robotoMonoFont = await Font.load(robotoMonoUrl);
 
 const ctl = OrbitController.create({
   radius: 5,
@@ -64,9 +104,25 @@ const flyToHit = (e: SceneEvent): void => {
 const orange = new V4f(0.9, 0.51, 0.255, 1);
 const cream  = new V4f(0.95, 0.88, 0.78, 1);
 
+const rows = (aa: "none" | "alpha-blending") => [
+  <Sg.Text
+    key="WY"
+    font={font}
+    text="WY"
+    align="center"
+    aa={aa}
+    aaWidthPx={aaWidthPx}
+    Color={orange}
+    Trafo={[Sg.translate(new V3d(0, 0, 0))]}
+  />,
+];
+
+const aaIsNone = aaIsBlend.map((b) => !b);
+
 mount(root, (
   <RenderControl
     clear={clear}
+    attach={{ devicePixelRatio: (typeof window !== "undefined" ? window.devicePixelRatio : 1) * 0.25 }}
     onReady={({ canvas, time }) => {
       ctl.attach(canvas, time);
       status.textContent = "ready — drag to rotate, wheel zoom, double-tap a glyph to fly to it";
@@ -83,27 +139,8 @@ mount(root, (
       OnDoubleTap={flyToHit}
       PixelSnapRadius={8}
     >
-      {/* Three runs in alpha-blending mode. The shader is temporarily
-          reduced to discard-only logic (no AA, no ribbon expansion)
-          so we can tell whether iOS Safari is rejecting the AA
-          fragment math (dpdx/dpdy/select-chains) vs the alpha-
-          blending pipeline state itself. If iOS now shows the same
-          rendering as Chromium, the AA shader is the real culprit. */}
-      <Sg.Text
-        font={latoFont} text="HELLO" align="center" aa="alpha-blending"
-        Color={orange}
-        Trafo={[Sg.translate(new V3d(0, 1.0, 0)), Sg.scale(0.0015)]}
-      />
-      <Sg.Text
-        font={font} text="& wombat" align="center" aa="alpha-blending"
-        Color={cream}
-        Trafo={[Sg.translate(new V3d(0, -0.5, 0)), Sg.scale(0.0015)]}
-      />
-      <Sg.Text
-        font={latoFont} text="left-anchored" align="left" aa="alpha-blending"
-        Color={orange}
-        Trafo={[Sg.translate(new V3d(-1.5, -1.5, 0)), Sg.scale(0.001)]}
-      />
+      <Sg Active={aaIsBlend}>{rows("alpha-blending")}</Sg>
+      <Sg Active={aaIsNone}>{rows("none")}</Sg>
     </Sg>
   </RenderControl>
 ));

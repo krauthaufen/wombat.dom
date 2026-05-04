@@ -28,7 +28,7 @@ import { Trafo3d, V3d, V4f, Rot3d, Scale3d, Shift3d, Box3d, Sphere3d, Cylinder3d
 import { tetrahedronCornersV3, octahedronCornersV3 } from "./primitives/geometry.js";
 import type { Effect } from "@aardworx/wombat.shader";
 import type {
-  BlendState, BufferView, DrawCall,
+  BlendState, BufferView, DrawCall, IBuffer,
 } from "@aardworx/wombat.rendering/core";
 
 import type { Child, VNode } from "../vnode.js";
@@ -80,6 +80,7 @@ function leaf(spec: {
   instanceAttributes?: HashMap<string, aval<BufferView>>;
   indices?: aval<BufferView> | aval<BufferView | undefined>;
   drawCall: aval<DrawCall>;
+  storageBuffers?: HashMap<string, aval<IBuffer>>;
 }): SgLeaf {
   return {
     kind: "Leaf",
@@ -87,6 +88,7 @@ function leaf(spec: {
     ...(spec.instanceAttributes !== undefined ? { instanceAttributes: spec.instanceAttributes } : {}),
     ...(spec.indices !== undefined ? { indices: spec.indices as aval<BufferView | undefined> } : {}),
     drawCall: spec.drawCall,
+    ...(spec.storageBuffers !== undefined ? { storageBuffers: spec.storageBuffers } : {}),
   };
 }
 

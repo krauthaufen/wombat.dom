@@ -13,11 +13,16 @@
     "@aardworx/wombat.dom": "file:../..",
     "@aardworx/wombat.rendering": "^0.5.2",
     "@aardworx/wombat.shader": "^0.3.1",
-    "@aardworx/wombat.shader-vite": "^0.2.1"
+    "@aardworx/wombat.shader-vite": "^0.2.1",
+    "libtess": "^1.2.2",
+    "opentype.js": "^1.3.5",
+    "poly2tri": "^1.5.0"
   },
   "devDependencies": {
+    "@types/pngjs": "^6.0.5",
     "@webgpu/types": "^0.1.69",
     "playwright": "^1.59.1",
+    "pngjs": "^7.0.0",
     "typescript": "^5.4.0",
     "vite": "^5.0.0"
   }
