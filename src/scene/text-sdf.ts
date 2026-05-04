@@ -68,6 +68,8 @@ function buildSdfTextEffect(): Effect {
       gl_Position: V4f;
       v_world:     V2f;
       v_tri:       V2f;
+      v_inst:      V2f;
+      v_sx:        f32;
     } {
       const pPlus  = ProjTrafo.mul(ViewTrafo.mul(ModelTrafo.mul(new V4f( 1.0, 0.0, 0.0, 1.0))));
       const pMinus = ProjTrafo.mul(ViewTrafo.mul(ModelTrafo.mul(new V4f(-1.0, 0.0, 0.0, 1.0))));
@@ -86,18 +88,29 @@ function buildSdfTextEffect(): Effect {
         gl_Position: clip,
         v_world:     new V2f(local.x, local.y),
         v_tri:       input.a_instTri,
+        v_inst:      input.a_instOffset,
+        v_sx:        sx,
       };
     }
 
-    function fsMain(input: { v_world: V2f; v_tri: V2f }): { outColor: V4f } {
+    function fsMain(input: { v_world: V2f; v_tri: V2f; v_inst: V2f; v_sx: f32 }): { outColor: V4f } {
       const triFirst = (input.v_tri.x + 0.5) as u32;
       const triCount = (input.v_tri.y + 0.5) as u32;
       const pp: V2f = new V2f(input.v_world.x, input.v_world.y);
-      const wpxx = dFdx(pp.x);
-      const wpxy = dFdx(pp.y);
-      const wpyx = dFdy(pp.x);
-      const wpyy = dFdy(pp.y);
-      const worldPerPx = sqrt(0.5 * (wpxx*wpxx + wpxy*wpxy + wpyx*wpyx + wpyy*wpyy)) + 1.0e-9;
+      const sx = input.v_sx;
+      
+      // Compose the per-fragment Mvp once. Rational projection of
+      // bezier control points then uses Mvp · (instance + P_em).
+      const Mvp = ProjTrafo.mul(ViewTrafo.mul(ModelTrafo));
+      // pp's pixel coords (origin at viewport bottom-left, NDC→pixel).
+      const ppText = new V4f(
+        input.v_inst.x * input.v_sx + pp.x,
+        input.v_inst.y + pp.y,
+        0.0, 1.0,
+      );
+      const ppClip = Mvp.mul(ppText);
+      const ppPxX = (ppClip.x / ppClip.w + 1.0) * 0.5 * Viewport.x;
+      const ppPxY = (ppClip.y / ppClip.w + 1.0) * 0.5 * Viewport.y;
 
       // DEBUG VISUALIZATION:
       //   insideFill = 1.0 when pp is inside any bezier triangle on
@@ -107,7 +120,15 @@ function buildSdfTextEffect(): Effect {
       //   else minDistPx = pixel distance to nearest bezier curve.
       var minDistPx: f32 = 1.0e10;
       var insideFill: f32 = 0.0;
-      const searchWorld = max(AaWidthPx, 1.0) * 4.0 * worldPerPx;
+      // Pixel-space search radius. Triangles whose closest point
+      // lands further than this away in pixels can't contribute to
+      // the visible AA ramp.
+      const searchPx = max(AaWidthPx, 1.0) * 4.0;
+      // Helper: project a glyph-em coord to pixel coords via Mvp.
+      // Reuses the same instance offset and sx-flip as the VS.
+      // (No way to factor this into a real function in the DSL —
+      // each call site inlines.)
+      // toPxX(em) = (Mvp · vec4(sx*(inst.x + em.x), inst.y + em.y, 0, 1)).x / .w * 0.5 * Viewport.x + 0.5*Viewport.x
 
       const ZERO_U: u32 = 0 as u32;
       const ONE_U:  u32 = 1 as u32;
@@ -156,84 +177,125 @@ function buildSdfTextEffect(): Effect {
         const inside = step(0.0, w0) * step(0.0, w1) * step(0.0, w2);
         const d = tris[base + THREE_U];   // (klm0.z, klm1.z, klm2.z, kind)
         const kind = d.w;
-        const distSolidWorld = (1.0 - inside) * dEdgeMin;
-        // Interior (kind=0): if pp is inside, it's solid fill.
+        // Interior (kind=0): if pp is inside, solid fill. Else
+        // compute pixel distance via projection of the closest point
+        // on the closest edge through Mvp.
         if (kind < 0.5) {
-          if (inside > 0.5) { insideFill = 1.0; }
-          else if (distSolidWorld < searchWorld) {
-            minDistPx = min(minDistPx, distSolidWorld / worldPerPx);
+          if (inside > 0.5) { insideFill = 1.0; continue; }
+          // Closest point in world (em) on the closest of the 3 edges.
+          // Pick the world point of whichever edge gave dEdgeMin.
+          const cWx = (dE0 <= dEdgeMin) ? (v0.x + t0 * e0x) : ((dE1 <= dEdgeMin) ? (v1.x + t1 * e1x) : (v2.x + t2 * e2x));
+          const cWy = (dE0 <= dEdgeMin) ? (v0.y + t0 * e0y) : ((dE1 <= dEdgeMin) ? (v1.y + t1 * e1y) : (v2.y + t2 * e2y));
+          const cText = new V4f(input.v_inst.x * input.v_sx + cWx, input.v_inst.y + cWy, 0.0, 1.0);
+          const cClip = Mvp.mul(cText);
+          const cPxX = (cClip.x / cClip.w + 1.0) * 0.5 * Viewport.x;
+          const cPxY = (cClip.y / cClip.w + 1.0) * 0.5 * Viewport.y;
+          const dpx = cPxX - ppPxX;
+          const dpy = cPxY - ppPxY;
+          const distPx = sqrt(dpx * dpx + dpy * dpy);
+          if (distPx < searchPx) {
+            minDistPx = min(minDistPx, distPx);
           }
           continue;
         }
-        // Curve (kind=1 or 2). Closest-point on the quadratic bezier:
-        //   B(t) = P0 + t·L + t²·Q, with L = 2(P1−P0), Q = P0−2P1+P2.
-        //   F(t) = (B(t) − p) · B'(t)
-        //        = D·L + (2 D·Q + L·L) t + 3 (L·Q) t² + 2 |Q|² t³
-        // is a cubic in t. Solve via the trig / Cardano formula for
-        // real roots, clamp to [0, 1], also test endpoints.
-        if (distSolidWorld > searchWorld) { continue; }
-        if (kind > 1.5) { continue; }   // arcs not handled in debug viz
-        const Lx = 2.0 * (v1.x - v0.x);
-        const Ly = 2.0 * (v1.y - v0.y);
-        const Qx = v0.x - 2.0 * v1.x + v2.x;
-        const Qy = v0.y - 2.0 * v1.y + v2.y;
-        const Dx = v0.x - pp.x;
-        const Dy = v0.y - pp.y;
-        const cubA = 2.0 * (Qx * Qx + Qy * Qy);
-        const cubB = 3.0 * (Lx * Qx + Ly * Qy);
-        const cubC = (Lx * Lx + Ly * Ly) + 2.0 * (Dx * Qx + Dy * Qy);
-        const cubD = Dx * Lx + Dy * Ly;
-        // Depressed cubic y³ + p·y + q = 0 via t = y − cubB/(3·cubA).
-        const aSafe = sign(cubA) * max(abs(cubA), 1.0e-18);
-        const bN = cubB / aSafe;
-        const cN = cubC / aSafe;
-        const dN = cubD / aSafe;
-        const pCoef = cN - bN * bN / 3.0;
-        const qCoef = 2.0 * bN * bN * bN / 27.0 - bN * cN / 3.0 + dN;
-        const disc = qCoef * qCoef * 0.25 + pCoef * pCoef * pCoef / 27.0;
-        const shift = -bN / 3.0;
-        // Three candidate roots (some may be NaN — guarded by clamp + endpoint check).
-        var r0: f32 = -1.0;
-        var r1: f32 = -1.0;
-        var r2: f32 = -1.0;
-        const PI23 = 2.094395102;   // 2π/3
-        const useTrig = step(disc, 0.0);
-        // Trig form (3 real roots when disc <= 0):
-        const negP3 = max(-pCoef / 3.0, 0.0);
-        const m = 2.0 * sqrt(negP3);
-        const cosArg = clamp(-qCoef * 0.5 / max(pow(negP3, 1.5), 1.0e-18), -1.0, 1.0);
-        const phi = acos(cosArg) / 3.0;
-        const tr0 = shift + m * cos(phi);
-        const tr1 = shift + m * cos(phi - PI23);
-        const tr2 = shift + m * cos(phi + PI23);
-        // Cardano form (1 real root when disc > 0):
-        const sd = sqrt(max(disc, 0.0));
-        const u = sign(-qCoef * 0.5 + sd) * pow(abs(-qCoef * 0.5 + sd), 1.0/3.0);
-        const v = sign(-qCoef * 0.5 - sd) * pow(abs(-qCoef * 0.5 - sd), 1.0/3.0);
-        const tc0 = shift + u + v;
-        r0 = mix(tc0, tr0, useTrig);
-        r1 = mix(tc0, tr1, useTrig);   // duplicate when Cardano (only 1 real)
-        r2 = mix(tc0, tr2, useTrig);
-        // Test 5 candidates: endpoints t=0, t=1, plus the (up to 3)
-        // roots clamped to [0, 1]. Manually unrolled — the shader DSL
-        // doesn't accept WGSL array<f32, N>(…) constructors here.
-        const u0 = 0.0;
-        const u1 = 1.0;
-        const u2 = clamp(r0, 0.0, 1.0);
-        const u3 = clamp(r1, 0.0, 1.0);
-        const u4 = clamp(r2, 0.0, 1.0);
-        const Bt0x = v0.x + u0 * Lx + u0 * u0 * Qx; const Bt0y = v0.y + u0 * Ly + u0 * u0 * Qy;
-        const Bt1x = v0.x + u1 * Lx + u1 * u1 * Qx; const Bt1y = v0.y + u1 * Ly + u1 * u1 * Qy;
-        const Bt2x = v0.x + u2 * Lx + u2 * u2 * Qx; const Bt2y = v0.y + u2 * Ly + u2 * u2 * Qy;
-        const Bt3x = v0.x + u3 * Lx + u3 * u3 * Qx; const Bt3y = v0.y + u3 * Ly + u3 * u3 * Qy;
-        const Bt4x = v0.x + u4 * Lx + u4 * u4 * Qx; const Bt4y = v0.y + u4 * Ly + u4 * u4 * Qy;
-        const cd0 = (Bt0x - pp.x)*(Bt0x - pp.x) + (Bt0y - pp.y)*(Bt0y - pp.y);
-        const cd1 = (Bt1x - pp.x)*(Bt1x - pp.x) + (Bt1y - pp.y)*(Bt1y - pp.y);
-        const cd2 = (Bt2x - pp.x)*(Bt2x - pp.x) + (Bt2y - pp.y)*(Bt2y - pp.y);
-        const cd3 = (Bt3x - pp.x)*(Bt3x - pp.x) + (Bt3y - pp.y)*(Bt3y - pp.y);
-        const cd4 = (Bt4x - pp.x)*(Bt4x - pp.x) + (Bt4y - pp.y)*(Bt4y - pp.y);
-        const bestD2 = min(min(min(cd0, cd1), min(cd2, cd3)), cd4);
-        const distCurveWorld = sqrt(bestD2);
+        // Curve (kind=1 or 2). Closest-point on the rational quadratic
+        // bezier in PIXEL space via Newton iteration.
+        //
+        // Project the 3 control points to clip space ONCE per
+        // triangle. The bezier in clip space is
+        //   N(t) = (1−t)²·clip0 + 2(1−t)t·clip1 + t²·clip2
+        // and the projected pixel position is
+        //   P(t) = (N(t).xy / N(t).w + 1) · 0.5 · Viewport
+        // Distance² to pp_pixel: D(t) = |P(t) − pp_pixel|².
+        // We solve D'(t) = 0 ↔ (P(t)−pp) · P'(t) = 0 with Newton
+        // starting from 5 evenly-spaced seeds in [0, 1]; F'(t) is
+        // approximated by |P'(t)|² (drops the 2nd-order term, which
+        // is small near the minimum). Final distance is min over all
+        // converged seeds (each clamped to [0, 1]).
+        if (kind > 1.5) { continue; }   // arcs not handled here
+        // Coarse cull: project parent centroid; reject if obviously far.
+        const cenX = (v0.x + v1.x + v2.x) * (1.0 / 3.0);
+        const cenY = (v0.y + v1.y + v2.y) * (1.0 / 3.0);
+        const cenText = new V4f(input.v_inst.x * input.v_sx + cenX, input.v_inst.y + cenY, 0.0, 1.0);
+        const cenClip = Mvp.mul(cenText);
+        const cenPxX = (cenClip.x / cenClip.w + 1.0) * 0.5 * Viewport.x;
+        const cenPxY = (cenClip.y / cenClip.w + 1.0) * 0.5 * Viewport.y;
+        const cenDx = cenPxX - ppPxX;
+        const cenDy = cenPxY - ppPxY;
+        if (sqrt(cenDx * cenDx + cenDy * cenDy) > searchPx + 200.0) { continue; }
+
+        // Project P0/P1/P2 (in canonical start/control/end order) once.
+        const cT0 = new V4f(input.v_inst.x * input.v_sx + v0.x, input.v_inst.y + v0.y, 0.0, 1.0);
+        const cT1 = new V4f(input.v_inst.x * input.v_sx + v1.x, input.v_inst.y + v1.y, 0.0, 1.0);
+        const cT2 = new V4f(input.v_inst.x * input.v_sx + v2.x, input.v_inst.y + v2.y, 0.0, 1.0);
+        const cC0 = Mvp.mul(cT0);
+        const cC1 = Mvp.mul(cT1);
+        const cC2 = Mvp.mul(cT2);
+
+        var bestPx2: f32 = 1.0e20;
+        const FIVE_U: u32 = 5 as u32;
+        const ITER_U: u32 = 8 as u32;
+        for (let s: u32 = ZERO_U; s < FIVE_U; s = s + ONE_U) {
+          var t: f32 = (s as f32) * 0.25;
+          for (let n: u32 = ZERO_U; n < ITER_U; n = n + ONE_U) {
+            const oneT = 1.0 - t;
+            const aw = oneT * oneT;
+            const bw = 2.0 * oneT * t;
+            const cw = t * t;
+            const daw = -2.0 * oneT;
+            const dbw = 2.0 - 4.0 * t;
+            const dcw = 2.0 * t;
+            const Nx = aw * cC0.x + bw * cC1.x + cw * cC2.x;
+            const Ny = aw * cC0.y + bw * cC1.y + cw * cC2.y;
+            const Wv = aw * cC0.w + bw * cC1.w + cw * cC2.w;
+            const dNx = daw * cC0.x + dbw * cC1.x + dcw * cC2.x;
+            const dNy = daw * cC0.y + dbw * cC1.y + dcw * cC2.y;
+            const dWv = daw * cC0.w + dbw * cC1.w + dcw * cC2.w;
+            const invW = 1.0 / max(Wv, 1.0e-9);
+            // P(t) in pixels.
+            const Bx = Nx * invW;
+            const By = Ny * invW;
+            const Px = (Bx + 1.0) * 0.5 * Viewport.x;
+            const Py = (By + 1.0) * 0.5 * Viewport.y;
+            // P'(t) = (N'·W − N·W') / W², then scaled to pixel space.
+            const dBx = (dNx * Wv - Nx * dWv) * invW * invW;
+            const dBy = (dNy * Wv - Ny * dWv) * invW * invW;
+            const dPx = dBx * 0.5 * Viewport.x;
+            const dPy = dBy * 0.5 * Viewport.y;
+            // F(t) = (P − pp) · P'(t).  Newton step with F'(t) ≈ |P'|².
+            const rdx = Px - ppPxX;
+            const rdy = Py - ppPxY;
+            const Fv = rdx * dPx + rdy * dPy;
+            const Fp = dPx * dPx + dPy * dPy;
+            const dt = Fv / max(Fp, 1.0e-9);
+            t = clamp(t - dt, 0.0, 1.0);
+          }
+          // Final evaluation at converged t.
+          const oneT = 1.0 - t;
+          const aw = oneT * oneT;
+          const bw = 2.0 * oneT * t;
+          const cw = t * t;
+          const Nx = aw * cC0.x + bw * cC1.x + cw * cC2.x;
+          const Ny = aw * cC0.y + bw * cC1.y + cw * cC2.y;
+          const Wv = aw * cC0.w + bw * cC1.w + cw * cC2.w;
+          const invW = 1.0 / max(Wv, 1.0e-9);
+          const Px = (Nx * invW + 1.0) * 0.5 * Viewport.x;
+          const Py = (Ny * invW + 1.0) * 0.5 * Viewport.y;
+          const rdx = Px - ppPxX;
+          const rdy = Py - ppPxY;
+          bestPx2 = min(bestPx2, rdx * rdx + rdy * rdy);
+        }
+        // Also consider true endpoints t=0 (= v0 = start) and t=1
+        // (= v2 = end) directly — these are already projected in cC0
+        // and cC2 — to guarantee endpoint wins at junctions.
+        const endP0x = (cC0.x / cC0.w + 1.0) * 0.5 * Viewport.x;
+        const endP0y = (cC0.y / cC0.w + 1.0) * 0.5 * Viewport.y;
+        const endP2x = (cC2.x / cC2.w + 1.0) * 0.5 * Viewport.x;
+        const endP2y = (cC2.y / cC2.w + 1.0) * 0.5 * Viewport.y;
+        const endD0 = (endP0x - ppPxX)*(endP0x - ppPxX) + (endP0y - ppPxY)*(endP0y - ppPxY);
+        const endD2 = (endP2x - ppPxX)*(endP2x - ppPxX) + (endP2y - ppPxY)*(endP2y - ppPxY);
+        bestPx2 = min(bestPx2, min(endD0, endD2));
+        const distCurvePx_dir = sqrt(bestPx2);
         // Inside/outside via bezier implicit f at pp (klm interpolated):
         //   f<0 means pp is on the FILL side of the bezier (with the
         //   triangulator's m-flip, this works for both inward and
@@ -251,34 +313,29 @@ function buildSdfTextEffect(): Effect {
           insideFill = 1.0;
           continue;
         }
-        // Otherwise: distance to bezier curve, positive (halo side).
-        const distCurvePx = distCurveWorld / worldPerPx;
-        if (distCurvePx < abs(minDistPx)) {
-          minDistPx = distCurvePx;
+        // Otherwise: distance to bezier curve in PIXELS (direction-
+        // aware via inverse Jacobian computed from the offset vector).
+        if (distCurvePx_dir < abs(minDistPx)) {
+          minDistPx = distCurvePx_dir;
         }
       }
 
-      // HSV mapping:
-      //   insideFill = 1 → solid blue (deep fill).
-      //   else minDistPx ∈ [0, radius] → green (0) → red (radius).
-      const radiusPx = max(AaWidthPx, 1.0) * 4.0;
-      const haloT = clamp(minDistPx / radiusPx, 0.0, 1.0);
-      const hHalo = clamp(0.33 - haloT * 0.33, 0.0, 1.0);
-      const hFill = 0.66;
-      const h = mix(hHalo, hFill, insideFill);
-      const h6 = h * 6.0;
-      const ff = h6 - floor(h6);
-      const hi = floor(h6);
-      const r = (hi < 0.5) ? 1.0 : ((hi < 1.5) ? 1.0 - ff : ((hi < 2.5) ? 0.0 : ((hi < 3.5) ? 0.0 : ((hi < 4.5) ? ff : 1.0))));
-      const g = (hi < 0.5) ? ff : ((hi < 1.5) ? 1.0 : ((hi < 2.5) ? 1.0 : ((hi < 3.5) ? 1.0 - ff : ((hi < 4.5) ? 0.0 : 0.0))));
-      const bl = (hi < 0.5) ? 0.0 : ((hi < 1.5) ? 0.0 : ((hi < 2.5) ? ff : ((hi < 3.5) ? 1.0 : ((hi < 4.5) ? 1.0 : 1.0 - ff))));
-      // Dark when no triangle was within the search radius AND not
-      // inside any fill region.
-      const beyond = step(searchWorld, minDistPx * worldPerPx) * (1.0 - insideFill);
-      const rr = mix(r, 0.05, beyond);
-      const gg = mix(g, 0.05, beyond);
-      const bb = mix(bl, 0.10, beyond);
-      return { outColor: new V4f(rr, gg, bb, 1.0) };
+      // Alpha gradient:
+      //   insideFill = 1            → α = 1 (solid fill).
+      //   minDistPx ≤ AaWidthPx/2   → α ramps 1 → 0 over AaWidthPx px,
+      //                                centred such that α=0.5 at
+      //                                distance = AaWidthPx/2 from the
+      //                                bezier (matches the rasterised
+      //                                fwidth path).
+      //   beyond                    → α = 0 → discard.
+      const aaW = max(AaWidthPx, 1.0e-3);
+      // dist 0 (on the bezier) → α = 1, dist aaW → α = 0. Bezier is
+      // the visible fill boundary, ramp extends into halo only.
+      const alphaHalo = clamp(1.0 - minDistPx / aaW, 0.0, 1.0);
+      const alpha = mix(alphaHalo, 1.0, insideFill);
+      if (alpha <= 0.0) discard;
+      const aa_ = alpha * PathColor.w;
+      return { outColor: new V4f(PathColor.x * aa_, PathColor.y * aa_, PathColor.z * aa_, aa_) };
     }
   `;
 
@@ -296,6 +353,8 @@ function buildSdfTextEffect(): Effect {
         { name: "gl_Position", type: Tvec4f, semantic: "Position", decorations: [{ kind: "Builtin", value: "position" }] },
         { name: "v_world",     type: Tvec2f, semantic: "World",    decorations: [{ kind: "Location", value: 0 }] },
         { name: "v_tri",       type: Tvec2f, semantic: "Tri",      decorations: [{ kind: "Location", value: 1 }] },
+        { name: "v_inst",      type: Tvec2f, semantic: "Inst",     decorations: [{ kind: "Location", value: 2 }] },
+        { name: "v_sx",        type: Tf32,   semantic: "Sx",       decorations: [{ kind: "Location", value: 3 }] },
       ],
     },
     {
