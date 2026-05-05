@@ -1,14 +1,12 @@
 import { defineConfig } from "vite";
+import { fileURLToPath } from "node:url";
 import { boperators } from "@boperators/plugin-vite";
+import { wombatShader } from "@aardworx/wombat.shader-vite";
 
-// `DefaultSurfaces.basic` ships pre-built via `parseShader + stage`
-// (raw shader source compiled at first use), so the wombat.shader-
-// vite marker plugin isn't strictly necessary for this demo.
-// Include it once we add inline `vertex(…)` / `fragment(…)` calls
-// in the app code.
+const here = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
-  plugins: [boperators()],
+  plugins: [boperators(), wombatShader({ rootDir: here })],
   server: {
     port: 5175,
     // Permit Tailscale-issued hostnames + LAN access. Vite's
