@@ -43,7 +43,7 @@ function buildUserEffect(): Effect {
 const fakeEffect: Effect = buildUserEffect();
 
 function leaf(): import("../src/scene/index.js").SgLeaf {
-  return Sg.leaf({ vertexAttributes: HashMap.empty<string, AVal<BufferView>>().add("a_position", AVal.constant(bv)), drawCall: AVal.constant(draw) });
+  return Sg.leaf({ vertexAttributes: HashMap.empty<string, AVal<BufferView>>().add("Positions", AVal.constant(bv)), drawCall: AVal.constant(draw) });
 }
 type AVal<T> = ReturnType<typeof AVal.constant<T>>;
 

@@ -104,10 +104,7 @@ export {
   type BoxOptions, type QuadOptions,
 } from "./primitives.js";
 
-export {
-  DefaultSurfaces,
-  basic,
-} from "./defaultSurfaces.js";
+export { DefaultSurfaces } from "./defaultSurfaces.js";
 
 export {
   SgText,

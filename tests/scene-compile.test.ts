@@ -41,7 +41,7 @@ const dummyView: BufferView = {
 
 function leaf(): SgLeaf {
   return Sg.leaf({
-    vertexAttributes: HashMap.empty<string, ReturnType<typeof AVal.constant<BufferView>>>().add("a_position", AVal.constant(dummyView)),
+    vertexAttributes: HashMap.empty<string, ReturnType<typeof AVal.constant<BufferView>>>().add("Positions", AVal.constant(dummyView)),
     drawCall: AVal.constant(dummyDraw),
   });
 }

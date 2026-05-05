@@ -5,6 +5,7 @@
 // readback required for any of the primitives below).
 
 import { mount } from "@aardworx/wombat.dom";
+import { effect } from "@aardworx/wombat.shader";
 import {
   DefaultSurfaces,
   OrbitController,
@@ -77,7 +78,7 @@ mount(root, (
   >
     <Sg
       View={ctl.view}
-      Shader={DefaultSurfaces.headlight()}
+      Shader={effect(DefaultSurfaces.trafo(), DefaultSurfaces.simpleLighting())}
       Proj={perspective({
         fovInRadians: Math.PI / 3,
         aspect: aspectFromViewport(RenderControl.viewport),

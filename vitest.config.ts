@@ -1,6 +1,11 @@
 import { defineConfig } from "vitest/config";
+import { fileURLToPath } from "node:url";
+import { wombatShader } from "@aardworx/wombat.shader-vite";
 
 export default defineConfig({
+  plugins: [
+    wombatShader({ rootDir: fileURLToPath(new URL(".", import.meta.url)) }),
+  ],
   test: {
     environment: "happy-dom",
     include: ["tests/**/*.test.ts", "tests/**/*.test.tsx"],

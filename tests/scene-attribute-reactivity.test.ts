@@ -47,7 +47,7 @@ describe("Phase B — per-buffer reactive vertex attributes through compileScene
     const a = bv("A");
     const b = bv("B");
     const positionView = cval<BufferView>(a);
-    const map = HashMap.empty<string, ReturnType<typeof AVal.constant<BufferView>>>().add("a_position", positionView);
+    const map = HashMap.empty<string, ReturnType<typeof AVal.constant<BufferView>>>().add("Positions", positionView);
 
     const sg: SgLeaf = Sg.leaf({
       vertexAttributes: map,
@@ -59,12 +59,12 @@ describe("Phase B — per-buffer reactive vertex attributes through compileScene
 
     // The outer map is plain — the same HashMap reference is threaded
     // through. Per-key avals are still reactive on the leaf.
-    const found1 = obj.vertexAttributes.tryFind("a_position");
+    const found1 = obj.vertexAttributes.tryFind("Positions");
     expect(found1).toBeDefined();
     expect((AVal.force(found1!).buffer as { label?: string }).label).toBe("A");
 
     transact(() => { positionView.value = b; });
-    const found2 = obj.vertexAttributes.tryFind("a_position");
+    const found2 = obj.vertexAttributes.tryFind("Positions");
     expect((AVal.force(found2!).buffer as { label?: string }).label).toBe("B");
   });
 
@@ -75,7 +75,7 @@ describe("Phase B — per-buffer reactive vertex attributes through compileScene
     const dynIdx = cval<BufferView | undefined>(present);
 
     const sg: SgLeaf = Sg.leaf({
-      vertexAttributes: HashMap.empty<string, ReturnType<typeof AVal.constant<BufferView>>>().add("a_position", AVal.constant(bv("p"))),
+      vertexAttributes: HashMap.empty<string, ReturnType<typeof AVal.constant<BufferView>>>().add("Positions", AVal.constant(bv("p"))),
       indices: dynIdx,
       drawCall: AVal.constant(dummyDraw),
     });

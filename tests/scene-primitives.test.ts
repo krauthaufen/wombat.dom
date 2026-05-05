@@ -6,16 +6,17 @@
 import { describe, expect, it } from "vitest";
 import { AVal } from "@aardworx/wombat.adaptive";
 import { V3d } from "@aardworx/wombat.base";
+import { effect } from "@aardworx/wombat.shader";
 import { box, DefaultSurfaces, quad } from "../src/scene/index.js";
 
 describe("primitives", () => {
   describe("box", () => {
-    it("has a_position + a_color attributes, 36 indices", () => {
+    it("has Positions + Colors attributes, 36 indices", () => {
       const leaf = box();
       expect(leaf.kind).toBe("Leaf");
       const va = leaf.vertexAttributes;
-      expect(va.tryFind("a_position")).toBeDefined();
-      expect(va.tryFind("a_color")).toBeDefined();
+      expect(va.tryFind("Positions")).toBeDefined();
+      expect(va.tryFind("Colors")).toBeDefined();
       const idx = AVal.force(leaf.indices!)!;
       expect(idx.count).toBe(36);
       const dc = AVal.force(leaf.drawCall);
@@ -25,7 +26,7 @@ describe("primitives", () => {
 
     it("size scales positions to span [-size, +size]", () => {
       const leaf = box({ size: new V3d(2, 3, 4) });
-      const view = AVal.force(leaf.vertexAttributes.tryFind("a_position")!);
+      const view = AVal.force(leaf.vertexAttributes.tryFind("Positions")!);
       const data = view.buffer;
       if (data.kind !== "host") throw new Error("expected host buffer");
       const ab = data.data as ArrayBuffer;
@@ -52,29 +53,22 @@ describe("primitives", () => {
       const leaf = quad();
       const idx = AVal.force(leaf.indices!)!;
       expect(idx.count).toBe(6);
-      const pos = AVal.force(leaf.vertexAttributes.tryFind("a_position")!);
+      const pos = AVal.force(leaf.vertexAttributes.tryFind("Positions")!);
       expect(pos.count).toBe(4);
     });
   });
 });
 
-describe("DefaultSurfaces.basic", () => {
+describe("effect(trafo, vertexColor)", () => {
   it("compiles to a CompiledEffect with vertex + fragment stages", () => {
-    const fx = DefaultSurfaces.basic();
+    const fx = effect(DefaultSurfaces.trafo(), DefaultSurfaces.vertexColor());
     const compiled = fx.compile({ target: "wgsl" });
     const stages = compiled.stages.map(s => s.stage).sort();
     expect(stages).toEqual(["fragment", "vertex"]);
   });
 
-  it("declares a Camera UBO with ModelTrafo / ViewTrafo / ProjTrafo", () => {
-    const compiled = DefaultSurfaces.basic().compile({ target: "wgsl" });
-    const blocks = compiled.interface.uniformBlocks;
-    expect(blocks).toHaveLength(1);
-    const fieldNames = blocks[0]!.fields.map(f => f.name).sort();
-    expect(fieldNames).toEqual(["ModelTrafo", "ProjTrafo", "ViewTrafo"]);
-  });
-
-  it("returns the same Effect on repeated calls (cached)", () => {
-    expect(DefaultSurfaces.basic()).toBe(DefaultSurfaces.basic());
+  it("DefaultSurfaces.trafo() / vertexColor() are cached", () => {
+    expect(DefaultSurfaces.trafo()).toBe(DefaultSurfaces.trafo());
+    expect(DefaultSurfaces.vertexColor()).toBe(DefaultSurfaces.vertexColor());
   });
 });

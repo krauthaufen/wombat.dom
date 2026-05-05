@@ -74,15 +74,15 @@ describe("Phase 2 — geometry-attribute scopes", () => {
   it("VertexAttributes COMPOSE (per-key map merge, leaf-wins on conflict)", () => {
     const outer = bv("outer");
     const leafBuf = bv("leaf");
-    const scoped: HashMap<string, AVal<BufferView>> = HashMap.empty<string, AVal<BufferView>>().add("a_position", AVal.constant(outer));
+    const scoped: HashMap<string, AVal<BufferView>> = HashMap.empty<string, AVal<BufferView>>().add("Positions", AVal.constant(outer));
     const leaf = Sg.leaf({
-      vertexAttributes: HashMap.empty<string, AVal<BufferView>>().add("a_position", AVal.constant(leafBuf)),
+      vertexAttributes: HashMap.empty<string, AVal<BufferView>>().add("Positions", AVal.constant(leafBuf)),
       drawCall: AVal.constant(draw),
     });
     const tree = Sg.vertexAttributes(scoped)(leaf);
     const [obj] = compile(tree);
     // Leaf wins.
-    const pos = obj!.vertexAttributes.tryFind("a_position");
+    const pos = obj!.vertexAttributes.tryFind("Positions");
     const view = AVal.force(pos!) as BufferView & { label?: string };
     expect(view.label).toBe("leaf");
   });

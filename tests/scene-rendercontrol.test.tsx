@@ -12,6 +12,7 @@
 // tests-browser/.
 
 import { describe, expect, it } from "vitest";
+import { effect } from "@aardworx/wombat.shader";
 import { mount, useScope } from "../src/index.js";
 import {
   collectSgChildren, DefaultSurfaces, RenderControl, Sg,
@@ -87,7 +88,7 @@ describe("Sg JSX wrappers", () => {
     const node = collectSgChildren(
       <Sg
         Trafo={[Trafo3d.translation(new V3d(1, 0, 0))]}
-        Shader={DefaultSurfaces.basic()}
+        Shader={effect(DefaultSurfaces.trafo(), DefaultSurfaces.vertexColor())}
       >
         <Sg.Box/>
       </Sg>,
@@ -128,7 +129,7 @@ describe("Sg JSX wrappers", () => {
     const handle = mount(
       root,
       <RenderControl>
-        <Sg Shader={DefaultSurfaces.basic()}>
+        <Sg Shader={effect(DefaultSurfaces.trafo(), DefaultSurfaces.vertexColor())}>
           <Sg.Box/>
         </Sg>
       </RenderControl>,

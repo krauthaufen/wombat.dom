@@ -20,20 +20,20 @@ function unwrapToLeaf(node: import("../src/scene/index.js").SgNode): import("../
 }
 
 describe("Sg primitive components", () => {
-  it("<Sg.Box/> compiles to a leaf with a_position + a_color and a Trafo-ish wrap", () => {
+  it("<Sg.Box/> compiles to a leaf with Positions + Colors and a Trafo-ish wrap", () => {
     const node = collectSgChildren(<Sg.Box Color={new V4f(1, 0.5, 0.2, 1)}/>);
     const leaf = unwrapToLeaf(node);
     expect(leaf.kind).toBe("Leaf");
-    expect(leaf.vertexAttributes.tryFind("a_position")).toBeDefined();
-    expect(leaf.vertexAttributes.tryFind("a_color")).toBeDefined();
+    expect(leaf.vertexAttributes.tryFind("Positions")).toBeDefined();
+    expect(leaf.vertexAttributes.tryFind("Colors")).toBeDefined();
   });
 
   it("<Sg.Tetrahedron/> emits a leaf with positions+normals+color", () => {
     const node = collectSgChildren(<Sg.Tetrahedron Color={new V4f(0.5, 0.5, 0.5, 1)}/>);
     const leaf = unwrapToLeaf(node);
-    expect(leaf.vertexAttributes.tryFind("a_position")).toBeDefined();
-    expect(leaf.vertexAttributes.tryFind("a_normal")).toBeDefined();
-    expect(leaf.vertexAttributes.tryFind("a_color")).toBeDefined();
+    expect(leaf.vertexAttributes.tryFind("Positions")).toBeDefined();
+    expect(leaf.vertexAttributes.tryFind("Normals")).toBeDefined();
+    expect(leaf.vertexAttributes.tryFind("Colors")).toBeDefined();
   });
 
   it("<Sg.Octahedron/> + wire variants emit leaves", () => {
@@ -55,7 +55,7 @@ describe("Sg primitive components", () => {
     // Trafo wraps the leaf; Intersectable wraps the Trafo.
     expect(["Trafo", "Intersectable"]).toContain(node.kind);
     const leaf = unwrapToLeaf(node);
-    expect(leaf.vertexAttributes.tryFind("a_color")).toBeDefined();
+    expect(leaf.vertexAttributes.tryFind("Colors")).toBeDefined();
   });
 
   it("<Sg.Cylinder/> + <Sg.Cone/> compile to leaves", () => {
@@ -77,28 +77,28 @@ describe("shared geometry caches", () => {
   it("getBoxGeometry returns the same vertex buffers across calls (object identity)", () => {
     const a = getBoxGeometry();
     const b = getBoxGeometry();
-    expect(AVal.force(a.vertexAttrs.tryFind("a_position")!))
-      .toBe(AVal.force(b.vertexAttrs.tryFind("a_position")!));
+    expect(AVal.force(a.vertexAttrs.tryFind("Positions")!))
+      .toBe(AVal.force(b.vertexAttrs.tryFind("Positions")!));
     expect(AVal.force(a.indices)).toBe(AVal.force(b.indices));
   });
 
   it("two Sg.Sphere with the same tessellation share buffers", () => {
     const a = getSphereGeometry(32);
     const b = getSphereGeometry(32);
-    expect(AVal.force(a.vertexAttrs.tryFind("a_position")!))
-      .toBe(AVal.force(b.vertexAttrs.tryFind("a_position")!));
+    expect(AVal.force(a.vertexAttrs.tryFind("Positions")!))
+      .toBe(AVal.force(b.vertexAttrs.tryFind("Positions")!));
   });
 
   it("different tessellations produce different cached geometries", () => {
     const a = getSphereGeometry(16);
     const b = getSphereGeometry(32);
-    expect(AVal.force(a.vertexAttrs.tryFind("a_position")!))
-      .not.toBe(AVal.force(b.vertexAttrs.tryFind("a_position")!));
+    expect(AVal.force(a.vertexAttrs.tryFind("Positions")!))
+      .not.toBe(AVal.force(b.vertexAttrs.tryFind("Positions")!));
   });
 
   it("cylinder cache keyed by tessellation", () => {
-    expect(AVal.force(getCylinderGeometry(8).vertexAttrs.tryFind("a_position")!))
-      .not.toBe(AVal.force(getCylinderGeometry(16).vertexAttrs.tryFind("a_position")!));
+    expect(AVal.force(getCylinderGeometry(8).vertexAttrs.tryFind("Positions")!))
+      .not.toBe(AVal.force(getCylinderGeometry(16).vertexAttrs.tryFind("Positions")!));
   });
 });
 
