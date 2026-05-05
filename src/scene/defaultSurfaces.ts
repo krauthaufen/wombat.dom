@@ -346,6 +346,22 @@ export function simpleLighting(): Effect {
 }
 
 // ---------------------------------------------------------------------------
+// constantColor — port of Aardvark.Rendering's
+// `DefaultSurfaces.constantColor` (`Effects/Default/Impl/ConstantColor.fs`).
+//
+// Parameterised fragment effect: emits the captured colour as the
+// framebuffer's `outColor`, ignoring all per-fragment varyings.
+// Demonstrates closure-capture support in the inline marker form —
+// each call to `constantColor(c)` produces a fresh `Effect` with
+// `c` baked in as a `ReadInput("Closure", ...)` IR hole, so two
+// calls with different colours produce distinct effects.
+// ---------------------------------------------------------------------------
+
+export function constantColor(c: V4f): Effect {
+  return fragment(() => ({ outColor: c }));
+}
+
+// ---------------------------------------------------------------------------
 // vertexColor — port of Aardvark.Rendering's
 // `DefaultSurfaces.vertexColor` (`Effects/Default/Impl/VertexColor.fs`).
 //
@@ -375,4 +391,5 @@ export const DefaultSurfaces = {
   trafo,
   simpleLighting,
   vertexColor,
+  constantColor,
 } as const;
