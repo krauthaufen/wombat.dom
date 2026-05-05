@@ -75,6 +75,111 @@ void Tu32;
 // (Removed per-candidate Newton template — see fsMain below; the FS
 //  loops over the glyph's full SSBO range from triFirst..triCount.)
 
+/**
+ * Emit one candidate iteration. `candFExpr` evaluates to a candidate's
+ * SSBO index (or -1 to skip). Wrapped in its own block so locals
+ * are scoped per call. SSBO entry layout per candidate:
+ *   tris[base + 0] = (a.xy, klm0.xy)
+ *   tris[base + 1] = (b.xy, klm1.xy)   ← b == a marks line sentinel
+ *   tris[base + 2] = (c.xy, klm2.xy)
+ *   tris[base + 3] = (klm0.z, klm1.z, klm2.z, kind)
+ */
+function candidateLoopBody(candFExpr: string): string {
+  return `
+        {
+          const candF = ${candFExpr};
+          if (candF >= 0.0) {
+            const idx = (candF + 0.5) as u32;
+            const base = idx * FOUR_U;
+            const a = tris[base];
+            const b = tris[base + ONE_U];
+            const c = tris[base + TWO_U];
+            const cT0 = new V4f((input.v_inst.x + a.x) * sx, input.v_inst.y + a.y, 0.0, 1.0);
+            const cT2 = new V4f((input.v_inst.x + c.x) * sx, input.v_inst.y + c.y, 0.0, 1.0);
+            const cC0 = Mvp.mul(cT0);
+            const cC2 = Mvp.mul(cT2);
+            const e0px = (cC0.x / cC0.w + 1.0) * 0.5 * Viewport.x;
+            const e0py = (cC0.y / cC0.w + 1.0) * 0.5 * Viewport.y;
+            const e2px = (cC2.x / cC2.w + 1.0) * 0.5 * Viewport.x;
+            const e2py = (cC2.y / cC2.w + 1.0) * 0.5 * Viewport.y;
+            var bestPx2: f32 = 1.0e20;
+            const isLine = (a.x == b.x) && (a.y == b.y);
+            if (isLine) {
+              const sxL = e2px - e0px;
+              const syL = e2py - e0py;
+              const ll = sxL * sxL + syL * syL;
+              const dx0 = fragPxX - e0px;
+              const dy0 = fragPxY - e0py;
+              const tL = clamp((dx0 * sxL + dy0 * syL) / max(ll, 1.0e-9), 0.0, 1.0);
+              const cx = e0px + tL * sxL - fragPxX;
+              const cy = e0py + tL * syL - fragPxY;
+              bestPx2 = cx * cx + cy * cy;
+            } else {
+              const cT1 = new V4f((input.v_inst.x + b.x) * sx, input.v_inst.y + b.y, 0.0, 1.0);
+              const cC1 = Mvp.mul(cT1);
+              for (let s: u32 = ZERO_U; s < SEEDS_U; s = s + ONE_U) {
+                var t: f32 = (s as f32) * 0.25;
+                for (let n: u32 = ZERO_U; n < ITER_U; n = n + ONE_U) {
+                  const oneT = 1.0 - t;
+                  const aw = oneT * oneT;
+                  const bw = 2.0 * oneT * t;
+                  const cw = t * t;
+                  const daw = -2.0 * oneT;
+                  const dbw = 2.0 - 4.0 * t;
+                  const dcw = 2.0 * t;
+                  const Nx = aw * cC0.x + bw * cC1.x + cw * cC2.x;
+                  const Ny = aw * cC0.y + bw * cC1.y + cw * cC2.y;
+                  const Wv = aw * cC0.w + bw * cC1.w + cw * cC2.w;
+                  const dNx = daw * cC0.x + dbw * cC1.x + dcw * cC2.x;
+                  const dNy = daw * cC0.y + dbw * cC1.y + dcw * cC2.y;
+                  const dWv = daw * cC0.w + dbw * cC1.w + dcw * cC2.w;
+                  const invW = 1.0 / max(Wv, 1.0e-9);
+                  const Px = (Nx * invW + 1.0) * 0.5 * Viewport.x;
+                  const Py = (Ny * invW + 1.0) * 0.5 * Viewport.y;
+                  const dBx = (dNx * Wv - Nx * dWv) * invW * invW;
+                  const dBy = (dNy * Wv - Ny * dWv) * invW * invW;
+                  const dPx = dBx * 0.5 * Viewport.x;
+                  const dPy = dBy * 0.5 * Viewport.y;
+                  const rdx = Px - fragPxX;
+                  const rdy = Py - fragPxY;
+                  const Fv = rdx * dPx + rdy * dPy;
+                  const Fp = dPx * dPx + dPy * dPy;
+                  const dt = Fv / max(Fp, 1.0e-9);
+                  t = clamp(t - dt, 0.0, 1.0);
+                }
+                const oneTf = 1.0 - t;
+                const awf = oneTf * oneTf;
+                const bwf = 2.0 * oneTf * t;
+                const cwf = t * t;
+                const Nxf = awf * cC0.x + bwf * cC1.x + cwf * cC2.x;
+                const Nyf = awf * cC0.y + bwf * cC1.y + cwf * cC2.y;
+                const Wvf = awf * cC0.w + bwf * cC1.w + cwf * cC2.w;
+                const invWf = 1.0 / max(Wvf, 1.0e-9);
+                const Pxf = (Nxf * invWf + 1.0) * 0.5 * Viewport.x;
+                const Pyf = (Nyf * invWf + 1.0) * 0.5 * Viewport.y;
+                const rdxf = Pxf - fragPxX;
+                const rdyf = Pyf - fragPxY;
+                bestPx2 = min(bestPx2, rdxf * rdxf + rdyf * rdyf);
+              }
+              const e0dx = e0px - fragPxX;
+              const e0dy = e0py - fragPxY;
+              const e2dx = e2px - fragPxX;
+              const e2dy = e2py - fragPxY;
+              bestPx2 = min(bestPx2, e0dx*e0dx + e0dy*e0dy);
+              bestPx2 = min(bestPx2, e2dx*e2dx + e2dy*e2dy);
+            }
+            minDistPx2 = min(minDistPx2, bestPx2);
+          }
+        }
+  `;
+}
+
+// Build stamp — bumped on every meaningful rebuild so you can verify
+// you're seeing the current code in the browser. Print this from the
+// console (or read the message logged on first effect build) and
+// compare with what I tell you the current stamp is.
+const SDF_BUILD_STAMP = "v3-collinear-strip-tagmig-2026-05-06";
+
 let sdfTextEffectMemo: Effect | undefined;
 function buildSdfTextEffect(): Effect {
   if (sdfTextEffectMemo) return sdfTextEffectMemo;
@@ -90,13 +195,13 @@ function buildSdfTextEffect(): Effect {
     function vsMain(input: {
       a_pos:        V2f;
       a_klmKind:    V4f;     // klm.xyz, kind
-      a_triRange:   V2f;     // band only: (triFirst, triCount) into SSBO
+      a_cands:      V4f;     // band only: 4 candidate SSBO indices (-1 = unused)
       a_instOffset: V2f;     // (cx, by)
     }): {
       gl_Position: V4f;
       v_kind:      f32;
       v_klm:       V3f;
-      v_triRange:  V2f;
+      v_cands:     V4f;
       v_inst:      V2f;
       v_sx:        f32;
       v_pos:       V2f;
@@ -112,7 +217,7 @@ function buildSdfTextEffect(): Effect {
         gl_Position: clip,
         v_kind:      input.a_klmKind.w,
         v_klm:       new V3f(input.a_klmKind.x, input.a_klmKind.y, input.a_klmKind.z),
-        v_triRange:  input.a_triRange,
+        v_cands:     input.a_cands,
         v_inst:      input.a_instOffset,
         v_sx:        sx,
         v_pos:       input.a_pos,
@@ -122,7 +227,7 @@ function buildSdfTextEffect(): Effect {
     function fsMain(input: {
       v_kind: f32;
       v_klm:  V3f;
-      v_triRange: V2f;
+      v_cands: V4f;
       v_inst: V2f;
       v_sx: f32;
       v_pos:  V2f;
@@ -167,95 +272,17 @@ function buildSdfTextEffect(): Effect {
         const SEEDS_U: u32 = 5 as u32;
         const ITER_U:  u32 = 8 as u32;
 
-        // Iterate this glyph's full SSBO range. Band geometry only
-        // covers the ±halo strip, so per-glyph cost is paid only on
-        // visibly-covered fragments.
-        const triFirst = (input.v_triRange.x + 0.5) as u32;
-        const triCount = (input.v_triRange.y + 0.5) as u32;
+        // Iterate this band tri's per-tri candidate list (≤ 4 SSBO
+        // indices, padded with -1). Candidates derived CPU-side from
+        // which contour curves the band tri's inner-side vertices
+        // belong to (anchor vertex → 2 edges; leg-control vertex →
+        // 1 edge). Bounded per-fragment cost regardless of glyph
+        // complexity.
         var minDistPx2: f32 = 1.0e20;
-        for (let ti: u32 = ZERO_U; ti < triCount; ti = ti + ONE_U) {
-          const idx = triFirst + ti;
-          const base = idx * FOUR_U;
-          const a = tris[base];
-          const b = tris[base + ONE_U];
-          const c = tris[base + TWO_U];
-          const cT0 = new V4f((input.v_inst.x + a.x) * sx, input.v_inst.y + a.y, 0.0, 1.0);
-          const cT2 = new V4f((input.v_inst.x + c.x) * sx, input.v_inst.y + c.y, 0.0, 1.0);
-          const cC0 = Mvp.mul(cT0);
-          const cC2 = Mvp.mul(cT2);
-          const e0px = (cC0.x / cC0.w + 1.0) * 0.5 * Viewport.x;
-          const e0py = (cC0.y / cC0.w + 1.0) * 0.5 * Viewport.y;
-          const e2px = (cC2.x / cC2.w + 1.0) * 0.5 * Viewport.x;
-          const e2py = (cC2.y / cC2.w + 1.0) * 0.5 * Viewport.y;
-          var bestPx2: f32 = 1.0e20;
-          const isLine = (a.x == b.x) && (a.y == b.y);
-          if (isLine) {
-            const sxL = e2px - e0px;
-            const syL = e2py - e0py;
-            const ll = sxL * sxL + syL * syL;
-            const dx0 = fragPxX - e0px;
-            const dy0 = fragPxY - e0py;
-            const tL = clamp((dx0 * sxL + dy0 * syL) / max(ll, 1.0e-9), 0.0, 1.0);
-            const cx = e0px + tL * sxL - fragPxX;
-            const cy = e0py + tL * syL - fragPxY;
-            bestPx2 = cx * cx + cy * cy;
-            minDistPx2 = min(minDistPx2, bestPx2);
-            continue;
-          }
-          const cT1 = new V4f((input.v_inst.x + b.x) * sx, input.v_inst.y + b.y, 0.0, 1.0);
-          const cC1 = Mvp.mul(cT1);
-          for (let s: u32 = ZERO_U; s < SEEDS_U; s = s + ONE_U) {
-            var t: f32 = (s as f32) * 0.25;
-            for (let n: u32 = ZERO_U; n < ITER_U; n = n + ONE_U) {
-              const oneT = 1.0 - t;
-              const aw = oneT * oneT;
-              const bw = 2.0 * oneT * t;
-              const cw = t * t;
-              const daw = -2.0 * oneT;
-              const dbw = 2.0 - 4.0 * t;
-              const dcw = 2.0 * t;
-              const Nx = aw * cC0.x + bw * cC1.x + cw * cC2.x;
-              const Ny = aw * cC0.y + bw * cC1.y + cw * cC2.y;
-              const Wv = aw * cC0.w + bw * cC1.w + cw * cC2.w;
-              const dNx = daw * cC0.x + dbw * cC1.x + dcw * cC2.x;
-              const dNy = daw * cC0.y + dbw * cC1.y + dcw * cC2.y;
-              const dWv = daw * cC0.w + dbw * cC1.w + dcw * cC2.w;
-              const invW = 1.0 / max(Wv, 1.0e-9);
-              const Px = (Nx * invW + 1.0) * 0.5 * Viewport.x;
-              const Py = (Ny * invW + 1.0) * 0.5 * Viewport.y;
-              const dBx = (dNx * Wv - Nx * dWv) * invW * invW;
-              const dBy = (dNy * Wv - Ny * dWv) * invW * invW;
-              const dPx = dBx * 0.5 * Viewport.x;
-              const dPy = dBy * 0.5 * Viewport.y;
-              const rdx = Px - fragPxX;
-              const rdy = Py - fragPxY;
-              const Fv = rdx * dPx + rdy * dPy;
-              const Fp = dPx * dPx + dPy * dPy;
-              const dt = Fv / max(Fp, 1.0e-9);
-              t = clamp(t - dt, 0.0, 1.0);
-            }
-            const oneTf = 1.0 - t;
-            const awf = oneTf * oneTf;
-            const bwf = 2.0 * oneTf * t;
-            const cwf = t * t;
-            const Nxf = awf * cC0.x + bwf * cC1.x + cwf * cC2.x;
-            const Nyf = awf * cC0.y + bwf * cC1.y + cwf * cC2.y;
-            const Wvf = awf * cC0.w + bwf * cC1.w + cwf * cC2.w;
-            const invWf = 1.0 / max(Wvf, 1.0e-9);
-            const Pxf = (Nxf * invWf + 1.0) * 0.5 * Viewport.x;
-            const Pyf = (Nyf * invWf + 1.0) * 0.5 * Viewport.y;
-            const rdxf = Pxf - fragPxX;
-            const rdyf = Pyf - fragPxY;
-            bestPx2 = min(bestPx2, rdxf * rdxf + rdyf * rdyf);
-          }
-          const e0dx = e0px - fragPxX;
-          const e0dy = e0py - fragPxY;
-          const e2dx = e2px - fragPxX;
-          const e2dy = e2py - fragPxY;
-          bestPx2 = min(bestPx2, e0dx*e0dx + e0dy*e0dy);
-          bestPx2 = min(bestPx2, e2dx*e2dx + e2dy*e2dy);
-          minDistPx2 = min(minDistPx2, bestPx2);
-        }
+        ${candidateLoopBody("input.v_cands.x")}
+        ${candidateLoopBody("input.v_cands.y")}
+        ${candidateLoopBody("input.v_cands.z")}
+        ${candidateLoopBody("input.v_cands.w")}
         const minDistPx = sqrt(minDistPx2);
         alpha = clamp(1.0 - minDistPx / aaW, 0.0, 1.0);
         if (alpha <= 0.0) discard;
@@ -271,13 +298,13 @@ function buildSdfTextEffect(): Effect {
       inputs: [
         { name: "a_pos",         type: Tvec2f, semantic: "Pos",        decorations: [{ kind: "Location", value: 0 }] },
         { name: "a_klmKind",     type: Tvec4f, semantic: "KlmKind",    decorations: [{ kind: "Location", value: 1 }] },
-        { name: "a_triRange",    type: Tvec2f, semantic: "TriRange",   decorations: [{ kind: "Location", value: 2 }] },
+        { name: "a_cands",       type: Tvec4f, semantic: "Cands",      decorations: [{ kind: "Location", value: 2 }] },
         { name: "a_instOffset",  type: Tvec2f, semantic: "InstOffset", decorations: [{ kind: "Location", value: 3 }] },
       ],
       outputs: [
         { name: "gl_Position", type: Tvec4f, semantic: "Position", decorations: [{ kind: "Builtin", value: "position" }] },
         { name: "v_kind",      type: Tf32,   semantic: "Kind",     decorations: [{ kind: "Location", value: 0 }] },
-        { name: "v_triRange",  type: Tvec2f, semantic: "TriRange", decorations: [{ kind: "Location", value: 1 }] },
+        { name: "v_cands",     type: Tvec4f, semantic: "Cands",    decorations: [{ kind: "Location", value: 1 }] },
         { name: "v_inst",      type: Tvec2f, semantic: "Inst",     decorations: [{ kind: "Location", value: 3 }] },
         { name: "v_sx",        type: Tf32,   semantic: "Sx",       decorations: [{ kind: "Location", value: 4 }] },
         { name: "v_pos",       type: Tvec2f, semantic: "PosEm",    decorations: [{ kind: "Location", value: 5 }] },
@@ -323,6 +350,8 @@ function buildSdfTextEffect(): Effect {
   const parsed = parseShader({ source, entries, externalTypes });
   const merged: Module = { ...parsed, values: [camUBO, trisSSBO, ...parsed.values] };
   sdfTextEffectMemo = stage(merged);
+  // eslint-disable-next-line no-console
+  console.log(`[sdf-text] ${SDF_BUILD_STAMP} effect ready`);
   return sdfTextEffectMemo;
 }
 
@@ -403,8 +432,8 @@ export function buildSdfTextScene(args: SdfTextArgs): VNode {
     .add("a_klmKind", AVal.constant<BufferView>({
       buffer: vertBuf, offset: 8,  count: totalVerts, stride: STRIDE_BYTES, format: "float32x4",
     }))
-    .add("a_triRange", AVal.constant<BufferView>({
-      buffer: vertBuf, offset: 24, count: totalVerts, stride: STRIDE_BYTES, format: "float32x2",
+    .add("a_cands", AVal.constant<BufferView>({
+      buffer: vertBuf, offset: 24, count: totalVerts, stride: STRIDE_BYTES, format: "float32x4",
     }));
 
   const storageBuffers = HashMap.empty<string, aval<IBuffer>>()
@@ -465,14 +494,16 @@ export function buildSdfTextScene(args: SdfTextArgs): VNode {
     },
     CullMode: "none",
     BlendMode: alphaOverBlendState(),
+    // Body fill and band geometry now meet at the body's interior
+    // approximation polyline at exact em-space coords (band-builder
+    // feeds the inner polyline straight into libtess; only the
+    // Clipper-inflated outer side is quantized). Body+band share
+    // their boundary bit-for-bit, so depth writes can stay on with
+    // less-equal — no z-fight on the seam. The remaining overlap is
+    // the Loop-Blinn lens triangles for outward-bulging beziers
+    // (band overlaps lens; lens already paints α=1 so the band's
+    // SDF result there is harmlessly covered by the lens fragment).
     DepthTest: "less-equal",
-    // Body and band overlap on a thin strip along the contour; both
-    // would write the same depth value but the rasteriser doesn't
-    // guarantee the band fragment lands at the same projected z as
-    // the body (rounding differences after Mvp), so leaving write on
-    // produces z-fighting that hides the body. Read-only depth is
-    // fine here because the run is rendered front-to-back implicitly
-    // by glyph order.
     DepthMask: false,
     ...(alignTrafo !== undefined ? { Trafo: alignTrafo } : {}),
     children: leafChildren,

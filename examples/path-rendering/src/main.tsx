@@ -104,35 +104,51 @@ const flyToHit = (e: SceneEvent): void => {
 const orange = new V4f(0.9, 0.51, 0.255, 1);
 const cream  = new V4f(0.95, 0.88, 0.78, 1);
 
-const rows = (aa: "none" | "alpha-blending") => [
-  <Sg.Text
-    key="lato-min"
-    font={latoFont}
-    text="8 9 a"
-    align="center"
-    aa={aa}
-    aaWidthPx={aaWidthPx}
-    Color={cream}
-    Trafo={[Sg.translate(new V3d(0, 0.6, 0))]}
-  />,
-  <Sg.Text
-    key="mono-min"
-    font={robotoMonoFont}
-    text="+ T O"
-    align="center"
-    aa={aa}
-    aaWidthPx={aaWidthPx}
-    Color={orange}
-    Trafo={[Sg.translate(new V3d(0, -0.6, 0))]}
-  />,
+// Stress paragraph: long Lorem-Ipsum-style English to exercise full
+// glyph cache + per-fragment SDF cost across many glyphs at once.
+const STRESS_LINES = [
+  "The quick brown fox jumps over the lazy dog 0123456789",
+  "Sphinx of black quartz, judge my vow! Pack my box with",
+  "five dozen liquor jugs. How vexingly quick daft zebras",
+  "jump. Bright vixens jump; dozy fowl quack. Waltz, bad",
+  "nymph, for quick jigs vex. Glib jocks quiz nymph to vex",
+  "dwarf. Two driven jocks help fax my big quiz. The five",
+  "boxing wizards jump quickly. Jaded zombies acted quaintly",
+  "but kept driving their oxen forward. A wizards job is to",
+  "vex chumps quickly in fog. Watch Jeopardy! Alex Trebek's",
+  "fun TV quiz game. Mr. Jock, TV quiz PhD., bags few lynx.",
+  "Bawds jog, flick quartz, vex nymphs. Big fjords vex quick",
+  "waltz nymph, for jigs vex chubd. Foxy parsons quiz and jam",
 ];
+
+// Each line scales to 0.3 em-units tall and stacks at 1.25 × that
+// (typical typographic line height) for proper Lato spacing.
+const TEXT_SCALE = 0.3;
+const LINE_STEP  = TEXT_SCALE * 1.25;
+const FIRST_Y    = ((STRESS_LINES.length - 1) / 2) * LINE_STEP;
+const rows = (aa: "none" | "alpha-blending") =>
+  STRESS_LINES.map((line, i) => (
+    <Sg.Text
+      key={`stress-${i}`}
+      font={latoFont}
+      text={line}
+      align="center"
+      aa={aa}
+      aaWidthPx={aaWidthPx}
+      Color={i % 2 === 0 ? cream : orange}
+      Trafo={[
+        Sg.translate(new V3d(0, FIRST_Y - i * LINE_STEP, 0)),
+        Sg.scale(TEXT_SCALE),
+      ]}
+    />
+  ));
 
 const aaIsNone = aaIsBlend.map((b) => !b);
 
 mount(root, (
   <RenderControl
     clear={clear}
-    attach={{ devicePixelRatio: (typeof window !== "undefined" ? window.devicePixelRatio : 1) * 0.25 }}
+    attach={{ devicePixelRatio: typeof window !== "undefined" ? window.devicePixelRatio : 1 }}
     onReady={({ canvas, time }) => {
       ctl.attach(canvas, time);
       status.textContent = "ready — drag to rotate, wheel zoom, double-tap a glyph to fly to it";
