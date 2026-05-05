@@ -8,8 +8,9 @@
 // is still the right path for app-defined inline effects).
 
 import type { Effect } from "@aardworx/wombat.shader";
-import { stage } from "@aardworx/wombat.shader";
+import { stage, vertex } from "@aardworx/wombat.shader";
 import { parseShader, type EntryRequest } from "@aardworx/wombat.shader/frontend";
+import { V3f, V4f, type V2f, type M44f } from "@aardworx/wombat.base";
 import {
   Mat, Tf32, Vec, type Type, type ValueDef,
   type Module,
@@ -39,21 +40,6 @@ function cameraUniformBlock(): ValueDef {
   };
 }
 
-/**
- * Trafo-only UBO. Pre-derived MVP composites + NormalMatrix, all
- * supplied by `autoInjectedUniforms` so per-vertex math is one
- * matrix multiply per output.
- */
-function trafoUniformBlock(): ValueDef {
-  return {
-    kind: "Uniform",
-    uniforms: [
-      { name: "ModelTrafo",       type: TM44f, group: 0, slot: 0, buffer: "Camera" },
-      { name: "ViewProjTrafo",    type: TM44f, group: 0, slot: 0, buffer: "Camera" },
-      { name: "NormalMatrix",     type: TM44f, group: 0, slot: 0, buffer: "Camera" },
-    ],
-  };
-}
 
 // ---------------------------------------------------------------------------
 // basic — vertex-color surface
@@ -250,85 +236,43 @@ export function headlight(): Effect {
 // outputs become free in pipelines that don't read them.
 // ---------------------------------------------------------------------------
 
+declare const ModelTrafo:    M44f;
+declare const ViewProjTrafo: M44f;
+declare const NormalMatrix:  M44f;
+
 let trafoCache: Effect | undefined;
 
 export function trafo(): Effect {
   if (trafoCache !== undefined) return trafoCache;
-
-  const source = `
-    declare const ModelTrafo:    M44f;
-    declare const ViewProjTrafo: M44f;
-    declare const NormalMatrix:  M44f;
-
-    function vsMain(input: {
-      a_Positions: V3f;
-      a_Normals: V3f;
-      a_Tangents: V3f;
-      a_BiNormals: V3f;
-      a_Colors: V4f;
-      a_DiffuseColorCoordinates: V2f;
-    }): {
-      gl_Position: V4f;
-      v_WorldPositions: V4f;
-      v_Normals: V3f;
-      v_Tangents: V3f;
-      v_BiNormals: V3f;
-      v_Colors: V4f;
-      v_DiffuseColorCoordinates: V2f;
-    } {
-      const pos4 = new V4f(input.a_Positions.x, input.a_Positions.y, input.a_Positions.z, 1.0);
-      const wp = ModelTrafo.mul(pos4);
-      const clip = ViewProjTrafo.mul(wp);
-      // Direction transforms — w=0 so the translation column drops out.
-      const n4 = NormalMatrix.mul(new V4f(input.a_Normals.x, input.a_Normals.y, input.a_Normals.z, 0.0));
-      const t4 = ModelTrafo.mul(new V4f(input.a_Tangents.x, input.a_Tangents.y, input.a_Tangents.z, 0.0));
-      const b4 = ModelTrafo.mul(new V4f(input.a_BiNormals.x, input.a_BiNormals.y, input.a_BiNormals.z, 0.0));
-      return {
-        gl_Position:               clip,
-        v_WorldPositions:          wp,
-        v_Normals:                 new V3f(n4.x, n4.y, n4.z),
-        v_Tangents:                new V3f(t4.x, t4.y, t4.z),
-        v_BiNormals:               new V3f(b4.x, b4.y, b4.z),
-        v_Colors:                  input.a_Colors,
-        v_DiffuseColorCoordinates: input.a_DiffuseColorCoordinates,
-      };
-    }
-  `;
-
-  const Tvec2f: Type = Vec(Tf32, 2);
-
-  const entries: EntryRequest[] = [
-    {
-      name: "vsMain", stage: "vertex",
-      inputs: [
-        { name: "a_Positions",                type: Tvec3f, semantic: "Positions",                decorations: [{ kind: "Location", value: 0 }] },
-        { name: "a_Normals",                  type: Tvec3f, semantic: "Normals",                  decorations: [{ kind: "Location", value: 1 }] },
-        { name: "a_Tangents",                 type: Tvec3f, semantic: "DiffuseColorUTangents",    decorations: [{ kind: "Location", value: 2 }] },
-        { name: "a_BiNormals",                type: Tvec3f, semantic: "DiffuseColorVTangents",    decorations: [{ kind: "Location", value: 3 }] },
-        { name: "a_Colors",                   type: Tvec4f, semantic: "Colors",                   decorations: [{ kind: "Location", value: 4 }] },
-        { name: "a_DiffuseColorCoordinates",  type: Tvec2f, semantic: "DiffuseColorCoordinates",  decorations: [{ kind: "Location", value: 5 }] },
-      ],
-      outputs: [
-        { name: "gl_Position",               type: Tvec4f, semantic: "Positions",                decorations: [{ kind: "Builtin", value: "position" }] },
-        { name: "v_WorldPositions",          type: Tvec4f, semantic: "WorldPositions",           decorations: [{ kind: "Location", value: 0 }] },
-        { name: "v_Normals",                 type: Tvec3f, semantic: "Normals",                  decorations: [{ kind: "Location", value: 1 }] },
-        { name: "v_Tangents",                type: Tvec3f, semantic: "DiffuseColorUTangents",    decorations: [{ kind: "Location", value: 2 }] },
-        { name: "v_BiNormals",               type: Tvec3f, semantic: "DiffuseColorVTangents",    decorations: [{ kind: "Location", value: 3 }] },
-        { name: "v_Colors",                  type: Tvec4f, semantic: "Colors",                   decorations: [{ kind: "Location", value: 4 }] },
-        { name: "v_DiffuseColorCoordinates", type: Tvec2f, semantic: "DiffuseColorCoordinates",  decorations: [{ kind: "Location", value: 5 }] },
-      ],
-    },
-  ];
-
-  const externalTypes = new Map<string, Type>();
-  externalTypes.set("ModelTrafo",    TM44f);
-  externalTypes.set("ViewProjTrafo", TM44f);
-  externalTypes.set("NormalMatrix",  TM44f);
-
-  const camUBO = trafoUniformBlock();
-  const parsed = parseShader({ source, entries, externalTypes });
-  const merged: Module = { ...parsed, values: [camUBO, ...parsed.values] };
-  trafoCache = stage(merged);
+  trafoCache = vertex((v: {
+    Positions:               V3f;
+    Normals:                 V3f;
+    DiffuseColorUTangents:   V3f;
+    DiffuseColorVTangents:   V3f;
+    Colors:                  V4f;
+    DiffuseColorCoordinates: V2f;
+  }) => {
+    const wp = ModelTrafo.mul(new V4f(v.Positions.x, v.Positions.y, v.Positions.z, 1.0));
+    // Direction transforms — w=0 so the translation column drops out.
+    const n4 = NormalMatrix.mul(new V4f(v.Normals.x,               v.Normals.y,               v.Normals.z,               0.0));
+    const t4 = ModelTrafo.mul(  new V4f(v.DiffuseColorUTangents.x, v.DiffuseColorUTangents.y, v.DiffuseColorUTangents.z, 0.0));
+    const b4 = ModelTrafo.mul(  new V4f(v.DiffuseColorVTangents.x, v.DiffuseColorVTangents.y, v.DiffuseColorVTangents.z, 0.0));
+    return {
+      // `gl_Position` is the rasterizer's built-in clip-space output —
+      // separate concern from the vertex-attribute `Positions` semantic
+      // even though they're the same logical concept. The
+      // wombat.shader-vite plugin maps `gl_Position` to
+      // `@builtin(position)`; everything else gets an inter-stage
+      // varying location auto-assigned at WGSL emit time.
+      gl_Position:             ViewProjTrafo.mul(wp),
+      WorldPositions:          wp,
+      Normals:                 new V3f(n4.x, n4.y, n4.z),
+      DiffuseColorUTangents:   new V3f(t4.x, t4.y, t4.z),
+      DiffuseColorVTangents:   new V3f(b4.x, b4.y, b4.z),
+      Colors:                  v.Colors,
+      DiffuseColorCoordinates: v.DiffuseColorCoordinates,
+    };
+  });
   return trafoCache;
 }
 
