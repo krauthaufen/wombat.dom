@@ -346,6 +346,26 @@ export function simpleLighting(): Effect {
 }
 
 // ---------------------------------------------------------------------------
+// vertexColor — port of Aardvark.Rendering's
+// `DefaultSurfaces.vertexColor` (`Effects/Default/Impl/VertexColor.fs`).
+//
+// One-line fragment effect: emits the interpolated `Colors` varying
+// as the framebuffer's `outColor`. Composes with `trafo` —
+// `effect(trafo, vertexColor)` is the post-phase-3 replacement for
+// today's `DefaultSurfaces.basic`.
+// ---------------------------------------------------------------------------
+
+let vertexColorCache: Effect | undefined;
+
+export function vertexColor(): Effect {
+  if (vertexColorCache !== undefined) return vertexColorCache;
+  vertexColorCache = fragment((v: { Colors: V4f }) => ({
+    outColor: v.Colors,
+  }));
+  return vertexColorCache;
+}
+
+// ---------------------------------------------------------------------------
 // Combined namespace
 // ---------------------------------------------------------------------------
 
@@ -354,4 +374,5 @@ export const DefaultSurfaces = {
   headlight,
   trafo,
   simpleLighting,
+  vertexColor,
 } as const;
