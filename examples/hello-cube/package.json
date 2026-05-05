@@ -14,7 +14,7 @@
     "@aardworx/wombat.base": "^0.3.3",
     "@aardworx/wombat.dom": "^0.2.1",
     "@aardworx/wombat.rendering": "^0.5.3",
-    "@aardworx/wombat.shader": "^0.3.3",
+    "@aardworx/wombat.shader": "^0.3.4",
     "@aardworx/wombat.shader-vite": "^0.2.2",
     "boperators": "^0.3.2"
   },
