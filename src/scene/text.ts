@@ -480,13 +480,14 @@ export function SgText(
   const totalVerts = interleaved.length / GLYPH_FLOATS_PER_VERTEX;
   const positions = new Float32Array(totalVerts * 2);
   const klmKinds  = new Float32Array(totalVerts * 4);
+  const STRIDE = GLYPH_FLOATS_PER_VERTEX;
   for (let i = 0; i < totalVerts; i++) {
-    positions[i * 2 + 0] = interleaved[i * 6 + 0]!;
-    positions[i * 2 + 1] = interleaved[i * 6 + 1]!;
-    klmKinds[i * 4 + 0]  = interleaved[i * 6 + 2]!;
-    klmKinds[i * 4 + 1]  = interleaved[i * 6 + 3]!;
-    klmKinds[i * 4 + 2]  = interleaved[i * 6 + 4]!;
-    klmKinds[i * 4 + 3]  = interleaved[i * 6 + 5]!;
+    positions[i * 2 + 0] = interleaved[i * STRIDE + 0]!;
+    positions[i * 2 + 1] = interleaved[i * STRIDE + 1]!;
+    klmKinds[i * 4 + 0]  = interleaved[i * STRIDE + 2]!;
+    klmKinds[i * 4 + 1]  = interleaved[i * STRIDE + 3]!;
+    klmKinds[i * 4 + 2]  = interleaved[i * STRIDE + 4]!;
+    klmKinds[i * 4 + 3]  = interleaved[i * STRIDE + 5]!;
   }
   const posBuf = IBuffer.fromHost(positions);
   const klmBuf = IBuffer.fromHost(klmKinds);

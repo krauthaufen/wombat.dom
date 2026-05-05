@@ -106,14 +106,24 @@ const cream  = new V4f(0.95, 0.88, 0.78, 1);
 
 const rows = (aa: "none" | "alpha-blending") => [
   <Sg.Text
-    key="WY"
-    font={font}
-    text="WY"
+    key="lato-min"
+    font={latoFont}
+    text="8 9 a"
+    align="center"
+    aa={aa}
+    aaWidthPx={aaWidthPx}
+    Color={cream}
+    Trafo={[Sg.translate(new V3d(0, 0.6, 0))]}
+  />,
+  <Sg.Text
+    key="mono-min"
+    font={robotoMonoFont}
+    text="+ T O"
     align="center"
     aa={aa}
     aaWidthPx={aaWidthPx}
     Color={orange}
-    Trafo={[Sg.translate(new V3d(0, 0, 0))]}
+    Trafo={[Sg.translate(new V3d(0, -0.6, 0))]}
   />,
 ];
 

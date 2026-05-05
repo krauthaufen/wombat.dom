@@ -14,6 +14,7 @@
     "@aardworx/wombat.rendering": "^0.5.2",
     "@aardworx/wombat.shader": "^0.3.1",
     "@aardworx/wombat.shader-vite": "^0.2.1",
+    "clipper-lib": "^6.4.2",
     "libtess": "^1.2.2",
     "opentype.js": "^1.3.5",
     "poly2tri": "^1.5.0"
