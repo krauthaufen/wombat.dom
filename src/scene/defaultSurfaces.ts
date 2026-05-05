@@ -9,6 +9,7 @@
 
 import type { Effect } from "@aardworx/wombat.shader";
 import { stage, vertex, fragment, effect } from "@aardworx/wombat.shader";
+import { abs } from "@aardworx/wombat.shader/types";
 import { parseShader, type EntryRequest } from "@aardworx/wombat.shader/frontend";
 import { V3f, V4f, type V2f, type M44f } from "@aardworx/wombat.base";
 import {
@@ -240,16 +241,6 @@ declare const ModelTrafo:    M44f;
 declare const ViewProjTrafo: M44f;
 declare const NormalMatrix:  M44f;
 
-// Shader intrinsics — stub TypeScript types for the wombat.shader-vite
-// inline-marker plugin's recognised intrinsic names. The plugin's own
-// SHIPPED_INTRINSIC_NAMES table drives the actual IR translation;
-// these declarations exist purely so tsc / vite-plugin-dts type-check
-// the inline-marker bodies. (TODO: ship these from
-// @aardworx/wombat.shader as a single ambient .d.ts so consumers
-// don't have to re-declare per file.)
-declare function normalize(v: V3f): V3f;
-declare function abs(x: number): number;
-
 let trafoCache: Effect | undefined;
 
 export function trafo(): Effect {
@@ -320,17 +311,20 @@ export function simpleLighting(): Effect {
     Colors:         V4f;
     WorldPositions: V4f;
   }) => {
-    const n = normalize(v.Normals);
+    const n = v.Normals.normalize();
     // World-space surface → light direction. WorldPositions is V4f
     // (homogeneous); we drop the .w component. Pre-swizzles, that's
     // a fresh V3f.
     const wp = new V3f(v.WorldPositions.x, v.WorldPositions.y, v.WorldPositions.z);
-    const c = normalize(new V3f(
+    const c = new V3f(
       LightLocation.x - wp.x,
       LightLocation.y - wp.y,
       LightLocation.z - wp.z,
-    ));
+    ).normalize();
     const ambient = 0.2;
+    // `dot` returns plain number; use `abs()` from wombat.shader's
+    // shipped intrinsic table (recognised by name in the
+    // SHIPPED_INTRINSIC_NAMES set, mapped to WGSL `abs(...)`).
     const diffuse = abs(c.dot(n));
     const l = ambient + (1.0 - ambient) * diffuse;
     return {
