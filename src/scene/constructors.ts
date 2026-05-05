@@ -640,7 +640,7 @@ function SgQuad(props: SgQuadProps = {}): VNode {
 
 function leafFromHandle(handle: GeometryHandle, color: V4f | aval<V4f> | undefined): SgLeaf {
   const colorView = colorAval(color ?? new V4f(1, 1, 1, 1));
-  const vertexAttrs = handle.vertexAttrs.add("a_color", colorView);
+  const vertexAttrs = handle.vertexAttrs.add("Colors", colorView);
   return {
     kind: "Leaf",
     vertexAttributes: vertexAttrs,

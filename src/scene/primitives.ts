@@ -56,7 +56,7 @@ export function box(opts: BoxOptions = {}): SgLeaf {
   // below; explicit-size users get a fresh per-instance buffer.)
   let vertexAttrs = handle.vertexAttrs;
   if (s.x !== 1 || s.y !== 1 || s.z !== 1) {
-    const sharedPos = AVal.force(handle.vertexAttrs.tryFind("a_position")!);
+    const sharedPos = AVal.force(handle.vertexAttrs.tryFind("Positions")!);
     const baseHost = sharedPos.buffer;
     if (baseHost.kind !== "host") throw new Error("box: shared positions buffer is not host-backed");
     const baseFloat = new Float32Array(baseHost.data instanceof ArrayBuffer
@@ -75,11 +75,11 @@ export function box(opts: BoxOptions = {}): SgLeaf {
       buffer: IBuffer.fromHost(scaled.buffer),
       offset: 0, count: baseFloat.length / 3, stride: 12, format: "float32x3",
     };
-    vertexAttrs = handle.vertexAttrs.add("a_position", AVal.constant(posView));
+    vertexAttrs = handle.vertexAttrs.add("Positions", AVal.constant(posView));
   }
 
   const colorView = colorAval(opts.color ?? WHITE);
-  vertexAttrs = vertexAttrs.add("a_color", colorView);
+  vertexAttrs = vertexAttrs.add("Colors", colorView);
 
   return {
     kind: "Leaf",
@@ -122,13 +122,13 @@ export function quad(opts: QuadOptions = {}): SgLeaf {
   return {
     kind: "Leaf",
     vertexAttributes: HashMap.empty<string, aval<BufferView>>()
-      .add("a_position", AVal.constant({
+      .add("Positions", AVal.constant({
         buffer: IBuffer.fromHost(positions.buffer), offset: 0, count: 4, stride: 12, format: "float32x3",
       } satisfies BufferView))
-      .add("a_normal", AVal.constant({
+      .add("Normals", AVal.constant({
         buffer: IBuffer.fromHost(normals.buffer), offset: 0, count: 4, stride: 12, format: "float32x3",
       } satisfies BufferView))
-      .add("a_color", colorView),
+      .add("Colors", colorView),
     indices: AVal.constant({
       buffer: IBuffer.fromHost(indices.buffer), offset: 0, count: 6, stride: 4, format: "uint32",
     } satisfies BufferView),

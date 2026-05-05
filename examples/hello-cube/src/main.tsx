@@ -17,6 +17,7 @@ import {
   aspectFromViewport,
   perspective,
 } from "@aardworx/wombat.dom/scene";
+import { effect } from "@aardworx/wombat.shader";
 import { HashMap } from "@aardworx/wombat.adaptive";
 import { Box3d, Intersectable, V3d, V4f } from "@aardworx/wombat.base";
 import type { ClearValues } from "@aardworx/wombat.rendering/core";
@@ -80,7 +81,7 @@ mount(root, (
   >
     <Sg
       View={ctl.view}
-      Shader={DefaultSurfaces.basic()}
+      Shader={effect(DefaultSurfaces.trafo(), DefaultSurfaces.vertexColor())}
       Proj={perspective({
         fovInRadians: Math.PI / 3,
         aspect: aspectFromViewport(RenderControl.viewport),

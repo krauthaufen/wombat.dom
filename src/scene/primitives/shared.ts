@@ -58,8 +58,8 @@ function toHandle(g: GeometryData): GeometryHandle {
     firstInstance: 0,
   };
   const vertexAttrs = HashMap.empty<string, aval<BufferView>>()
-    .add("a_position", AVal.constant(positions))
-    .add("a_normal",   AVal.constant(normals));
+    .add("Positions", AVal.constant(positions))
+    .add("Normals",   AVal.constant(normals));
   return {
     vertexAttrs,
     indices: AVal.constant(indices),
