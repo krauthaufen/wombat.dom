@@ -20,4 +20,13 @@ export default defineConfig({
     jsx: "automatic",
     jsxImportSource: "@aardworx/wombat.dom",
   },
+  define: {
+    // poly2tri's UMD entry references node's `global`.
+    global: "globalThis",
+  },
+  optimizeDeps: {
+    esbuildOptions: {
+      define: { global: "globalThis" },
+    },
+  },
 });

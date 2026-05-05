@@ -33,4 +33,11 @@ export default defineConfig({
     // it initialises in the browser.
     global: "globalThis",
   },
+  optimizeDeps: {
+    // Same polyfill for the dep pre-bundling pass — `define` above
+    // doesn't apply to optimizeDeps' esbuild run.
+    esbuildOptions: {
+      define: { global: "globalThis" },
+    },
+  },
 });
