@@ -71,6 +71,21 @@ aaWidthBox.appendChild(aaWidthLbl);
 aaWidthBox.appendChild(slider);
 document.body.appendChild(aaWidthBox);
 
+// Debug-mode toggle: 0 = real SDF; 1 = per-tri candidate-count ramp
+// on band tris (red=0..blue=4). Body / lens always render in PathColor.
+const debugMode = cval(0.0);
+const dbgBtn = document.createElement("button");
+dbgBtn.style.cssText = "position:fixed; top:88px; right:12px; z-index:10; padding:6px 10px; font: 12px system-ui; background:#222; color:#ddd; border:1px solid #444; border-radius:6px; cursor:pointer;";
+const setDbgBtn = (): void => {
+  dbgBtn.textContent = `debug: ${debugMode.value > 0.5 ? "candidate-count" : "off"} (toggle)`;
+};
+setDbgBtn();
+dbgBtn.onclick = () => {
+  transact(() => { debugMode.value = debugMode.value > 0.5 ? 0.0 : 1.0; });
+  setDbgBtn();
+};
+document.body.appendChild(dbgBtn);
+
 window.addEventListener("error", (e) => {
   status.textContent = "error: " + (e.error?.message ?? e.message);
   status.style.color = "#ff7777";
@@ -106,32 +121,25 @@ const cream  = new V4f(0.95, 0.88, 0.78, 1);
 
 // Stress paragraph: long Lorem-Ipsum-style English to exercise full
 // glyph cache + per-fragment SDF cost across many glyphs at once.
-const STRESS_LINES = [
-  "The quick brown fox jumps over the lazy dog 0123456789",
-  "Sphinx of black quartz, judge my vow! Pack my box with",
-  "five dozen liquor jugs. How vexingly quick daft zebras",
-  "jump. Bright vixens jump; dozy fowl quack. Waltz, bad",
-  "nymph, for quick jigs vex. Glib jocks quiz nymph to vex",
-  "dwarf. Two driven jocks help fax my big quiz. The five",
-  "boxing wizards jump quickly. Jaded zombies acted quaintly",
-  "but kept driving their oxen forward. A wizards job is to",
-  "vex chumps quickly in fog. Watch Jeopardy! Alex Trebek's",
-  "fun TV quiz game. Mr. Jock, TV quiz PhD., bags few lynx.",
-  "Bawds jog, flick quartz, vex nymphs. Big fjords vex quick",
-  "waltz nymph, for jigs vex chubd. Foxy parsons quiz and jam",
+// Two stress rows: Lato (clean grotesque) + Great Vibes (cursive
+// calligraphy with deep loops, sharp tail/swash terminals, and
+// inward-bulging beziers — the worst case for the band builder).
+const STRESS_ROWS: { font: Font; text: string }[] = [
+  { font: latoFont, text: "8 9 a j + T O" },
+  { font,           text: "Q  J  f  g  a  z  &" },
 ];
 
 // Each line scales to 0.3 em-units tall and stacks at 1.25 × that
 // (typical typographic line height) for proper Lato spacing.
 const TEXT_SCALE = 0.3;
 const LINE_STEP  = TEXT_SCALE * 1.25;
-const FIRST_Y    = ((STRESS_LINES.length - 1) / 2) * LINE_STEP;
+const FIRST_Y    = ((STRESS_ROWS.length - 1) / 2) * LINE_STEP;
 const rows = (aa: "none" | "alpha-blending") =>
-  STRESS_LINES.map((line, i) => (
+  STRESS_ROWS.map(({ font: f, text }, i) => (
     <Sg.Text
       key={`stress-${i}`}
-      font={latoFont}
-      text={line}
+      font={f}
+      text={text}
       align="center"
       aa={aa}
       aaWidthPx={aaWidthPx}
@@ -148,7 +156,7 @@ const aaIsNone = aaIsBlend.map((b) => !b);
 mount(root, (
   <RenderControl
     clear={clear}
-    attach={{ devicePixelRatio: typeof window !== "undefined" ? window.devicePixelRatio : 1 }}
+    attach={{ devicePixelRatio: (typeof window !== "undefined" ? window.devicePixelRatio : 1) * 0.25 }}
     onReady={({ canvas, time }) => {
       ctl.attach(canvas, time);
       status.textContent = "ready — drag to rotate, wheel zoom, double-tap a glyph to fly to it";
@@ -165,7 +173,7 @@ mount(root, (
       OnDoubleTap={flyToHit}
       PixelSnapRadius={8}
     >
-      <Sg Active={aaIsBlend}>{rows("alpha-blending")}</Sg>
+      <Sg Active={aaIsBlend} Uniform={{ DebugMode: debugMode }}>{rows("alpha-blending")}</Sg>
       <Sg Active={aaIsNone}>{rows("none")}</Sg>
     </Sg>
   </RenderControl>

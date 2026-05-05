@@ -178,7 +178,7 @@ function candidateLoopBody(candFExpr: string): string {
 // you're seeing the current code in the browser. Print this from the
 // console (or read the message logged on first effect build) and
 // compare with what I tell you the current stamp is.
-const SDF_BUILD_STAMP = "v3-collinear-strip-tagmig-2026-05-06";
+const SDF_BUILD_STAMP = "v13-band-solid-red-2026-05-05";
 
 let sdfTextEffectMemo: Effect | undefined;
 function buildSdfTextEffect(): Effect {
@@ -191,17 +191,20 @@ function buildSdfTextEffect(): Effect {
     declare const PathColor:  V4f;
     declare const Viewport:   V2f;
     declare const AaWidthPx:  f32;
+    declare const DebugMode:  f32;  // 0 = real SDF; 1 = candidate-count viz
 
     function vsMain(input: {
       a_pos:        V2f;
-      a_klmKind:    V4f;     // klm.xyz, kind
-      a_cands:      V4f;     // band only: 4 candidate SSBO indices (-1 = unused)
+      a_klmKind:    V4f;     // klm.xyz, kind  (band reuses klm.x as triId)
+      a_cands:      V4f;     // band only: candidates c0..c3
+      a_cands2:     V2f;     // band only: candidates c4, c5
       a_instOffset: V2f;     // (cx, by)
     }): {
       gl_Position: V4f;
       v_kind:      f32;
       v_klm:       V3f;
       v_cands:     V4f;
+      v_cands2:    V2f;
       v_inst:      V2f;
       v_sx:        f32;
       v_pos:       V2f;
@@ -218,6 +221,7 @@ function buildSdfTextEffect(): Effect {
         v_kind:      input.a_klmKind.w,
         v_klm:       new V3f(input.a_klmKind.x, input.a_klmKind.y, input.a_klmKind.z),
         v_cands:     input.a_cands,
+        v_cands2:    input.a_cands2,
         v_inst:      input.a_instOffset,
         v_sx:        sx,
         v_pos:       input.a_pos,
@@ -228,6 +232,7 @@ function buildSdfTextEffect(): Effect {
       v_kind: f32;
       v_klm:  V3f;
       v_cands: V4f;
+      v_cands2: V2f;
       v_inst: V2f;
       v_sx: f32;
       v_pos:  V2f;
@@ -242,6 +247,7 @@ function buildSdfTextEffect(): Effect {
       //            curves, take min pixel distance, ramp 1 → 0
       //            across AaWidthPx).
       const sx = input.v_sx;
+      const useDebug = DebugMode > 0.5;
       var alpha: f32 = 1.0;
       if (input.v_kind > 0.5 && input.v_kind < 2.5) {
         const k = input.v_klm.x;
@@ -249,13 +255,11 @@ function buildSdfTextEffect(): Effect {
         const m = input.v_klm.z;
         const isArc = input.v_kind > 1.5;
         const f = isArc ? (k*k + l*l - 1.0) * m : (k*k - l) * m;
-        if (f > 0.0) discard;
+        if (f > 0.0 && !useDebug) discard;
       }
       if (input.v_kind > 3.5) {
         const Mvp = ProjTrafo.mul(ViewTrafo.mul(ModelTrafo));
         const aaW = max(AaWidthPx, 1.0e-3);
-
-        // Re-project this fragment's em-space pos to pixel coords.
         const fragText = new V4f(
           (input.v_inst.x + input.v_pos.x) * sx,
           input.v_inst.y + input.v_pos.y,
@@ -272,23 +276,46 @@ function buildSdfTextEffect(): Effect {
         const SEEDS_U: u32 = 5 as u32;
         const ITER_U:  u32 = 8 as u32;
 
-        // Iterate this band tri's per-tri candidate list (≤ 4 SSBO
-        // indices, padded with -1). Candidates derived CPU-side from
-        // which contour curves the band tri's inner-side vertices
-        // belong to (anchor vertex → 2 edges; leg-control vertex →
-        // 1 edge). Bounded per-fragment cost regardless of glyph
-        // complexity.
         var minDistPx2: f32 = 1.0e20;
         ${candidateLoopBody("input.v_cands.x")}
         ${candidateLoopBody("input.v_cands.y")}
         ${candidateLoopBody("input.v_cands.z")}
         ${candidateLoopBody("input.v_cands.w")}
+        ${candidateLoopBody("input.v_cands2.x")}
+        ${candidateLoopBody("input.v_cands2.y")}
         const minDistPx = sqrt(minDistPx2);
         alpha = clamp(1.0 - minDistPx / aaW, 0.0, 1.0);
-        if (alpha <= 0.0) discard;
+        if (alpha <= 0.0 && !useDebug) discard;
       }
+      // Real-mode color: PathColor with computed alpha.
       const aa_ = alpha * PathColor.w;
-      return { outColor: new V4f(PathColor.x * aa_, PathColor.y * aa_, PathColor.z * aa_, aa_) };
+      const realR = PathColor.x * aa_;
+      const realG = PathColor.y * aa_;
+      const realB = PathColor.z * aa_;
+      const realA = aa_;
+
+      // Debug-mode color: hash the band-tri id (parked in v_klm.x —
+      // band tris don't use klm at all, so we reuse the slot) into
+      // a deterministic colour. Same value on all 3 verts → flat
+      // across the tri. Acts as a primitive id since WebGPU/WGSL
+      // has no fragment-stage primitive_index.
+      const isBand = input.v_kind > 3.5;
+      const tid = input.v_klm.x + 1.0;
+      const bandR = 0.25 + 0.75 * fract(tid * 0.6180339887);
+      const bandG = 0.25 + 0.75 * fract(tid * 0.3819660113);
+      const bandB = 0.25 + 0.75 * fract(tid * 0.7548776662);
+
+      const debugR = isBand ? bandR : realR;
+      const debugG = isBand ? bandG : realG;
+      const debugB = isBand ? bandB : realB;
+      const debugA = isBand ? 1.0   : realA;
+
+      // Single Uniform-controlled mux. DebugMode > 0.5 → debug ramp.
+      const outR = useDebug ? debugR : realR;
+      const outG = useDebug ? debugG : realG;
+      const outB = useDebug ? debugB : realB;
+      const outA = useDebug ? debugA : realA;
+      return { outColor: new V4f(outR, outG, outB, outA) };
     }
   `;
 
@@ -299,7 +326,8 @@ function buildSdfTextEffect(): Effect {
         { name: "a_pos",         type: Tvec2f, semantic: "Pos",        decorations: [{ kind: "Location", value: 0 }] },
         { name: "a_klmKind",     type: Tvec4f, semantic: "KlmKind",    decorations: [{ kind: "Location", value: 1 }] },
         { name: "a_cands",       type: Tvec4f, semantic: "Cands",      decorations: [{ kind: "Location", value: 2 }] },
-        { name: "a_instOffset",  type: Tvec2f, semantic: "InstOffset", decorations: [{ kind: "Location", value: 3 }] },
+        { name: "a_cands2",      type: Tvec2f, semantic: "Cands2",     decorations: [{ kind: "Location", value: 4 }] },
+        { name: "a_instOffset",  type: Tvec2f, semantic: "InstOffset", decorations: [{ kind: "Location", value: 5 }] },
       ],
       outputs: [
         { name: "gl_Position", type: Tvec4f, semantic: "Position", decorations: [{ kind: "Builtin", value: "position" }] },
@@ -309,6 +337,7 @@ function buildSdfTextEffect(): Effect {
         { name: "v_sx",        type: Tf32,   semantic: "Sx",       decorations: [{ kind: "Location", value: 4 }] },
         { name: "v_pos",       type: Tvec2f, semantic: "PosEm",    decorations: [{ kind: "Location", value: 5 }] },
         { name: "v_klm",       type: Tvec3f, semantic: "Klm",      decorations: [{ kind: "Location", value: 6 }] },
+        { name: "v_cands2",    type: Tvec2f, semantic: "Cands2",   decorations: [{ kind: "Location", value: 7 }] },
       ],
     },
     {
@@ -326,6 +355,7 @@ function buildSdfTextEffect(): Effect {
   externalTypes.set("PathColor",  Tvec4f);
   externalTypes.set("Viewport",   Tvec2f);
   externalTypes.set("AaWidthPx",  Tf32);
+  externalTypes.set("DebugMode",  Tf32);
   externalTypes.set("tris",       Tvec4Array);
 
   const camUBO: ValueDef = {
@@ -337,6 +367,7 @@ function buildSdfTextEffect(): Effect {
       { name: "PathColor",  type: Tvec4f, group: 0, slot: 0, buffer: "Camera" },
       { name: "Viewport",   type: Tvec2f, group: 0, slot: 0, buffer: "Camera" },
       { name: "AaWidthPx",  type: Tf32,   group: 0, slot: 0, buffer: "Camera" },
+      { name: "DebugMode",  type: Tf32,   group: 0, slot: 0, buffer: "Camera" },
     ],
   };
   const trisSSBO: ValueDef = {
@@ -347,11 +378,31 @@ function buildSdfTextEffect(): Effect {
     access: "read",
   };
 
-  const parsed = parseShader({ source, entries, externalTypes });
+  let parsed;
+  try {
+    parsed = parseShader({ source, entries, externalTypes });
+  } catch (e: unknown) {
+    if (e && typeof e === "object" && "diagnostics" in e) {
+      // eslint-disable-next-line no-console
+      console.error("[sdf-text] parseShader diagnostics:",
+        JSON.stringify((e as { diagnostics: unknown }).diagnostics, null, 2));
+    }
+    throw e;
+  }
   const merged: Module = { ...parsed, values: [camUBO, trisSSBO, ...parsed.values] };
   sdfTextEffectMemo = stage(merged);
   // eslint-disable-next-line no-console
   console.log(`[sdf-text] ${SDF_BUILD_STAMP} effect ready`);
+  try {
+    const compiled = sdfTextEffectMemo.compile({ target: "wgsl" });
+    for (const s of compiled.stages) {
+      // eslint-disable-next-line no-console
+      console.log(`[sdf-text] ${s.entryName} (${s.stage}):\n${s.source}`);
+    }
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn(`[sdf-text] compile dump failed:`, e);
+  }
   return sdfTextEffectMemo;
 }
 
@@ -434,6 +485,9 @@ export function buildSdfTextScene(args: SdfTextArgs): VNode {
     }))
     .add("a_cands", AVal.constant<BufferView>({
       buffer: vertBuf, offset: 24, count: totalVerts, stride: STRIDE_BYTES, format: "float32x4",
+    }))
+    .add("a_cands2", AVal.constant<BufferView>({
+      buffer: vertBuf, offset: 40, count: totalVerts, stride: STRIDE_BYTES, format: "float32x2",
     }));
 
   const storageBuffers = HashMap.empty<string, aval<IBuffer>>()
@@ -504,7 +558,7 @@ export function buildSdfTextScene(args: SdfTextArgs): VNode {
     // (band overlaps lens; lens already paints α=1 so the band's
     // SDF result there is harmlessly covered by the lens fragment).
     DepthTest: "less-equal",
-    DepthMask: false,
+    DepthMask: true,
     ...(alignTrafo !== undefined ? { Trafo: alignTrafo } : {}),
     children: leafChildren,
   } as never);

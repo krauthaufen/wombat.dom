@@ -70,11 +70,11 @@
     "@aardworx/wombat.adaptive": "^0.2.1",
     "@aardworx/wombat.base": "^0.3.3",
     "@aardworx/wombat.shader": "^0.3.2",
-    "@aardworx/wombat.rendering": "^0.5.2"
+    "@aardworx/wombat.rendering": "^0.5.3"
   },
   "peerDependencies": {
     "@aardworx/wombat.base": "^0.3.2",
-    "@aardworx/wombat.rendering": "^0.5.2",
+    "@aardworx/wombat.rendering": "^0.5.3",
     "@aardworx/wombat.shader": "^0.3.1"
   },
   "peerDependenciesMeta": {
@@ -90,7 +90,7 @@
   },
   "devDependencies": {
     "@aardworx/wombat.base": "^0.3.3",
-    "@aardworx/wombat.rendering": "^0.5.2",
+    "@aardworx/wombat.rendering": "^0.5.3",
     "@aardworx/wombat.shader": "^0.3.2",
     "@types/node": "^20.11.0",
     "@webgpu/types": "^0.1.69",
