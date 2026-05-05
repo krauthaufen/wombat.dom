@@ -6,7 +6,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "prepare": "ts-patch install -s"
+    "prepare": "ts-patch install -s",
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "@aardworx/wombat.adaptive": "^0.2.1",
@@ -17,13 +18,14 @@
     "boperators": "^0.3.2"
   },
   "devDependencies": {
-    "@webgpu/types": "^0.1.69",
-    "playwright": "^1.59.1",
-    "typescript": "^5.4.0",
-    "vite": "^5.0.0",
-    "@boperators/plugin-vite": "^0.3.2",
     "@boperators/plugin-ts-language-server": "^0.3.2",
+    "@boperators/plugin-tsc": "^0.3.2",
+    "@boperators/plugin-vite": "^0.3.2",
+    "@webgpu/types": "^0.1.69",
+    "patch-package": "^8.0.1",
+    "playwright": "^1.59.1",
     "ts-patch": "^3.2.1",
-    "@boperators/plugin-tsc": "^0.3.2"
+    "typescript": "^5.4.0",
+    "vite": "^5.0.0"
   }
 }
