@@ -1,4 +1,5 @@
 import { defineConfig } from "vite";
+import { boperators } from "@boperators/plugin-vite";
 
 // `DefaultSurfaces.basic` ships pre-built via `parseShader + stage`
 // (raw shader source compiled at first use), so the wombat.shader-
@@ -7,6 +8,7 @@ import { defineConfig } from "vite";
 // in the app code.
 
 export default defineConfig({
+  plugins: [boperators()],
   server: {
     port: 5175,
     // Permit Tailscale-issued hostnames + LAN access. Vite's

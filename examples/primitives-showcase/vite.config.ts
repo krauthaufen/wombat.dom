@@ -1,10 +1,12 @@
 import { defineConfig } from "vite";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { boperators } from "@boperators/plugin-vite";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
+  plugins: [boperators()],
   server: {
     host: "0.0.0.0",
     port: 8443,
