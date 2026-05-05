@@ -8,7 +8,7 @@
 // is still the right path for app-defined inline effects).
 
 import type { Effect } from "@aardworx/wombat.shader";
-import { stage, vertex } from "@aardworx/wombat.shader";
+import { stage, vertex, fragment, effect } from "@aardworx/wombat.shader";
 import { parseShader, type EntryRequest } from "@aardworx/wombat.shader/frontend";
 import { V3f, V4f, type V2f, type M44f } from "@aardworx/wombat.base";
 import {
@@ -240,6 +240,16 @@ declare const ModelTrafo:    M44f;
 declare const ViewProjTrafo: M44f;
 declare const NormalMatrix:  M44f;
 
+// Shader intrinsics — stub TypeScript types for the wombat.shader-vite
+// inline-marker plugin's recognised intrinsic names. The plugin's own
+// SHIPPED_INTRINSIC_NAMES table drives the actual IR translation;
+// these declarations exist purely so tsc / vite-plugin-dts type-check
+// the inline-marker bodies. (TODO: ship these from
+// @aardworx/wombat.shader as a single ambient .d.ts so consumers
+// don't have to re-declare per file.)
+declare function normalize(v: V3f): V3f;
+declare function abs(x: number): number;
+
 let trafoCache: Effect | undefined;
 
 export function trafo(): Effect {
@@ -277,6 +287,65 @@ export function trafo(): Effect {
 }
 
 // ---------------------------------------------------------------------------
+// simpleLighting — port of Aardvark.Rendering's
+// `DefaultSurfaces.simpleLighting`
+// (`Effects/Default/Impl/SimpleLighting.fs`).
+//
+// Per-pixel Lambertian + ambient using a single point light. Reads
+// `Normals`, `Colors`, `WorldPositions` from the inter-stage carrier
+// (so it composes naturally after `trafo`); reads `LightLocation`
+// from the auto-injected uniform set (default = (10,10,10), override
+// via `<Sg Uniform={{LightLocation: cval(...)}}>`).
+//
+// Output is `outColor` — the framebuffer's `Colors` attachment.
+// Once phase-3 8a (DefaultSemantic registry) lands the output field
+// can be renamed `Colors` and the `outColor` alias dropped.
+//
+// LIMITATION: pre-phase-3 we don't have the helper-extraction +
+// universal pass-through pipeline yet, so this effect ships as a
+// stand-alone fragment that still requires a vertex side feeding
+// it. Compose with `trafo` via `effect(trafo, simpleLighting)` —
+// the wombat.shader `effect(...)` combinator already flattens
+// stage lists in argument order.
+// ---------------------------------------------------------------------------
+
+declare const LightLocation: V3f;
+
+let simpleLightingCache: Effect | undefined;
+
+export function simpleLighting(): Effect {
+  if (simpleLightingCache !== undefined) return simpleLightingCache;
+  simpleLightingCache = fragment((v: {
+    Normals:        V3f;
+    Colors:         V4f;
+    WorldPositions: V4f;
+  }) => {
+    const n = normalize(v.Normals);
+    // World-space surface → light direction. WorldPositions is V4f
+    // (homogeneous); we drop the .w component. Pre-swizzles, that's
+    // a fresh V3f.
+    const wp = new V3f(v.WorldPositions.x, v.WorldPositions.y, v.WorldPositions.z);
+    const c = normalize(new V3f(
+      LightLocation.x - wp.x,
+      LightLocation.y - wp.y,
+      LightLocation.z - wp.z,
+    ));
+    const ambient = 0.2;
+    const diffuse = abs(c.dot(n));
+    const l = ambient + (1.0 - ambient) * diffuse;
+    return {
+      outColor: new V4f(
+        v.Colors.x * l,
+        v.Colors.y * l,
+        v.Colors.z * l,
+        v.Colors.w,
+      ),
+    };
+  });
+  return simpleLightingCache;
+}
+
+// ---------------------------------------------------------------------------
 // Combined namespace
 // ---------------------------------------------------------------------------
 
@@ -284,4 +353,5 @@ export const DefaultSurfaces = {
   basic,
   headlight,
   trafo,
+  simpleLighting,
 } as const;

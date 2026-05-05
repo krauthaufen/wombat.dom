@@ -621,6 +621,12 @@ function autoInjectedUniforms(state: TraversalState): HashMap<string, aval<unkno
     return new V3f(o.x, o.y, o.z);
   });
 
+  // LightLocation: defaults to CameraLocation (a "headlight"
+  // following the eye), matching Aardvark's behaviour when no
+  // explicit `LightLocation` is bound. Users override via
+  // `<Sg Uniform={{ LightLocation: cval(...) }}>...</Sg>`.
+  const lightLocation = cameraLocation;
+
   let map = HashMap.empty<string, aval<unknown>>();
   // Roots
   map = map.add("ModelTrafo",        model);
@@ -640,6 +646,7 @@ function autoInjectedUniforms(state: TraversalState): HashMap<string, aval<unkno
   // Derived
   map = map.add("NormalMatrix",      normalMatrix);
   map = map.add("CameraLocation",    cameraLocation);
+  map = map.add("LightLocation",     lightLocation);
   // Pipeline state
   map = map.add("ViewportSize",      state.viewport);
   return map;
