@@ -164,21 +164,12 @@ function buildSdfTextEffect(): Effect {
         const ONE_U:  u32 = 1 as u32;
         const TWO_U:  u32 = 2 as u32;
         const FOUR_U: u32 = 4 as u32;
-        // Newton config matches the original bbox-quad shader that
-        // "just worked": 5 seeds at t = 0, 0.25, 0.5, 0.75, 1; 8
-        // iterations of Gauss-Newton on each candidate's rational
-        // pixel-space bezier. The denser seed grid and longer iter
-        // budget reliably find the global minimum even for high-
-        // curvature beziers; explicit endpoint checks below guarantee
-        // we never lose the t=0 / t=1 distance to a Newton seed that
-        // converges to a local maximum or stalls at the clamp.
         const SEEDS_U: u32 = 5 as u32;
         const ITER_U:  u32 = 8 as u32;
 
-        // Iterate every curve in this glyph's SSBO range. With the
-        // band geometry covering only the halo strip, far-away
-        // background pixels never reach this loop, so the per-glyph
-        // Newton cost is paid only on visibly-covered fragments.
+        // Iterate this glyph's full SSBO range. Band geometry only
+        // covers the ±halo strip, so per-glyph cost is paid only on
+        // visibly-covered fragments.
         const triFirst = (input.v_triRange.x + 0.5) as u32;
         const triCount = (input.v_triRange.y + 0.5) as u32;
         var minDistPx2: f32 = 1.0e20;
@@ -197,8 +188,6 @@ function buildSdfTextEffect(): Effect {
           const e2px = (cC2.x / cC2.w + 1.0) * 0.5 * Viewport.x;
           const e2py = (cC2.y / cC2.w + 1.0) * 0.5 * Viewport.y;
           var bestPx2: f32 = 1.0e20;
-          // Line sentinel: glyph-cache emits line edges as quadratic
-          // entries with p1 = p0. Closed-form point-segment distance.
           const isLine = (a.x == b.x) && (a.y == b.y);
           if (isLine) {
             const sxL = e2px - e0px;
@@ -259,12 +248,6 @@ function buildSdfTextEffect(): Effect {
             const rdyf = Pyf - fragPxY;
             bestPx2 = min(bestPx2, rdxf * rdxf + rdyf * rdyf);
           }
-          // Always consider the true endpoints t=0 (= P0) and t=1
-          // (= P2) — at segment-to-segment junctions the closest
-          // contour point IS the shared endpoint, and Newton seeds
-          // can stall at the [0, 1] clamp giving a slightly-off
-          // distance. e0px/e0py/e2px/e2py were hoisted above the
-          // line-sentinel branch.
           const e0dx = e0px - fragPxX;
           const e0dy = e0py - fragPxY;
           const e2dx = e2px - fragPxX;
