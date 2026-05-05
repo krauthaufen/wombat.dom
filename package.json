@@ -67,9 +67,10 @@
     "prepublishOnly": "npm run typecheck && npm test && npm run build"
   },
   "dependencies": {
-    "@aardworx/wombat.adaptive": "^0.2.0",
+    "@aardworx/wombat.adaptive": "^0.2.1",
     "@aardworx/wombat.base": "^0.3.3",
-    "@aardworx/wombat.shader": "^0.3.2"
+    "@aardworx/wombat.shader": "^0.3.2",
+    "@aardworx/wombat.rendering": "^0.5.2"
   },
   "peerDependencies": {
     "@aardworx/wombat.base": "^0.3.2",
@@ -88,13 +89,14 @@
     }
   },
   "devDependencies": {
-    "@aardworx/wombat.base": "^0.3.2",
+    "@aardworx/wombat.base": "^0.3.3",
     "@aardworx/wombat.rendering": "^0.5.2",
-    "@aardworx/wombat.shader": "^0.3.1",
+    "@aardworx/wombat.shader": "^0.3.2",
     "@types/node": "^20.11.0",
     "@webgpu/types": "^0.1.69",
     "happy-dom": "^14.0.0",
     "typescript": "^5.4.0",
-    "vitest": "^1.4.0"
+    "vitest": "^1.4.0",
+    "@aardworx/wombat.adaptive": "^0.2.1"
   }
 }
