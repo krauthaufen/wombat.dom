@@ -23,14 +23,15 @@
 // runs in a `ref` callback on canvas mount and is asynchronous —
 // the first frame appears one rAF after the device is ready.
 
-import { AVal, type aval } from "@aardworx/wombat.adaptive";
-import { Trafo3d } from "@aardworx/wombat.base";
+import { AVal, HashMap, type aval } from "@aardworx/wombat.adaptive";
+import { Trafo3d, V4f } from "@aardworx/wombat.base";
 import {
   Runtime, attachCanvas, runFrame,
   type AttachCanvasOptions,
 } from "@aardworx/wombat.rendering";
 import type {
   ClearValues,
+  ClearColor,
   Effect,
 } from "@aardworx/wombat.rendering/core";
 
@@ -41,7 +42,7 @@ import { compileScene } from "./compile.js";
 import type { SgNode } from "./sg.js";
 import { TraversalState } from "./traversalState.js";
 import { PickRegistry } from "./picking/registry.js";
-import { createPickFramebuffer } from "./picking/pickFramebuffer.js";
+import { createPickFramebuffer, PICK_NAME } from "./picking/pickFramebuffer.js";
 import { PickDispatcher, type TapThresholds } from "./picking/dispatcher.js";
 import { readPickRegion, type PickRegion } from "./picking/readback.js";
 import { setAmbient, clearAmbient } from "./ambient.js";
@@ -321,11 +322,24 @@ async function initialise(
   const outputFb = pickFb.pickFramebuffer;
   scope.onDispose(() => pickFb.dispose());
 
+  // Always inject a per-frame clear for the pickId attachment.
+  // Without this, fragments NOT covered by any drawn geometry
+  // retain last-frame pickIds (loadOp defaults to "load") and the
+  // hit-test readback decodes stale data — wrong NDC depth and a
+  // bogus registered ID. Picking can't rely on the user's clear
+  // config to know about its own attachments. (See
+  // ~/claude/wombat-todo.md: phase 4 / item 11.)
+  const userClear = props.clear;
+  const userColors = userClear?.colors ?? HashMap.empty<string, ClearColor>();
+  const clearWithPick: ClearValues = {
+    ...(userClear ?? {}),
+    colors: userColors.add(PICK_NAME, new V4f(0, 0, 0, 0)),
+  };
   // Lower the scene; compile into the runtime; drive the loop.
   const commands = compileScene(sceneTree, outputFb, {
     initialState: initial,
     ...(props.defaultEffect !== undefined ? { defaultEffect: props.defaultEffect } : {}),
-    ...(props.clear !== undefined ? { clear: props.clear } : {}),
+    clear: clearWithPick,
     picking: { registry },
   });
   const task = runtime.compile(commands);

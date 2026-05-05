@@ -64,7 +64,11 @@ export interface PickFramebuffer {
 }
 
 const PICK_FORMAT: GPUTextureFormat = "rgba32float";
-const PICK_NAME = "pickId";
+/** Name of the additional colour attachment carrying the per-pixel
+ *  pick info (pickId / encoded normal / NDC depth / part-index).
+ *  Exported so `RenderControl` can inject a per-frame clear for it.
+ *  See ~/claude/wombat-todo.md phase 4 / item 11. */
+export const PICK_NAME = "pickId";
 
 export function createPickFramebuffer(
   device: GPUDevice,
