@@ -25,7 +25,7 @@
     "webgpu"
   ],
   "type": "module",
-  "sideEffects": false,
+  "sideEffects": ["./dist/scene/index.js", "./src/scene/index.ts"],
   "engines": {
     "node": ">=18"
   },

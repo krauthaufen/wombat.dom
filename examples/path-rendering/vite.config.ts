@@ -27,6 +27,10 @@ export default defineConfig({
   esbuild: {
     jsx: "automatic",
     jsxImportSource: "@aardworx/wombat.dom",
+    target: "es2022",
+  },
+  build: {
+    target: "es2022",
   },
   define: {
     // poly2tri's UMD entry references node's `global`. Polyfill so

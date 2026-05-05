@@ -156,7 +156,7 @@ const aaIsNone = aaIsBlend.map((b) => !b);
 mount(root, (
   <RenderControl
     clear={clear}
-    attach={{ devicePixelRatio: (typeof window !== "undefined" ? window.devicePixelRatio : 1) * 0.25 }}
+    attach={{ devicePixelRatio: typeof window !== "undefined" ? window.devicePixelRatio : 1 }}
     onReady={({ canvas, time }) => {
       ctl.attach(canvas, time);
       status.textContent = "ready — drag to rotate, wheel zoom, double-tap a glyph to fly to it";

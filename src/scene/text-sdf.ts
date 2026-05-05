@@ -249,15 +249,22 @@ function buildSdfTextEffect(): Effect {
       const sx = input.v_sx;
       const useDebug = DebugMode > 0.5;
       var alpha: f32 = 1.0;
+      // Lens / band classification. A "lens-outside" fragment is one
+      // inside the bezier/arc lens triangle but on the wrong side of
+      // the actual curve — same job as a band fragment, just with 3
+      // candidate curves (this curve + prev + next adjacent) instead
+      // of up to 6.
+      var lensOutside: f32 = 0.0;
       if (input.v_kind > 0.5 && input.v_kind < 2.5) {
         const k = input.v_klm.x;
         const l = input.v_klm.y;
         const m = input.v_klm.z;
         const isArc = input.v_kind > 1.5;
         const f = isArc ? (k*k + l*l - 1.0) * m : (k*k - l) * m;
-        if (f > 0.0 && !useDebug) discard;
+        if (f > 0.0) lensOutside = 1.0;
       }
-      if (input.v_kind > 3.5) {
+      const isBand = input.v_kind > 3.5;
+      if (isBand || lensOutside > 0.5) {
         const Mvp = ProjTrafo.mul(ViewTrafo.mul(ModelTrafo));
         const aaW = max(AaWidthPx, 1.0e-3);
         const fragText = new V4f(
@@ -276,6 +283,10 @@ function buildSdfTextEffect(): Effect {
         const SEEDS_U: u32 = 5 as u32;
         const ITER_U:  u32 = 8 as u32;
 
+        // Both lens-outside and band run cands [0..2] (lens fixed
+        // 3-tuple = self/prev/next; band's first 3 of pass-1+2 list).
+        // Band additionally runs [3..5]; lens has -1 in those slots
+        // and the candidate-loop body is a no-op for negative ids.
         var minDistPx2: f32 = 1.0e20;
         ${candidateLoopBody("input.v_cands.x")}
         ${candidateLoopBody("input.v_cands.y")}
@@ -299,7 +310,6 @@ function buildSdfTextEffect(): Effect {
       // a deterministic colour. Same value on all 3 verts → flat
       // across the tri. Acts as a primitive id since WebGPU/WGSL
       // has no fragment-stage primitive_index.
-      const isBand = input.v_kind > 3.5;
       const tid = input.v_klm.x + 1.0;
       const bandR = 0.25 + 0.75 * fract(tid * 0.6180339887);
       const bandG = 0.25 + 0.75 * fract(tid * 0.3819660113);
