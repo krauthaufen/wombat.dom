@@ -39,6 +39,22 @@ function cameraUniformBlock(): ValueDef {
   };
 }
 
+/**
+ * Trafo-only UBO. Pre-derived MVP composites + NormalMatrix, all
+ * supplied by `autoInjectedUniforms` so per-vertex math is one
+ * matrix multiply per output.
+ */
+function trafoUniformBlock(): ValueDef {
+  return {
+    kind: "Uniform",
+    uniforms: [
+      { name: "ModelTrafo",       type: TM44f, group: 0, slot: 0, buffer: "Camera" },
+      { name: "ViewProjTrafo",    type: TM44f, group: 0, slot: 0, buffer: "Camera" },
+      { name: "NormalMatrix",     type: TM44f, group: 0, slot: 0, buffer: "Camera" },
+    ],
+  };
+}
+
 // ---------------------------------------------------------------------------
 // basic — vertex-color surface
 // ---------------------------------------------------------------------------
@@ -211,10 +227,117 @@ export function headlight(): Effect {
 }
 
 // ---------------------------------------------------------------------------
+// trafo — port of Aardvark.Rendering's `DefaultSurfaces.trafo`
+// (`Effects/Default/Impl/Trafo.fs`). Vertex-only effect that
+// transforms the standard Aardvark vertex bundle:
+//
+//     pos → ViewProjTrafo · ModelTrafo · pos             (clip)
+//     wp  → ModelTrafo · pos                             (world position)
+//     n   → NormalMatrix · n                             (transformed normal)
+//     b/t → ModelTrafo · (b/t, 0)                        (transformed tangents)
+//     c   → c                                            (pass-through)
+//     tc  → tc                                           (pass-through)
+//
+// Vertex inputs use the canonical `DefaultSemantic` names. Outputs
+// use the same names with `v_` prefix as varyings. Composes with
+// any fragment effect that consumes those varyings (vertex-color
+// pass-through, lighting, diffuse-texture, ...).
+//
+// LIMITATION (until phase 3 helper-extraction lands): all six
+// outputs are emitted unconditionally, so a pipeline composed only
+// with a vertex-colour FS still pays the normal/tangent matmuls.
+// Once the auto-link + global-DCE pass arrives, the speculative
+// outputs become free in pipelines that don't read them.
+// ---------------------------------------------------------------------------
+
+let trafoCache: Effect | undefined;
+
+export function trafo(): Effect {
+  if (trafoCache !== undefined) return trafoCache;
+
+  const source = `
+    declare const ModelTrafo:    M44f;
+    declare const ViewProjTrafo: M44f;
+    declare const NormalMatrix:  M44f;
+
+    function vsMain(input: {
+      a_Positions: V3f;
+      a_Normals: V3f;
+      a_Tangents: V3f;
+      a_BiNormals: V3f;
+      a_Colors: V4f;
+      a_DiffuseColorCoordinates: V2f;
+    }): {
+      gl_Position: V4f;
+      v_WorldPositions: V4f;
+      v_Normals: V3f;
+      v_Tangents: V3f;
+      v_BiNormals: V3f;
+      v_Colors: V4f;
+      v_DiffuseColorCoordinates: V2f;
+    } {
+      const pos4 = new V4f(input.a_Positions.x, input.a_Positions.y, input.a_Positions.z, 1.0);
+      const wp = ModelTrafo.mul(pos4);
+      const clip = ViewProjTrafo.mul(wp);
+      // Direction transforms — w=0 so the translation column drops out.
+      const n4 = NormalMatrix.mul(new V4f(input.a_Normals.x, input.a_Normals.y, input.a_Normals.z, 0.0));
+      const t4 = ModelTrafo.mul(new V4f(input.a_Tangents.x, input.a_Tangents.y, input.a_Tangents.z, 0.0));
+      const b4 = ModelTrafo.mul(new V4f(input.a_BiNormals.x, input.a_BiNormals.y, input.a_BiNormals.z, 0.0));
+      return {
+        gl_Position:               clip,
+        v_WorldPositions:          wp,
+        v_Normals:                 new V3f(n4.x, n4.y, n4.z),
+        v_Tangents:                new V3f(t4.x, t4.y, t4.z),
+        v_BiNormals:               new V3f(b4.x, b4.y, b4.z),
+        v_Colors:                  input.a_Colors,
+        v_DiffuseColorCoordinates: input.a_DiffuseColorCoordinates,
+      };
+    }
+  `;
+
+  const Tvec2f: Type = Vec(Tf32, 2);
+
+  const entries: EntryRequest[] = [
+    {
+      name: "vsMain", stage: "vertex",
+      inputs: [
+        { name: "a_Positions",                type: Tvec3f, semantic: "Positions",                decorations: [{ kind: "Location", value: 0 }] },
+        { name: "a_Normals",                  type: Tvec3f, semantic: "Normals",                  decorations: [{ kind: "Location", value: 1 }] },
+        { name: "a_Tangents",                 type: Tvec3f, semantic: "DiffuseColorUTangents",    decorations: [{ kind: "Location", value: 2 }] },
+        { name: "a_BiNormals",                type: Tvec3f, semantic: "DiffuseColorVTangents",    decorations: [{ kind: "Location", value: 3 }] },
+        { name: "a_Colors",                   type: Tvec4f, semantic: "Colors",                   decorations: [{ kind: "Location", value: 4 }] },
+        { name: "a_DiffuseColorCoordinates",  type: Tvec2f, semantic: "DiffuseColorCoordinates",  decorations: [{ kind: "Location", value: 5 }] },
+      ],
+      outputs: [
+        { name: "gl_Position",               type: Tvec4f, semantic: "Positions",                decorations: [{ kind: "Builtin", value: "position" }] },
+        { name: "v_WorldPositions",          type: Tvec4f, semantic: "WorldPositions",           decorations: [{ kind: "Location", value: 0 }] },
+        { name: "v_Normals",                 type: Tvec3f, semantic: "Normals",                  decorations: [{ kind: "Location", value: 1 }] },
+        { name: "v_Tangents",                type: Tvec3f, semantic: "DiffuseColorUTangents",    decorations: [{ kind: "Location", value: 2 }] },
+        { name: "v_BiNormals",               type: Tvec3f, semantic: "DiffuseColorVTangents",    decorations: [{ kind: "Location", value: 3 }] },
+        { name: "v_Colors",                  type: Tvec4f, semantic: "Colors",                   decorations: [{ kind: "Location", value: 4 }] },
+        { name: "v_DiffuseColorCoordinates", type: Tvec2f, semantic: "DiffuseColorCoordinates",  decorations: [{ kind: "Location", value: 5 }] },
+      ],
+    },
+  ];
+
+  const externalTypes = new Map<string, Type>();
+  externalTypes.set("ModelTrafo",    TM44f);
+  externalTypes.set("ViewProjTrafo", TM44f);
+  externalTypes.set("NormalMatrix",  TM44f);
+
+  const camUBO = trafoUniformBlock();
+  const parsed = parseShader({ source, entries, externalTypes });
+  const merged: Module = { ...parsed, values: [camUBO, ...parsed.values] };
+  trafoCache = stage(merged);
+  return trafoCache;
+}
+
+// ---------------------------------------------------------------------------
 // Combined namespace
 // ---------------------------------------------------------------------------
 
 export const DefaultSurfaces = {
   basic,
   headlight,
+  trafo,
 } as const;

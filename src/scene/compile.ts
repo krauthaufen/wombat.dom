@@ -38,7 +38,7 @@ import {
   HashMap,
   type alist, type aset, type aval,
 } from "@aardworx/wombat.adaptive";
-import { M44f, Trafo3d } from "@aardworx/wombat.base";
+import { M44f, Trafo3d, V3d, V3f } from "@aardworx/wombat.base";
 import { RenderTree } from "@aardworx/wombat.rendering/core";
 import type {
   BlendState, BufferView,
@@ -582,21 +582,66 @@ function adaptForGpu(v: aval<unknown>): aval<unknown> {
 }
 
 function autoInjectedUniforms(state: TraversalState): HashMap<string, aval<unknown>> {
-  // ViewProjTrafo: world → view → clip. In Trafo3d-land that's
-  // view.mul(proj) (apply view, then proj). Forward of the result
-  // is proj.forward · view.forward — i.e. proj after view, which
-  // is what column-vector math expects.
-  const viewProj = AVal.zip(state.view, state.proj).map((v, p) => v.mul(p));
+  // Mirrors Aardvark.Rendering's `tryGetDerivedUniform` table — see
+  // `src/Aardvark.Rendering/Uniforms/Uniforms.fs:97-110`. Ports
+  // every standard transform + inverse + composite + the normal
+  // matrix + camera location. Shaders that don't bind a given name
+  // pay nothing at compile time (DCE drops the uniform read).
+  //
+  // Composition convention follows Aardvark's `Trafo3d` `<*>`:
+  //   `a <*> b` means "apply a first, then b" — the resulting
+  //   forward is `b.forward * a.forward` (column-vector math).
+  //   In wombat.base, `Trafo3d.mul(other)` matches this convention.
+  const model = state.model;
+  const view  = state.view;
+  const proj  = state.proj;
+  const compose = (a: aval<Trafo3d>, b: aval<Trafo3d>): aval<Trafo3d> =>
+    AVal.zip(a, b).map((aT, bT) => aT.mul(bT));
+  const inv = (t: aval<Trafo3d>): aval<Trafo3d> => t.map(x => x.inverse());
+
+  const modelView    = compose(model, view);
+  const viewProj     = compose(view, proj);
+  const modelViewProj = compose(model, viewProj);
+
+  // NormalMatrix: ModelTrafo.Backward.Transposed (inverse-transpose,
+  // for non-uniform-scale-correct normal transformation). Aardvark
+  // exposes the upper-left M33; we expose the full M44 here. Shaders
+  // pad V3f normals to V4f(n.xyz, 0) before multiplying so the 4th
+  // column (translation) is ignored — mathematically equivalent.
+  const normalMatrix = model.map(t => {
+    const invT = t.backward.transpose();
+    return Trafo3d.fromMatrices(invT, invT.transpose());
+  });
+
+  // CameraLocation: position of the camera in world space =
+  // ViewTrafoInv applied to the origin. Same as the translation
+  // column of view.backward.
+  const cameraLocation = view.map(v => {
+    const o = v.backward.transformPos(V3d.zero);
+    return new V3f(o.x, o.y, o.z);
+  });
+
   let map = HashMap.empty<string, aval<unknown>>();
-  map = map.add("ModelTrafo", state.model);
-  map = map.add("ViewTrafo", state.view);
-  map = map.add("ProjTrafo", state.proj);
-  map = map.add("ViewProjTrafo", viewProj);
-  // Common derived helpers — cheap to expose; shaders that don't
-  // bind them pay nothing at compile time.
-  map = map.add("ModelTrafoInv", state.model.map(t => t.inverse()));
-  map = map.add("ViewTrafoInv", state.view.map(t => t.inverse()));
-  map = map.add("ViewportSize", state.viewport);
+  // Roots
+  map = map.add("ModelTrafo",        model);
+  map = map.add("ViewTrafo",         view);
+  map = map.add("ProjTrafo",         proj);
+  // Composites
+  map = map.add("ModelViewTrafo",    modelView);
+  map = map.add("ViewProjTrafo",     viewProj);
+  map = map.add("ModelViewProjTrafo", modelViewProj);
+  // Inverses
+  map = map.add("ModelTrafoInv",     inv(model));
+  map = map.add("ViewTrafoInv",      inv(view));
+  map = map.add("ProjTrafoInv",      inv(proj));
+  map = map.add("ModelViewTrafoInv", inv(modelView));
+  map = map.add("ViewProjTrafoInv",  inv(viewProj));
+  map = map.add("ModelViewProjTrafoInv", inv(modelViewProj));
+  // Derived
+  map = map.add("NormalMatrix",      normalMatrix);
+  map = map.add("CameraLocation",    cameraLocation);
+  // Pipeline state
+  map = map.add("ViewportSize",      state.viewport);
   return map;
 }
 
