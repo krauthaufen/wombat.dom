@@ -10,7 +10,11 @@ import type { Effect } from "@aardworx/wombat.shader";
 import { effect, fragment, vertex } from "@aardworx/wombat.shader";
 import { uniform } from "@aardworx/wombat.shader/uniforms";
 import { abs, clamp, floor } from "@aardworx/wombat.shader/types";
+import type { f32, i32, u32, FragmentBuiltinIn } from "@aardworx/wombat.shader/types";
 import { V3f, V4f } from "@aardworx/wombat.base";
+// Silence TS "imported but unused" — these only show up inside marker
+// bodies, which the inline plugin replaces at build time.
+void (null as unknown as f32 | i32 | u32 | FragmentBuiltinIn);
 
 // `PickId` is bound per-render-object by the runtime; augment the
 // shared UniformScope so `uniform.PickId` type-checks inside marker
@@ -28,7 +32,7 @@ declare module "@aardworx/wombat.shader/uniforms" {
 // ---------------------------------------------------------------------------
 
 function n24Decode(e: f32): V3f {
-  const i = e as i32;
+  const i = (e as number) as i32;
   const xi = (i >> 12) & 4095;
   const yi = i & 4095;
   const ex = (xi as f32) / 4095.0 * 2.0 - 1.0;
@@ -116,7 +120,7 @@ export function pickFinalAEffect(): Effect {
     PickPartIndex: f32;
   }, b: FragmentBuiltinIn) => {
     const n24 = n24Encode(input.ViewSpaceNormal.normalize());
-    const id = new V4f(uniform.PickId as f32, n24, b.fragCoord.z, input.PickPartIndex);
+    const id = new V4f((uniform.PickId as number) as f32, n24, b.fragCoord.z, input.PickPartIndex);
     return { outColor: input.outColor, pickId: id, Depth: b.fragCoord.z };
   });
   pickFinalACache = effect(fs);
@@ -136,7 +140,7 @@ export function pickFinalANoPiEffect(): Effect {
     ViewSpaceNormal: V3f;
   }, b: FragmentBuiltinIn) => {
     const n24 = n24Encode(input.ViewSpaceNormal.normalize());
-    const id = new V4f(uniform.PickId as f32, n24, b.fragCoord.z, 0.0);
+    const id = new V4f((uniform.PickId as number) as f32, n24, b.fragCoord.z, 0.0);
     return { outColor: input.outColor, pickId: id, Depth: b.fragCoord.z };
   });
   pickFinalANoPiCache = effect(fs);
@@ -156,7 +160,7 @@ export function pickFinalANoNormalEffect(): Effect {
     outColor: V4f;
     PickPartIndex: f32;
   }, b: FragmentBuiltinIn) => {
-    const id = new V4f(uniform.PickId as f32, 0.0, b.fragCoord.z, input.PickPartIndex);
+    const id = new V4f((uniform.PickId as number) as f32, 0.0, b.fragCoord.z, input.PickPartIndex);
     return { outColor: input.outColor, pickId: id, Depth: b.fragCoord.z };
   });
   pickFinalANoNormalCache = effect(fs);
@@ -174,7 +178,7 @@ export function pickFinalANoNormalNoPiEffect(): Effect {
   const fs = fragment((input: {
     outColor: V4f;
   }, b: FragmentBuiltinIn) => {
-    const id = new V4f(uniform.PickId as f32, 0.0, b.fragCoord.z, 0.0);
+    const id = new V4f((uniform.PickId as number) as f32, 0.0, b.fragCoord.z, 0.0);
     return { outColor: input.outColor, pickId: id, Depth: b.fragCoord.z };
   });
   pickFinalANoNormalNoPiCache = effect(fs);
@@ -198,7 +202,7 @@ export function pickFinalBEffect(): Effect {
     PickViewPosition: V3f;
   }) => {
     const id = new V4f(
-      -(uniform.PickId as f32),
+      -((uniform.PickId as number) as f32),
       input.PickViewPosition.x, input.PickViewPosition.y, input.PickViewPosition.z,
     );
     return { outColor: input.outColor, pickId: id };

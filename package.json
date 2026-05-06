@@ -73,7 +73,7 @@
     "@aardworx/wombat.adaptive": "^0.2.1",
     "@aardworx/wombat.base": "^0.4.0",
     "@aardworx/wombat.rendering": "^0.5.4",
-    "@aardworx/wombat.shader": "^0.4.0"
+    "@aardworx/wombat.shader": "^0.4.1"
   },
   "peerDependencies": {
     "@aardworx/wombat.base": "^0.4.0",
