@@ -42,15 +42,21 @@ let trafoCache: Effect | undefined;
 
 export function trafo(): Effect {
   if (trafoCache !== undefined) return trafoCache;
+  // Convention: `Positions` is always declared V4f in shader code,
+  // even though the bound vertex attribute is V3f. The rendering
+  // layer pads the binding (or the shader implicitly does). Keeping
+  // V4f everywhere lets us compose `trafo` with any other vertex
+  // effect that consumes `Positions` without a State-struct type
+  // conflict in `extractFusedEntry`.
   trafoCache = vertex((v: {
-    Positions:               V3f;
+    Positions:               V4f;
     Normals:                 V3f;
     DiffuseColorUTangents:   V3f;
     DiffuseColorVTangents:   V3f;
     Colors:                  V4f;
     DiffuseColorCoordinates: V2f;
   }) => {
-    const wp = uniform.ModelTrafo.mul(new V4f(v.Positions.xyz, 1.0));
+    const wp = uniform.ModelTrafo.mul(v.Positions);
     // Direction transforms — w=0 so the translation column drops out.
     const n4 = uniform.NormalMatrix.mul(new V4f(v.Normals.xyz, 0.0));
     const t4 = uniform.ModelTrafo.mul(new V4f(v.DiffuseColorUTangents.xyz, 0.0));

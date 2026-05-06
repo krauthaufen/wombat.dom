@@ -10,7 +10,7 @@ export default defineConfig({
   plugins: [boperators(), wombatShader({ rootDir: here })],
   server: {
     host: "0.0.0.0",
-    port: 8443,
+    port: 8444,
     strictPort: true,
     https: {
       cert: readFileSync(`${here}.certs/server.crt`),
@@ -21,5 +21,12 @@ export default defineConfig({
   esbuild: {
     jsx: "automatic",
     jsxImportSource: "@aardworx/wombat.dom",
+  },
+  // `poly2tri` (transitive dep via wombat.base path triangulator)
+  // is a CJS package that references Node's `global`. Vite's
+  // browser bundle has no `global` — alias it to `globalThis` so
+  // the optimizeDeps prebundle resolves cleanly.
+  define: {
+    global: "globalThis",
   },
 });

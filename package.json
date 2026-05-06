@@ -1,7 +1,7 @@
 {
   "name": "@aardworx/wombat.dom",
-  "version": "0.2.1",
-  "description": "Adaptive DOM + 3D scene-graph DSL for the Wombat TypeScript stack — direct-DOM JSX over @aardworx/wombat.adaptive, with optional WebGPU scene-graph extensions.",
+  "version": "0.3.0",
+  "description": "Adaptive DOM + 3D scene-graph DSL for the Wombat TypeScript stack \u2014 direct-DOM JSX over @aardworx/wombat.adaptive, with optional WebGPU scene-graph extensions.",
   "license": "MIT",
   "author": "krauthaufen",
   "repository": {
@@ -71,14 +71,14 @@
   },
   "dependencies": {
     "@aardworx/wombat.adaptive": "^0.2.1",
-    "@aardworx/wombat.base": "^0.3.2",
-    "@aardworx/wombat.rendering": "^0.5.3",
-    "@aardworx/wombat.shader": "^0.3.1"
+    "@aardworx/wombat.base": "^0.4.0",
+    "@aardworx/wombat.rendering": "^0.5.4",
+    "@aardworx/wombat.shader": "^0.4.0"
   },
   "peerDependencies": {
-    "@aardworx/wombat.base": "^0.3.2",
-    "@aardworx/wombat.rendering": "^0.5.3",
-    "@aardworx/wombat.shader": "^0.3.1"
+    "@aardworx/wombat.base": "^0.4.0",
+    "@aardworx/wombat.rendering": "^0.5.4",
+    "@aardworx/wombat.shader": "^0.4.0"
   },
   "peerDependenciesMeta": {
     "@aardworx/wombat.base": {
@@ -93,10 +93,10 @@
   },
   "devDependencies": {
     "@aardworx/wombat.adaptive": "^0.2.1",
-    "@aardworx/wombat.base": "^0.3.3",
-    "@aardworx/wombat.rendering": "^0.5.3",
-    "@aardworx/wombat.shader": "^0.3.5",
-    "@aardworx/wombat.shader-vite": "^0.2.2",
+    "@aardworx/wombat.base": "^0.4.0",
+    "@aardworx/wombat.rendering": "^0.5.4",
+    "@aardworx/wombat.shader": "^0.4.0",
+    "@aardworx/wombat.shader-vite": "^0.3.0",
     "@types/node": "^20.11.0",
     "@webgpu/types": "^0.1.69",
     "happy-dom": "^14.0.0",
