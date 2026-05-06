@@ -4,7 +4,7 @@
 // `IBuffer` allocated ONCE and shared by every instance of that
 // primitive. The returned `vertexAttrs` / `indices` / `drawCall`
 // avals are constants over those buffers; consumers append a
-// (per-instance) `a_color` BufferView via colourBuffer.ts.
+// (per-instance) `Colors` BufferView via colourBuffer.ts.
 //
 // Sphere / Cylinder / Cone caches are keyed by tessellation; Box /
 // Tetrahedron / Octahedron / FullscreenQuad / ScreenQuad have a

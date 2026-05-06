@@ -22,7 +22,7 @@ import { colorAval } from "./primitives/colorBuffer.js";
 const WHITE = new V4f(1, 1, 1, 1);
 
 // ---------------------------------------------------------------------------
-// Box (single-colour via stride-0 a_color)
+// Box (single-colour via stride-0 Colors)
 // ---------------------------------------------------------------------------
 
 export interface BoxOptions {
@@ -37,9 +37,9 @@ export interface BoxOptions {
  * is fed via a stride-0 vertex buffer that all 36 vertices read.
  *
  * Vertex attributes:
- *   - `a_position : V3f` (shared with all other Box instances)
- *   - `a_normal   : V3f`
- *   - `a_color    : V4f` (stride-0 broadcast)
+ *   - `Positions : V3f` (shared with all other Box instances)
+ *   - `Normals   : V3f`
+ *   - `Colors    : V4f` (stride-0 broadcast)
  *
  * `size` scales the unit cube spanning `[0,1]³` to span `[-size, +size]`.
  * Identity (default `1,1,1`) yields the `[-1,1]³` cube the old
@@ -90,7 +90,7 @@ export function box(opts: BoxOptions = {}): SgLeaf {
 }
 
 // ---------------------------------------------------------------------------
-// Quad (XY plane, z=0) — single-colour via stride-0 a_color
+// Quad (XY plane, z=0) — single-colour via stride-0 Colors
 // ---------------------------------------------------------------------------
 
 export interface QuadOptions {
