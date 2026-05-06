@@ -10,7 +10,8 @@
 import type { Effect } from "@aardworx/wombat.shader";
 import { vertex, fragment } from "@aardworx/wombat.shader";
 import { abs } from "@aardworx/wombat.shader/types";
-import { V3f, V4f, type V2f, type M44f } from "@aardworx/wombat.base";
+import { uniform } from "@aardworx/wombat.shader/uniforms";
+import { V3f, V4f, type V2f } from "@aardworx/wombat.base";
 
 
 // ---------------------------------------------------------------------------
@@ -37,10 +38,6 @@ import { V3f, V4f, type V2f, type M44f } from "@aardworx/wombat.base";
 // outputs become free in pipelines that don't read them.
 // ---------------------------------------------------------------------------
 
-declare const ModelTrafo:    M44f;
-declare const ViewProjTrafo: M44f;
-declare const NormalMatrix:  M44f;
-
 let trafoCache: Effect | undefined;
 
 export function trafo(): Effect {
@@ -53,11 +50,11 @@ export function trafo(): Effect {
     Colors:                  V4f;
     DiffuseColorCoordinates: V2f;
   }) => {
-    const wp = ModelTrafo.mul(new V4f(v.Positions.x, v.Positions.y, v.Positions.z, 1.0));
+    const wp = uniform.ModelTrafo.mul(new V4f(v.Positions.xyz, 1.0));
     // Direction transforms — w=0 so the translation column drops out.
-    const n4 = NormalMatrix.mul(new V4f(v.Normals.x,               v.Normals.y,               v.Normals.z,               0.0));
-    const t4 = ModelTrafo.mul(  new V4f(v.DiffuseColorUTangents.x, v.DiffuseColorUTangents.y, v.DiffuseColorUTangents.z, 0.0));
-    const b4 = ModelTrafo.mul(  new V4f(v.DiffuseColorVTangents.x, v.DiffuseColorVTangents.y, v.DiffuseColorVTangents.z, 0.0));
+    const n4 = uniform.NormalMatrix.mul(new V4f(v.Normals.xyz, 0.0));
+    const t4 = uniform.ModelTrafo.mul(new V4f(v.DiffuseColorUTangents.xyz, 0.0));
+    const b4 = uniform.ModelTrafo.mul(new V4f(v.DiffuseColorVTangents.xyz, 0.0));
     return {
       // `gl_Position` is the rasterizer's built-in clip-space output —
       // separate concern from the vertex-attribute `Positions` semantic
@@ -65,11 +62,11 @@ export function trafo(): Effect {
       // wombat.shader-vite plugin maps `gl_Position` to
       // `@builtin(position)`; everything else gets an inter-stage
       // varying location auto-assigned at WGSL emit time.
-      gl_Position:             ViewProjTrafo.mul(wp),
+      gl_Position:             uniform.ViewProjTrafo.mul(wp),
       WorldPositions:          wp,
-      Normals:                 new V3f(n4.x, n4.y, n4.z),
-      DiffuseColorUTangents:   new V3f(t4.x, t4.y, t4.z),
-      DiffuseColorVTangents:   new V3f(b4.x, b4.y, b4.z),
+      Normals:                 n4.xyz,
+      DiffuseColorUTangents:   t4.xyz,
+      DiffuseColorVTangents:   b4.xyz,
       Colors:                  v.Colors,
       DiffuseColorCoordinates: v.DiffuseColorCoordinates,
     };
@@ -100,8 +97,6 @@ export function trafo(): Effect {
 // stage lists in argument order.
 // ---------------------------------------------------------------------------
 
-declare const LightLocation: V3f;
-
 let simpleLightingCache: Effect | undefined;
 
 export function simpleLighting(): Effect {
@@ -113,14 +108,9 @@ export function simpleLighting(): Effect {
   }) => {
     const n = v.Normals.normalize();
     // World-space surface → light direction. WorldPositions is V4f
-    // (homogeneous); we drop the .w component. Pre-swizzles, that's
-    // a fresh V3f.
-    const wp = new V3f(v.WorldPositions.x, v.WorldPositions.y, v.WorldPositions.z);
-    const c = new V3f(
-      LightLocation.x - wp.x,
-      LightLocation.y - wp.y,
-      LightLocation.z - wp.z,
-    ).normalize();
+    // (homogeneous); .xyz drops the .w component.
+    const wp = v.WorldPositions.xyz;
+    const c = uniform.LightLocation.sub(wp).normalize();
     const ambient = 0.2;
     // `dot` returns plain number; use `abs()` from wombat.shader's
     // shipped intrinsic table (recognised by name in the
@@ -128,12 +118,7 @@ export function simpleLighting(): Effect {
     const diffuse = abs(c.dot(n));
     const l = ambient + (1.0 - ambient) * diffuse;
     return {
-      outColor: new V4f(
-        v.Colors.x * l,
-        v.Colors.y * l,
-        v.Colors.z * l,
-        v.Colors.w,
-      ),
+      outColor: new V4f(v.Colors.xyz.mul(l), v.Colors.w),
     };
   });
   return simpleLightingCache;
