@@ -125,11 +125,15 @@ describe("Phase 1 — render-state scopes", () => {
     expect(AVal.force(obj!.pipelineState.stencil!.front.passOp)).toBe("replace");
   });
 
-  it("ColorMask single-attachment shorthand produces a 'color' blend with channel mask", () => {
+  it("ColorMask single-attachment shorthand produces an 'outColor' blend with channel mask", () => {
+    // The shorthand attaches to the framebuffer's `outColor` slot —
+    // the canonical name primitives + DefaultSurfaces use. The
+    // earlier `"color"` spelling was historical (matched a test
+    // fixture from before the DefaultSemantic rename pass).
     const tree = Sg({ ColorMask: { r: true, g: false, b: true, a: false }, children: leaf() });
     const [obj] = compileToObjects(tree);
     const blends = AVal.force(obj!.pipelineState.blends!);
-    const cb = blends.tryFind("color");
+    const cb = blends.tryFind("outColor");
     expect(cb).toBeDefined();
     // R=1, B=4 → mask = 5
     expect(AVal.force(cb!.writeMask)).toBe(5);
