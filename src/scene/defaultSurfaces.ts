@@ -69,7 +69,7 @@ export function trafo(): Effect {
     // explicitly read `uniform.NormalMatrix` still work — it stays
     // auto-injected, and the auto-instancing rule rebuilds the per-
     // instance form via `uniform.NormalMatrix · transpose(m33(InstanceTrafoInv))`.
-    const n4 = uniform.NormalMatrix.mul(new V4f(v.Normals.xyz, 0.0));
+    const n4 = new V4f(v.Normals.xyz, 0.0).mul(uniform.ModelTrafoInv);
     const t4 = uniform.ModelTrafo.mul(new V4f(v.DiffuseColorUTangents.xyz, 0.0));
     const b4 = uniform.ModelTrafo.mul(new V4f(v.DiffuseColorVTangents.xyz, 0.0));
     return {
