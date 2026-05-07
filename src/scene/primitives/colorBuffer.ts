@@ -10,8 +10,8 @@
 
 import type { aval } from "@aardworx/wombat.adaptive";
 import type { V4f } from "@aardworx/wombat.base";
-import { BufferView } from "@aardworx/wombat.rendering/core";
+import { BufferView, ElementType} from "@aardworx/wombat.rendering/core";
 
 export function colorAval(color: aval<V4f> | V4f): BufferView {
-  return BufferView.ofValue(color, "v4f");
+  return BufferView.ofValue(color, ElementType.V4f);
 }

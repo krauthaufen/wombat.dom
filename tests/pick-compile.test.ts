@@ -14,6 +14,7 @@ import { Tf32, Vec, type Type } from "@aardworx/wombat.shader/ir";
 import type {
   BufferView, DrawCall, IFramebuffer, RenderTree,
 } from "@aardworx/wombat.rendering/core";
+import { ElementType } from "@aardworx/wombat.rendering/core";
 
 import {
   Sg, compileScene, PickRegistry,
@@ -31,7 +32,7 @@ const dummyDraw: DrawCall = {
 
 const dummyView: BufferView = {
   buffer: AVal.constant({ kind: "host", data: new Float32Array(0), sizeBytes: 0 }),
-  elementType: "v3f",
+  elementType: ElementType.V3f,
 };
 
 function leaf(): SgLeaf {

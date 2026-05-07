@@ -16,8 +16,7 @@ import {
 import {
   IBuffer,
   BufferView,
-  type DrawCall,
-} from "@aardworx/wombat.rendering/core";
+  type DrawCall, ElementType} from "@aardworx/wombat.rendering/core";
 import {
   buildBox, buildWireBox,
   buildTetrahedron, buildWireTetrahedron,
@@ -39,15 +38,15 @@ export interface GeometryHandle {
 function toHandle(g: GeometryData): GeometryHandle {
   const positions: BufferView = {
     buffer: AVal.constant(IBuffer.fromHost(g.positions)),
-    elementType: "v3f",
+    elementType: ElementType.V3f,
   };
   const normals: BufferView = {
     buffer: AVal.constant(IBuffer.fromHost(g.normals)),
-    elementType: "v3f",
+    elementType: ElementType.V3f,
   };
   const indices: BufferView = {
     buffer: AVal.constant(IBuffer.fromHost(g.indices)),
-    elementType: "u32",
+    elementType: ElementType.U32,
   };
   const drawCall: DrawCall = {
     kind: "indexed",

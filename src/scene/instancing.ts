@@ -21,7 +21,9 @@
 
 import { AVal, HashMap, type aval } from "@aardworx/wombat.adaptive";
 import { Trafo3d } from "@aardworx/wombat.base";
-import { IBuffer, type BufferView, type DrawCall } from "@aardworx/wombat.rendering/core";
+import { IBuffer, type BufferView, type DrawCall,
+  ElementType,
+} from "@aardworx/wombat.rendering/core";
 import type { Effect } from "@aardworx/wombat.shader";
 import { instanceEffect } from "@aardworx/wombat.shader";
 import type { SgInstanced, SgLeaf, SgNode } from "./sg.js";
@@ -296,7 +298,7 @@ function colsFromPackedM44(packed: aval<Float32Array>): BufferView[] {
     const offset = col * 16;
     out.push({
       buffer: sharedBuf,
-      elementType: "v4f",
+      elementType: ElementType.V4f,
       offset,
       stride: 64,
     });

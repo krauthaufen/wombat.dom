@@ -15,6 +15,7 @@ import {
   IBuffer,
   BufferView,
   type DrawCall,
+  ElementType,
 } from "@aardworx/wombat.rendering/core";
 import type { SgLeaf } from "./sg.js";
 import { getBoxGeometry } from "./primitives/shared.js";
@@ -74,7 +75,7 @@ export function box(opts: BoxOptions = {}): SgLeaf {
     }
     const posView: BufferView = {
       buffer: AVal.constant(IBuffer.fromHost(scaled.buffer)),
-      elementType: "v3f",
+      elementType: ElementType.V3f,
     };
     vertexAttrs = handle.vertexAttrs.add("Positions", posView);
   }
@@ -125,16 +126,16 @@ export function quad(opts: QuadOptions = {}): SgLeaf {
     vertexAttributes: HashMap.empty<string, BufferView>()
       .add("Positions", {
         buffer: AVal.constant(IBuffer.fromHost(positions.buffer)),
-        elementType: "v3f",
+        elementType: ElementType.V3f,
       })
       .add("Normals", {
         buffer: AVal.constant(IBuffer.fromHost(normals.buffer)),
-        elementType: "v3f",
+        elementType: ElementType.V3f,
       })
       .add("Colors", colorView),
     indices: {
       buffer: AVal.constant(IBuffer.fromHost(indices.buffer)),
-      elementType: "u32",
+      elementType: ElementType.U32,
     },
     drawCall: AVal.constant({
       kind: "indexed",

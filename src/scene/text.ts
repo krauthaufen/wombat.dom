@@ -41,6 +41,7 @@ import {
 } from "@aardworx/wombat.base/font";
 import {
   IBuffer, type BufferView, type DrawCall, type BlendState,
+  ElementType,
 } from "@aardworx/wombat.rendering/core";
 import type { Effect } from "@aardworx/wombat.shader";
 import { effect, vertex, fragment } from "@aardworx/wombat.shader";
@@ -405,11 +406,11 @@ export function SgText(
   const idxBuf = IBuffer.fromHost(wireframe ? wireIndices! : indices);
 
   const vertexAttrs = HashMap.empty<string, BufferView>()
-    .add("a_localPos", { buffer: AVal.constant(posBuf), elementType: "v2f" })
-    .add("a_klmKind",  { buffer: AVal.constant(klmBuf), elementType: "v4f" });
+    .add("a_localPos", { buffer: AVal.constant(posBuf), elementType: ElementType.V2f })
+    .add("a_klmKind",  { buffer: AVal.constant(klmBuf), elementType: ElementType.V4f });
   const indexBV: BufferView = {
     buffer: AVal.constant(idxBuf),
-    elementType: "u32",
+    elementType: ElementType.U32,
   };
 
   // One `<Sg.Leaf>` per unique glyph in the run; all share the
@@ -426,7 +427,7 @@ export function SgText(
     const instArr = new Float32Array(offsets);
     const instBuf = IBuffer.fromHost(instArr);
     const instAttrs = HashMap.empty<string, BufferView>()
-      .add("a_instOffset", { buffer: AVal.constant(instBuf), elementType: "v2f" });
+      .add("a_instOffset", { buffer: AVal.constant(instBuf), elementType: ElementType.V2f });
     const draw: DrawCall = {
       kind: "indexed",
       indexCount:    wireframe ? record.indexCount * 2 : record.indexCount,

@@ -14,12 +14,13 @@ import {
 import type {
   BufferView, DrawCall, RenderObject, RenderTree,
 } from "@aardworx/wombat.rendering/core";
+import { ElementType } from "@aardworx/wombat.rendering/core";
 
 const draw: DrawCall = { kind: "non-indexed", vertexCount: 3, instanceCount: 1, firstVertex: 0, firstInstance: 0 };
 function bv(name: string): BufferView {
   return {
     buffer: AVal.constant({ kind: "host", data: new Float32Array(0), sizeBytes: 0  }),
-    offset: 0, stride: 12, elementType: "v3f",
+    offset: 0, stride: 12, elementType: ElementType.V3f,
     // tag the buffer so we can identify it later
     label: name,
   } as BufferView & { label?: string };

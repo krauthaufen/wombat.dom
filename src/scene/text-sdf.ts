@@ -51,6 +51,7 @@ import {
 } from "@aardworx/wombat.base/font";
 import {
   IBuffer, type BufferView, type DrawCall, type BlendState,
+  ElementType,
 } from "@aardworx/wombat.rendering/core";
 import type { Effect } from "@aardworx/wombat.shader";
 import { effect, vertex, fragment } from "@aardworx/wombat.shader";
@@ -373,10 +374,10 @@ export function buildSdfTextScene(args: SdfTextArgs): VNode {
   // Per-glyph vertex attribute views — same buffer, different offsets.
   const vertBufAval = AVal.constant(vertBuf);
   const vertexAttrs = HashMap.empty<string, BufferView>()
-    .add("a_pos",     { buffer: vertBufAval, elementType: "v2f", offset: 0,  stride: STRIDE_BYTES })
-    .add("a_klmKind", { buffer: vertBufAval, elementType: "v4f", offset: 8,  stride: STRIDE_BYTES })
-    .add("a_cands",   { buffer: vertBufAval, elementType: "v4f", offset: 24, stride: STRIDE_BYTES })
-    .add("a_cands2",  { buffer: vertBufAval, elementType: "v2f", offset: 40, stride: STRIDE_BYTES });
+    .add("a_pos",     { buffer: vertBufAval, elementType: ElementType.V2f, offset: 0,  stride: STRIDE_BYTES })
+    .add("a_klmKind", { buffer: vertBufAval, elementType: ElementType.V4f, offset: 8,  stride: STRIDE_BYTES })
+    .add("a_cands",   { buffer: vertBufAval, elementType: ElementType.V4f, offset: 24, stride: STRIDE_BYTES })
+    .add("a_cands2",  { buffer: vertBufAval, elementType: ElementType.V2f, offset: 40, stride: STRIDE_BYTES });
 
   const storageBuffers = HashMap.empty<string, aval<IBuffer>>()
     .add("tris", AVal.constant<IBuffer>(triBuf));
@@ -393,14 +394,14 @@ export function buildSdfTextScene(args: SdfTextArgs): VNode {
   // lives in the DrawCall's firstIndex / indexCount.
   const sharedIndexBV: BufferView = {
     buffer: AVal.constant(idxBuf),
-    elementType: "u32",
+    elementType: ElementType.U32,
   };
   for (const [, { rec, insts }] of groups) {
     const instCount = insts.length / 2;
     const instArr = new Float32Array(insts);
     const instBuf = IBuffer.fromHost(instArr);
     const instanceAttrs = HashMap.empty<string, BufferView>()
-      .add("a_instOffset", { buffer: AVal.constant(instBuf), elementType: "v2f" });
+      .add("a_instOffset", { buffer: AVal.constant(instBuf), elementType: ElementType.V2f });
     const drawCall: DrawCall = {
       kind: "indexed",
       indexCount:    rec.sdfIndexCount,

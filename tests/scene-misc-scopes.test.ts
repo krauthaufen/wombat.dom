@@ -16,11 +16,12 @@ import { PickDispatcher } from "../src/scene/picking/dispatcher.js";
 import type { PickRegion } from "../src/scene/picking/readback.js";
 import { SNAP_RADIUS_MAX, SNAP_REGION_SIZE } from "../src/scene/picking/snapOffsets.js";
 import type { BufferView, DrawCall } from "@aardworx/wombat.rendering/core";
+import { ElementType } from "@aardworx/wombat.rendering/core";
 
 const Tvec4f: Type = Vec(Tf32, 4);
 
 const draw: DrawCall = { kind: "non-indexed", vertexCount: 3, instanceCount: 1, firstVertex: 0, firstInstance: 0 };
-const bv: BufferView = { buffer: AVal.constant({ kind: "host", data: new Float32Array(0), sizeBytes: 0  }), offset: 0, stride: 12, elementType: "v3f" };
+const bv: BufferView = { buffer: AVal.constant({ kind: "host", data: new Float32Array(0), sizeBytes: 0  }), offset: 0, stride: 12, elementType: ElementType.V3f };
 
 function buildUserEffect(): Effect {
   const source = `

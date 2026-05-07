@@ -1,3 +1,4 @@
+import { ElementType } from "@aardworx/wombat.rendering/core";
 // Phase-2 tests: SgInstanced node + subtree validator.
 //
 // Covers: nested-Instanced rejection, leaves with instanceCount>1
@@ -160,7 +161,7 @@ describe("applyInstancing", () => {
   it("plain (non-trafo) attributes pass through verbatim", () => {
     const dummyView: BufferView = {
       buffer: AVal.constant({ kind: "host", data: new Float32Array(0), sizeBytes: 0 } as never),
-      elementType: "v4f",
+      elementType: ElementType.V4f,
     };
     const node: SgInstanced = {
       kind: "Instanced",

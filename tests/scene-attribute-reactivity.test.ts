@@ -9,6 +9,7 @@ import { AVal, HashMap, cval, transact } from "@aardworx/wombat.adaptive";
 import type {
   BufferView, DrawCall, Effect, IFramebuffer, RenderTree,
 } from "@aardworx/wombat.rendering/core";
+import { ElementType } from "@aardworx/wombat.rendering/core";
 import {
   Sg, compileScene,
   type SgLeaf,
@@ -28,7 +29,7 @@ function bv(label: string): BufferView {
     buffer: AVal.constant({
       kind: "host", data: new Float32Array(0), sizeBytes: 0, label,
     } as never),
-    elementType: "v3f",
+    elementType: ElementType.V3f,
   };
 }
 
@@ -51,7 +52,7 @@ describe("Phase B — per-buffer reactive vertex attributes through compileScene
     const ibA = { kind: "host", data: new Float32Array(0), sizeBytes: 0, label: "A" } as never;
     const ibB = { kind: "host", data: new Float32Array(0), sizeBytes: 0, label: "B" } as never;
     const bufCval = cval(ibA);
-    const view: BufferView = { buffer: bufCval, elementType: "v3f" };
+    const view: BufferView = { buffer: bufCval, elementType: ElementType.V3f };
     const map = HashMap.empty<string, BufferView>().add("Positions", view);
 
     const sg: SgLeaf = Sg.leaf({

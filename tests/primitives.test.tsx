@@ -138,7 +138,7 @@ describe("colorAval", () => {
     const view = colorAval(new V4f(0.25, 0.5, 0.75, 1.0));
     // BufferView is plain. Tight 16-byte buffer; broadcast carried by
     // singleValue. Stride defaults from elementType (16 bytes for v4f).
-    expect(view.elementType).toBe("v4f");
+    expect(view.elementType.name).toBe("v4f");
     expect(view.singleValue).toBeDefined();
     const ib = AVal.force(view.buffer);
     if (ib.kind !== "host") throw new Error("expected host buffer");

@@ -15,6 +15,7 @@ import {
 } from "../src/scene/index.js";
 
 import type { BufferView, DrawCall } from "@aardworx/wombat.rendering/core";
+import { ElementType } from "@aardworx/wombat.rendering/core";
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -32,7 +33,7 @@ const dummyView: BufferView = {
   buffer: AVal.constant({ kind: "host", data: new Float32Array(0), sizeBytes: 0  }),
   offset: 0,
   stride: 12,
-  elementType: "v3f",
+  elementType: ElementType.V3f,
 };
 
 function leaf(): SgLeaf {
