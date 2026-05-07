@@ -55,6 +55,7 @@ import type {
   SgLeaf, SgNode,
 } from "./sg.js";
 import { TraversalState } from "./traversalState.js";
+import { applyInstancing, validateInstancingSubtree } from "./instancing.js";
 import { composePickChainWithChoice } from "./picking/pickChain.js";
 import type { PickRegistry } from "./picking/registry.js";
 
@@ -161,6 +162,8 @@ function sceneUsesPassStatic(node: SgNode): boolean {
     case "Delay":
       try { return sceneUsesPassStatic(node.create(TraversalState.empty)); }
       catch { return false; }
+    case "Instanced":
+      return sceneUsesPassStatic(node.child);
   }
 }
 
@@ -258,6 +261,11 @@ function collectByPass(
     case "NoEvents": collectByPass(node.child, state.pushNoEvents(node.value), opts, buckets); return;
     case "ForcePixelPicking": collectByPass(node.child, state.pushForcePixelPicking(node.value), opts, buckets); return;
     case "CanFocus": collectByPass(node.child, state.pushCanFocus(node.value), opts, buckets); return;
+    case "Instanced":
+      // The instancing rewrite happens at leaf-lower time via `state`;
+      // pass-bucketing just needs to recurse with the scope pushed.
+      collectByPass(node.child, state.pushInstancing(node), opts, buckets);
+      return;
   }
 }
 
@@ -279,19 +287,27 @@ function lower(
 
     case "Group": {
       // alist<SgNode> → alist<RenderTree>; outer is OrderedFromList.
-      const children: alist<RenderTree> = node.children.map(child => lower(child, state, opts));
+      // `.map` fires per inserted child — re-validate the new
+      // subtree if we're inside an `Sg.Instanced` scope.
+      const children: alist<RenderTree> = node.children.map(
+        child => lowerInsideInstancing(child, state, opts),
+      );
       return RenderTree.orderedFromList(children);
     }
 
     case "UnorderedGroup": {
       // aset<SgNode> → aset<RenderTree>; outer is UnorderedFromSet.
-      const children: aset<RenderTree> = node.children.map(child => lower(child, state, opts));
+      const children: aset<RenderTree> = node.children.map(
+        child => lowerInsideInstancing(child, state, opts),
+      );
       return RenderTree.unorderedFromSet(children);
     }
 
     case "AdaptiveGroup":
       // single-slot subtree swap: aval<SgNode> → aval<RenderTree>.
-      return RenderTree.adaptive(node.child.map(child => lower(child, state, opts)));
+      return RenderTree.adaptive(node.child.map(
+        child => lowerInsideInstancing(child, state, opts),
+      ));
 
     case "Trafo":
       return lower(node.child, state.pushTrafo(node.value), opts);
@@ -381,7 +397,48 @@ function lower(
       return lower(node.child, state.pushForcePixelPicking(node.value), opts);
     case "CanFocus":
       return lower(node.child, state.pushCanFocus(node.value), opts);
+    case "Instanced":
+      // Validate the subtree once at scene-compile (no nested
+      // SgInstanced, no leaves with `instanceCount > 1`, no indirect
+      // draws), then push the scope. `lowerLeaf` consults the
+      // accumulated `state.instancing` and applies the rewrite.
+      validateInstancingSubtree(node.child);
+      return lower(node.child, state.pushInstancing(node), opts);
   }
+}
+
+/**
+ * `lower` wrapper that re-validates the subtree if we're inside an
+ * `Sg.Instanced` scope. Called from the adaptive-boundary cases of
+ * `lower` (`Group` / `UnorderedGroup` / `AdaptiveGroup`'s `.map(...)`)
+ * so that a child swapped in *after* scene-compile gets the same
+ * invariant check the eager scene-compile pass ran. A violator
+ * (nested `Sg.Instanced` or a leaf with `drawCall.instanceCount > 1`)
+ * renders as `RenderTree.empty` plus a `console.error` — louder than
+ * the original silent-wrong-pixels behaviour, less disruptive than
+ * throwing inside a render-tick.
+ *
+ * Outside an instancing scope this is a thin pass-through to `lower`.
+ */
+function lowerInsideInstancing(
+  child: SgNode,
+  state: TraversalState,
+  opts: CompileSceneOptions,
+): RenderTree {
+  if (state.instancing !== undefined) {
+    try {
+      validateInstancingSubtree(child);
+    } catch (e) {
+      console.error(
+        "Sg.Instanced: a sub-graph swap brought in a child that violates " +
+        "the instancing invariants — rendering as Empty. " +
+        "(Compile-time validator is one-shot; this is the per-swap re-check.)",
+        e,
+      );
+      return RenderTree.empty;
+    }
+  }
+  return lower(child, state, opts);
 }
 
 // ---------------------------------------------------------------------------
@@ -448,7 +505,28 @@ function lowerLeaf(
     }, mode);
   }
 
-  const obj: RenderObject = buildRenderObject(merged, state, effect, opts, pickId);
+  // If an `Sg.Instanced` scope is in effect, rewrite the effect via
+  // `instanceUniforms` and patch the leaf with per-instance attributes
+  // + identity-trafo uniform overrides + an instance-counted draw call.
+  let leafForBuild = merged;
+  let stateForBuild = state;
+  if (state.instancing !== undefined) {
+    const parentModel = state.instancingParentModel ?? state.model;
+    const applied = applyInstancing(
+      state.instancing, state.model, parentModel,
+      state.view, state.proj, effect, merged,
+    );
+    effect = applied.effect;
+    leafForBuild = {
+      ...merged,
+      instanceAttributes: applied.instanceAttributes,
+      drawCall: applied.drawCall,
+    };
+    if (!applied.uniformOverrides.isEmpty) {
+      stateForBuild = stateForBuild.pushUniforms(applied.uniformOverrides);
+    }
+  }
+  const obj: RenderObject = buildRenderObject(leafForBuild, stateForBuild, effect, opts, pickId);
   const baseTree: RenderTree = RenderTree.leaf(obj);
 
   // Active gating: when state.active is structurally CONSTANT we can

@@ -57,7 +57,18 @@ export function trafo(): Effect {
     DiffuseColorCoordinates: V2f;
   }) => {
     const wp = uniform.ModelTrafo.mul(v.Positions);
-    // Direction transforms — w=0 so the translation column drops out.
+    // World-space normal: `transpose(inverse(M)) · n`. Under
+    // wombat.shader's row-major-on-CPU / column-major-on-GPU
+    // convention, the row-vec form `vec.mul(uniform.ModelTrafoInv)`
+    // computes the inv-transpose for free — `M_wgsl` already holds
+    // `transpose(M_dsl)` thanks to the upload trick, and the row-vec
+    // mul implicitly transposes once more, giving
+    // `transpose(transpose(MTI_dsl)) · v = MTI_dsl · v` (the inverse-
+    // transpose normal transform). Avoids the redundant `NormalMatrix`
+    // uniform binding for the default pipeline. User shaders that
+    // explicitly read `uniform.NormalMatrix` still work — it stays
+    // auto-injected, and the auto-instancing rule rebuilds the per-
+    // instance form via `uniform.NormalMatrix · transpose(m33(InstanceTrafoInv))`.
     const n4 = uniform.NormalMatrix.mul(new V4f(v.Normals.xyz, 0.0));
     const t4 = uniform.ModelTrafo.mul(new V4f(v.DiffuseColorUTangents.xyz, 0.0));
     const b4 = uniform.ModelTrafo.mul(new V4f(v.DiffuseColorVTangents.xyz, 0.0));

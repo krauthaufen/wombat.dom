@@ -368,16 +368,23 @@ async function initialise(
   const runResolve = pickFb.maybeRunResolve;
   const loop = runFrame(attachment, (token) => {
     if (scope.isDisposed) return;
-    // Phase 7 — tick the global clock once per frame so any
-    // animated avals subscribed to `RenderControl.time` see the new
-    // timestamp BEFORE the frame's task runs.
-    tickGlobalTime();
     task.run(token);
     if (runResolve !== undefined) {
       const enc = device.createCommandEncoder({ label: "pick.resolve.frame" });
       runResolve(enc);
       device.queue.submit([enc.finish()]);
     }
+  }, {
+    // Tick the global time clock AFTER each frame's eval. This is
+    // the dirty-tracking-loop equivalent of Aardvark.Rendering's
+    // pattern: marks emitted here propagate post-eval, so any aval
+    // that depends on time (animated controllers, time-tied
+    // uniforms) marks `runFrame`'s wrapper aval and schedules the
+    // next rAF. Scenes with no time-dependent reads (static cameras,
+    // no animation) ignore the tick → no rAF scheduled → loop
+    // sleeps until something else marks (cval edit, canvas resize,
+    // input handler, etc.).
+    onAfterFrame: tickGlobalTime,
   });
   scope.onDispose(() => loop.stop());
 

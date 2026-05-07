@@ -298,6 +298,48 @@ function instanceAttributes(
 ): (child: SgNode) => SgNode {
   return (child: SgNode): SgNode => ({ kind: "InstanceAttributes", attributes: attrs, child });
 }
+// ---------------------------------------------------------------------------
+// Auto-instancing scope
+// ---------------------------------------------------------------------------
+
+/**
+ * Wrap `child` in an instanced-draw scope. `attrs` is keyed by the
+ * uniform name the shader reads — at compile time those reads get
+ * rewritten via `instanceUniforms` to come from per-instance vertex
+ * attributes. See `docs/auto-instancing.md`.
+ */
+function instanced(
+  args: {
+    count: number | aval<number>;
+    attributes?: HashMap<string, aval<BufferView>>;
+    trafos?: aval<ReadonlyArray<Trafo3d>>;
+  },
+): (child: SgChild) => SgNode {
+  const count: aval<number> = isAValRuntime(args.count)
+    ? (args.count as aval<number>)
+    : AVal.constant(args.count as number);
+  const attributes = args.attributes ?? HashMap.empty<string, aval<BufferView>>();
+  return (child: SgChild): SgNode => ({
+    kind: "Instanced",
+    count,
+    ...(args.trafos !== undefined ? { trafos: args.trafos } : {}),
+    attributes,
+    child: coerceChild(child),
+  });
+}
+
+/**
+ * Convenience: instance a subtree with one `Trafo3d[]` stream as the
+ * per-instance `ModelTrafo`. The runtime pre-multiplies the scope's
+ * cumulative `ModelTrafo` into each entry on the CPU side.
+ */
+function instancedTrafos(
+  trafos: aval<ReadonlyArray<Trafo3d>>,
+): (child: SgChild) => SgNode {
+  const count = trafos.map((arr) => arr.length);
+  return instanced({ count, trafos });
+}
+
 function index(idx: BufferView | undefined | aval<BufferView | undefined>): (child: SgNode) => SgNode {
   const i: aval<BufferView | undefined> = isAValRuntime(idx)
     ? (idx as aval<BufferView | undefined>)
@@ -1062,6 +1104,10 @@ export interface SgNamespace {
   noEvents:          typeof noEvents;
   forcePixelPicking: typeof forcePixelPicking;
   canFocus:          typeof canFocus;
+
+  // Auto-instancing
+  instanced:         typeof instanced;
+  instancedTrafos:   typeof instancedTrafos;
 }
 
 export const Sg: SgNamespace = (() => {
@@ -1135,6 +1181,8 @@ export const Sg: SgNamespace = (() => {
   fn.noEvents          = noEvents;
   fn.forcePixelPicking = forcePixelPicking;
   fn.canFocus          = canFocus;
+  fn.instanced         = instanced;
+  fn.instancedTrafos   = instancedTrafos;
   return fn;
 })();
 

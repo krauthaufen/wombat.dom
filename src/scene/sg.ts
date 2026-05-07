@@ -83,7 +83,9 @@ export type SgNode =
   // Phase 3 — misc scopes
   | SgNoEvents
   | SgForcePixelPicking
-  | SgCanFocus;
+  | SgCanFocus
+  // Auto-instancing scope (see docs/auto-instancing.md).
+  | SgInstanced;
 
 export interface SgEmpty {
   readonly kind: "Empty";
@@ -481,5 +483,46 @@ export interface SgForcePixelPicking {
 export interface SgCanFocus {
   readonly kind: "CanFocus";
   readonly value: aval<boolean>;
+  readonly child: SgNode;
+}
+
+// ---------------------------------------------------------------------------
+// Auto-instancing
+// ---------------------------------------------------------------------------
+
+/**
+ * Wraps `child` in an instanced-draw scope: each leaf reachable from
+ * `child` runs `count` instances, with per-instance attribute streams
+ * supplied by `attributes`. Names in `attributes` correspond to
+ * uniforms the shader currently reads — at compile-scene time those
+ * reads get rewritten via `instanceUniforms` to come from per-instance
+ * vertex attributes instead. Special handling for `ModelTrafo` and
+ * its trafo aliases (`ModelViewTrafo`, `ModelTrafoInv`, …,
+ * `NormalMatrix`); see `docs/auto-instancing.md`.
+ *
+ * Subtree precondition (validated at scene-compile time): no nested
+ * `SgInstanced`, no leaf with `drawCall.instanceCount > 1`, no
+ * indirect-draw leaves. Friendly error otherwise.
+ */
+export interface SgInstanced {
+  readonly kind: "Instanced";
+  readonly count: aval<number>;
+  /**
+   * Per-instance trafos, when the convenience trafo case is used.
+   * The runtime pre-multiplies the scope-accumulated `ModelTrafo`
+   * into each entry before upload, replaces the leaf's `ModelTrafo`
+   * uniform with identity, and adds split-into-4-cols attributes
+   * `_InstanceTrafo_col0..3` + `_InstanceTrafoInv_col0..3` to the
+   * leaf. The shader-side rewrite (`instanceUniforms`) keys off
+   * `"ModelTrafo"` being in the attribute set.
+   */
+  readonly trafos?: aval<ReadonlyArray<import("@aardworx/wombat.base").Trafo3d>>;
+  /**
+   * Generic per-instance vertex-attribute streams keyed by uniform
+   * name. Use for non-trafo data (e.g. per-instance Color). The
+   * shader rewrite replaces `ReadInput("Uniform", X)` with
+   * `ReadInput("Input", X)` for each name in this map.
+   */
+  readonly attributes: HashMap<string, aval<BufferView>>;
   readonly child: SgNode;
 }

@@ -229,6 +229,27 @@ export class TraversalState {
   /** Per-frame time clock (Phase 7). Defaults to a constant initial-load timestamp. */
   readonly time: aval<number>;
 
+  // ---------------- Auto-instancing scope ------------------------------
+
+  /**
+   * Innermost `SgInstanced` scope, or `undefined` if none. Set by
+   * `pushInstancing`. The leaf-lowering path inspects this to decide
+   * whether to apply the `instanceUniforms` IR rewrite + bind the
+   * per-instance attribute buffers. See `docs/auto-instancing.md`.
+   */
+  readonly instancing: import("./sg.js").SgInstanced | undefined;
+
+  /**
+   * Cumulative `ModelTrafo` from the scope OUTSIDE the innermost
+   * `SgInstanced`. Mirrors Aardvark's `applyTrafos` pattern: the
+   * parent scope's accumulated trafo becomes the leaf's `ModelTrafo`
+   * uniform; trafos inside the instancing subtree get pre-merged
+   * into each per-instance trafo. `pushInstancing` stashes
+   * `this.model` here and resets the outer `model` to identity so
+   * the in-subtree trafos accumulate cleanly.
+   */
+  readonly instancingParentModel: aval<Trafo3d> | undefined;
+
   private constructor(spec: TraversalSpec) {
     this.model = spec.model;
     this.view = spec.view;
@@ -262,6 +283,8 @@ export class TraversalState {
     this.forcePixelPicking = spec.forcePixelPicking;
     this.canFocus = spec.canFocus;
     this.time = spec.time;
+    this.instancing = spec.instancing;
+    this.instancingParentModel = spec.instancingParentModel;
   }
 
   /** Empty initial state — identity transforms, no shader, no uniforms, active=true. */
@@ -298,6 +321,8 @@ export class TraversalState {
     forcePixelPicking: AVal.constant(false),
     canFocus: AVal.constant(false),
     time: AVal.constant(0),
+    instancing: undefined,
+    instancingParentModel: undefined,
   });
 
   // ---------------------------------------------------------------------------
@@ -414,6 +439,20 @@ export class TraversalState {
   pushNoEvents(value: aval<boolean>): TraversalState { return this.with({ noEvents: value }); }
   pushForcePixelPicking(value: aval<boolean>): TraversalState { return this.with({ forcePixelPicking: value }); }
   pushCanFocus(value: aval<boolean>): TraversalState { return this.with({ canFocus: value }); }
+  /** Push an `Sg.Instanced` scope. Validation is the caller's job —
+   *  `compile.ts` runs `validateInstancingSubtree` before pushing.
+   *  Stashes the current `model` as `instancingParentModel` and
+   *  resets `model` to identity inside the subtree (Aardvark
+   *  semantics: trafos inside the subtree pre-merge into each
+   *  per-instance trafo; the stashed parent becomes the leaf's
+   *  `ModelTrafo` uniform). */
+  pushInstancing(node: import("./sg.js").SgInstanced): TraversalState {
+    return this.with({
+      instancing: node,
+      instancingParentModel: this.model,
+      model: AVal.constant(Trafo3d.identity),
+    });
+  }
   /** `<RenderControl>` populates this with the global frame clock. */
   withTime(time: aval<number>): TraversalState { return this.with({ time }); }
 
@@ -455,11 +494,15 @@ export class TraversalState {
       forcePixelPicking: patch.forcePixelPicking ?? this.forcePixelPicking,
       canFocus: patch.canFocus ?? this.canFocus,
       time: patch.time ?? this.time,
+      instancing: "instancing" in patch ? patch.instancing : this.instancing,
+      instancingParentModel: "instancingParentModel" in patch ? patch.instancingParentModel : this.instancingParentModel,
     });
   }
 }
 
 interface TraversalSpec {
+  instancing: import("./sg.js").SgInstanced | undefined;
+  instancingParentModel: aval<Trafo3d> | undefined;
   model: aval<Trafo3d>;
   view: aval<Trafo3d>;
   proj: aval<Trafo3d>;

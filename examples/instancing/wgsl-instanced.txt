@@ -1,0 +1,522 @@
+struct Wombat_vertex_ce8_wombat_vertex_a2bState {
+    Positions: vec4<f32>,
+    Normals: vec3<f32>,
+    _InstanceTrafo_col0: vec4<f32>,
+    _InstanceTrafo_col1: vec4<f32>,
+    _InstanceTrafo_col2: vec4<f32>,
+    _InstanceTrafo_col3: vec4<f32>,
+    _InstanceTrafoInv_col0: vec4<f32>,
+    _InstanceTrafoInv_col1: vec4<f32>,
+    _InstanceTrafoInv_col2: vec4<f32>,
+    _InstanceTrafoInv_col3: vec4<f32>,
+    gl_Position: vec4<f32>,
+    ViewSpaceNormal: vec3<f32>,
+    Colors: vec4<f32>,
+    WorldPositions: vec4<f32>,
+};
+struct Wombat_fragment_14b6_wombat_fragment_15f4State {
+    Normals: vec3<f32>,
+    Colors: vec4<f32>,
+    WorldPositions: vec4<f32>,
+    outColor: vec4<f32>,
+    ViewSpaceNormal: vec3<f32>,
+    fragCoord: vec4<f32>,
+    pickId: vec4<f32>,
+    Depth: f32,
+};
+
+struct _UB_uniform {
+    ModelTrafo: mat4x4<f32>,
+    ViewProjTrafo: mat4x4<f32>,
+    ModelViewTrafoInv: mat4x4<f32>,
+    NormalMatrix: mat4x4<f32>,
+    LightLocation: vec3<f32>,
+    PickId: u32,
+};
+@group(0) @binding(0) var<uniform> _w_uniform: _UB_uniform;
+struct Wombat_vertex_ce8_wombat_vertex_a2bInput {
+    @location(0) Positions: vec4<f32>,
+    @location(1) Normals: vec3<f32>,
+    @location(2) _InstanceTrafoInv_col0: vec4<f32>,
+    @location(3) _InstanceTrafoInv_col1: vec4<f32>,
+    @location(4) _InstanceTrafoInv_col2: vec4<f32>,
+    @location(5) _InstanceTrafoInv_col3: vec4<f32>,
+    @location(6) Colors: vec4<f32>,
+    @location(7) _InstanceTrafo_col0: vec4<f32>,
+    @location(8) _InstanceTrafo_col1: vec4<f32>,
+    @location(9) _InstanceTrafo_col2: vec4<f32>,
+    @location(10) _InstanceTrafo_col3: vec4<f32>,
+};
+struct Wombat_vertex_ce8_wombat_vertex_a2bOutput {
+    @location(0) ViewSpaceNormal: vec3<f32>,
+    @builtin(position) gl_Position: vec4<f32>,
+    @location(1) WorldPositions: vec4<f32>,
+    @location(2) Normals: vec3<f32>,
+    @location(5) Colors: vec4<f32>,
+};
+
+fn n24Encode(v: vec3<f32>) -> f32 {
+    let inv: f32 = (1.0f / ((abs(v.x) + abs(v.y)) + abs(v.z)));
+    let px0: f32 = (v.x * inv);
+    let py0: f32 = (v.y * inv);
+    let sx: f32 = select(-1.0f, 1.0f, (px0 >= 0.0f));
+    let sy: f32 = select(-1.0f, 1.0f, (py0 >= 0.0f));
+    let _cse0: bool = (v.z <= 0.0f);
+    let fx: f32 = select(px0, ((1.0f - abs(py0)) * sx), _cse0);
+    let fy: f32 = select(py0, ((1.0f - abs(px0)) * sy), _cse0);
+    let cx: f32 = clamp(fx, -1.0f, 1.0f);
+    let cy: f32 = clamp(fy, -1.0f, 1.0f);
+    let x0: i32 = i32(floor((((cx * 0.5f) + 0.5f) * 4095.0f)));
+    let y0: i32 = i32(floor((((cy * 0.5f) + 0.5f) * 4095.0f)));
+    let e: f32 = f32(((x0 << u32(12i)) | y0));
+    return e;
+}
+
+fn _wombat_vertex_ce8_wombat_vertex_a2b_wombat_vertex_ce8_0(s_in: Wombat_vertex_ce8_wombat_vertex_a2bState) -> Wombat_vertex_ce8_wombat_vertex_a2bState {
+    var out: Wombat_vertex_ce8_wombat_vertex_a2bState = s_in;
+    let t: mat4x4<f32> = (_w_uniform.ModelViewTrafoInv * mat4x4<f32>(out._InstanceTrafoInv_col0, out._InstanceTrafoInv_col1, out._InstanceTrafoInv_col2, out._InstanceTrafoInv_col3));
+    let v4: vec4<f32> = vec4<f32>(out.Normals.x, out.Normals.y, out.Normals.z, 0.0f);
+    let vn: vec4<f32> = (v4 * t);
+    let n: vec3<f32> = vec3<f32>(vn.x, vn.y, vn.z);
+    out.gl_Position = out.Positions;
+    out.ViewSpaceNormal = normalize(n);
+    return out;
+}
+
+fn _wombat_vertex_ce8_wombat_vertex_a2b_wombat_vertex_a2b_1(s_in: Wombat_vertex_ce8_wombat_vertex_a2bState) -> Wombat_vertex_ce8_wombat_vertex_a2bState {
+    var out: Wombat_vertex_ce8_wombat_vertex_a2bState = s_in;
+    let _cse1: mat4x4<f32> = mat4x4<f32>(out._InstanceTrafo_col0, out._InstanceTrafo_col1, out._InstanceTrafo_col2, out._InstanceTrafo_col3);
+    let _cse0: mat4x4<f32> = (_cse1 * _w_uniform.ModelTrafo);
+    let wp: vec4<f32> = (out.Positions * _cse0);
+    let _cse5: vec4<f32> = vec4<f32>(_w_uniform.NormalMatrix[0i][0i], _w_uniform.NormalMatrix[1i][0i], _w_uniform.NormalMatrix[2i][0i], _w_uniform.NormalMatrix[3i][0i]);
+    let _cse7: vec4<f32> = vec4<f32>(_w_uniform.NormalMatrix[0i][1i], _w_uniform.NormalMatrix[1i][1i], _w_uniform.NormalMatrix[2i][1i], _w_uniform.NormalMatrix[3i][1i]);
+    let _cse9: vec4<f32> = vec4<f32>(_w_uniform.NormalMatrix[0i][2i], _w_uniform.NormalMatrix[1i][2i], _w_uniform.NormalMatrix[2i][2i], _w_uniform.NormalMatrix[3i][2i]);
+    let _cse4: vec3<f32> = _cse5.xyz;
+    let _cse6: vec3<f32> = _cse7.xyz;
+    let _cse8: vec3<f32> = _cse9.xyz;
+    let _cse10: mat3x3<f32> = transpose(mat3x3<f32>(out._InstanceTrafoInv_col0.xyz, out._InstanceTrafoInv_col1.xyz, out._InstanceTrafoInv_col2.xyz));
+    let _cse3: mat3x3<f32> = transpose(mat3x3<f32>(_cse4, _cse6, _cse8));
+    let _cse2: mat3x3<f32> = (_cse10 * _cse3);
+    let n4: vec4<f32> = (vec4<f32>(out.Normals.xyz, 0.0f) * transpose(mat4x4<f32>(vec4<f32>(vec3<f32>(_cse2[0i][0i], _cse2[1i][0i], _cse2[2i][0i]), 0.0f), vec4<f32>(vec3<f32>(_cse2[0i][1i], _cse2[1i][1i], _cse2[2i][1i]), 0.0f), vec4<f32>(vec3<f32>(_cse2[0i][2i], _cse2[1i][2i], _cse2[2i][2i]), 0.0f), vec4<f32>(0.0f, 0.0f, 0.0f, 0.0f))));
+    out.gl_Position = (wp * _w_uniform.ViewProjTrafo);
+    out.WorldPositions = wp;
+    out.Normals = n4.xyz;
+    out.Colors = out.Colors;
+    return out;
+}
+
+fn _wombat_fragment_14b6_wombat_fragment_15f4_wombat_fragment_14b6_0(s_in: Wombat_fragment_14b6_wombat_fragment_15f4State) -> Wombat_fragment_14b6_wombat_fragment_15f4State {
+    var out: Wombat_fragment_14b6_wombat_fragment_15f4State = s_in;
+    let n: vec3<f32> = normalize(out.Normals);
+    let c: vec3<f32> = normalize((_w_uniform.LightLocation - out.WorldPositions.xyz));
+    let diffuse: f32 = abs(dot(c, n));
+    let l: f32 = (0.2f + (0.8f * diffuse));
+    out.outColor = vec4<f32>((out.Colors.xyz * l), out.Colors.w);
+    return out;
+}
+
+fn _wombat_fragment_14b6_wombat_fragment_15f4_wombat_fragment_15f4_1(s_in: Wombat_fragment_14b6_wombat_fragment_15f4State) -> Wombat_fragment_14b6_wombat_fragment_15f4State {
+    var out: Wombat_fragment_14b6_wombat_fragment_15f4State = s_in;
+    let n24: f32 = n24Encode(normalize(out.ViewSpaceNormal));
+    let id: vec4<f32> = vec4<f32>(f32(_w_uniform.PickId), n24, out.fragCoord.z, 0.0f);
+    out.outColor = out.outColor;
+    out.pickId = id;
+    out.Depth = out.fragCoord.z;
+    return out;
+}
+
+@vertex
+fn wombat_vertex_ce8_wombat_vertex_a2b(in: Wombat_vertex_ce8_wombat_vertex_a2bInput) -> Wombat_vertex_ce8_wombat_vertex_a2bOutput {
+    var out: Wombat_vertex_ce8_wombat_vertex_a2bOutput;
+    var s: Wombat_vertex_ce8_wombat_vertex_a2bState;
+    s.Positions = in.Positions;
+    s.Normals = in.Normals;
+    s._InstanceTrafoInv_col0 = in._InstanceTrafoInv_col0;
+    s._InstanceTrafoInv_col1 = in._InstanceTrafoInv_col1;
+    s._InstanceTrafoInv_col2 = in._InstanceTrafoInv_col2;
+    s._InstanceTrafoInv_col3 = in._InstanceTrafoInv_col3;
+    s.Colors = in.Colors;
+    s._InstanceTrafo_col0 = in._InstanceTrafo_col0;
+    s._InstanceTrafo_col1 = in._InstanceTrafo_col1;
+    s._InstanceTrafo_col2 = in._InstanceTrafo_col2;
+    s._InstanceTrafo_col3 = in._InstanceTrafo_col3;
+    s = _wombat_vertex_ce8_wombat_vertex_a2b_wombat_vertex_ce8_0(s);
+    s = _wombat_vertex_ce8_wombat_vertex_a2b_wombat_vertex_a2b_1(s);
+    out.ViewSpaceNormal = s.ViewSpaceNormal;
+    out.gl_Position = s.gl_Position;
+    out.WorldPositions = s.WorldPositions;
+    out.Normals = s.Normals;
+    out.Colors = s.Colors;
+    return out;
+}
+
+=====
+struct Wombat_vertex_ce8_wombat_vertex_a2bState {
+    Positions: vec4<f32>,
+    Normals: vec3<f32>,
+    _InstanceTrafo_col0: vec4<f32>,
+    _InstanceTrafo_col1: vec4<f32>,
+    _InstanceTrafo_col2: vec4<f32>,
+    _InstanceTrafo_col3: vec4<f32>,
+    _InstanceTrafoInv_col0: vec4<f32>,
+    _InstanceTrafoInv_col1: vec4<f32>,
+    _InstanceTrafoInv_col2: vec4<f32>,
+    _InstanceTrafoInv_col3: vec4<f32>,
+    gl_Position: vec4<f32>,
+    ViewSpaceNormal: vec3<f32>,
+    Colors: vec4<f32>,
+    WorldPositions: vec4<f32>,
+};
+struct Wombat_fragment_14b6_wombat_fragment_15f4State {
+    Normals: vec3<f32>,
+    Colors: vec4<f32>,
+    WorldPositions: vec4<f32>,
+    outColor: vec4<f32>,
+    ViewSpaceNormal: vec3<f32>,
+    fragCoord: vec4<f32>,
+    pickId: vec4<f32>,
+    Depth: f32,
+};
+
+struct _UB_uniform {
+    ModelTrafo: mat4x4<f32>,
+    ViewProjTrafo: mat4x4<f32>,
+    ModelViewTrafoInv: mat4x4<f32>,
+    NormalMatrix: mat4x4<f32>,
+    LightLocation: vec3<f32>,
+    PickId: u32,
+};
+@group(0) @binding(0) var<uniform> _w_uniform: _UB_uniform;
+struct Wombat_fragment_14b6_wombat_fragment_15f4Input {
+    @location(2) Normals: vec3<f32>,
+    @location(5) Colors: vec4<f32>,
+    @location(1) WorldPositions: vec4<f32>,
+    @location(0) ViewSpaceNormal: vec3<f32>,
+};
+struct Wombat_fragment_14b6_wombat_fragment_15f4Output {
+    @location(0) outColor: vec4<f32>,
+    @location(1) pickId: vec4<f32>,
+    @builtin(frag_depth) Depth: f32,
+};
+
+fn n24Encode(v: vec3<f32>) -> f32 {
+    let inv: f32 = (1.0f / ((abs(v.x) + abs(v.y)) + abs(v.z)));
+    let px0: f32 = (v.x * inv);
+    let py0: f32 = (v.y * inv);
+    let sx: f32 = select(-1.0f, 1.0f, (px0 >= 0.0f));
+    let sy: f32 = select(-1.0f, 1.0f, (py0 >= 0.0f));
+    let _cse0: bool = (v.z <= 0.0f);
+    let fx: f32 = select(px0, ((1.0f - abs(py0)) * sx), _cse0);
+    let fy: f32 = select(py0, ((1.0f - abs(px0)) * sy), _cse0);
+    let cx: f32 = clamp(fx, -1.0f, 1.0f);
+    let cy: f32 = clamp(fy, -1.0f, 1.0f);
+    let x0: i32 = i32(floor((((cx * 0.5f) + 0.5f) * 4095.0f)));
+    let y0: i32 = i32(floor((((cy * 0.5f) + 0.5f) * 4095.0f)));
+    let e: f32 = f32(((x0 << u32(12i)) | y0));
+    return e;
+}
+
+fn _wombat_vertex_ce8_wombat_vertex_a2b_wombat_vertex_ce8_0(s_in: Wombat_vertex_ce8_wombat_vertex_a2bState) -> Wombat_vertex_ce8_wombat_vertex_a2bState {
+    var out: Wombat_vertex_ce8_wombat_vertex_a2bState = s_in;
+    let t: mat4x4<f32> = (_w_uniform.ModelViewTrafoInv * mat4x4<f32>(out._InstanceTrafoInv_col0, out._InstanceTrafoInv_col1, out._InstanceTrafoInv_col2, out._InstanceTrafoInv_col3));
+    let v4: vec4<f32> = vec4<f32>(out.Normals.x, out.Normals.y, out.Normals.z, 0.0f);
+    let vn: vec4<f32> = (v4 * t);
+    let n: vec3<f32> = vec3<f32>(vn.x, vn.y, vn.z);
+    out.gl_Position = out.Positions;
+    out.ViewSpaceNormal = normalize(n);
+    return out;
+}
+
+fn _wombat_vertex_ce8_wombat_vertex_a2b_wombat_vertex_a2b_1(s_in: Wombat_vertex_ce8_wombat_vertex_a2bState) -> Wombat_vertex_ce8_wombat_vertex_a2bState {
+    var out: Wombat_vertex_ce8_wombat_vertex_a2bState = s_in;
+    let _cse1: mat4x4<f32> = mat4x4<f32>(out._InstanceTrafo_col0, out._InstanceTrafo_col1, out._InstanceTrafo_col2, out._InstanceTrafo_col3);
+    let _cse0: mat4x4<f32> = (_cse1 * _w_uniform.ModelTrafo);
+    let wp: vec4<f32> = (out.Positions * _cse0);
+    let _cse5: vec4<f32> = vec4<f32>(_w_uniform.NormalMatrix[0i][0i], _w_uniform.NormalMatrix[1i][0i], _w_uniform.NormalMatrix[2i][0i], _w_uniform.NormalMatrix[3i][0i]);
+    let _cse7: vec4<f32> = vec4<f32>(_w_uniform.NormalMatrix[0i][1i], _w_uniform.NormalMatrix[1i][1i], _w_uniform.NormalMatrix[2i][1i], _w_uniform.NormalMatrix[3i][1i]);
+    let _cse9: vec4<f32> = vec4<f32>(_w_uniform.NormalMatrix[0i][2i], _w_uniform.NormalMatrix[1i][2i], _w_uniform.NormalMatrix[2i][2i], _w_uniform.NormalMatrix[3i][2i]);
+    let _cse4: vec3<f32> = _cse5.xyz;
+    let _cse6: vec3<f32> = _cse7.xyz;
+    let _cse8: vec3<f32> = _cse9.xyz;
+    let _cse10: mat3x3<f32> = transpose(mat3x3<f32>(out._InstanceTrafoInv_col0.xyz, out._InstanceTrafoInv_col1.xyz, out._InstanceTrafoInv_col2.xyz));
+    let _cse3: mat3x3<f32> = transpose(mat3x3<f32>(_cse4, _cse6, _cse8));
+    let _cse2: mat3x3<f32> = (_cse10 * _cse3);
+    let n4: vec4<f32> = (vec4<f32>(out.Normals.xyz, 0.0f) * transpose(mat4x4<f32>(vec4<f32>(vec3<f32>(_cse2[0i][0i], _cse2[1i][0i], _cse2[2i][0i]), 0.0f), vec4<f32>(vec3<f32>(_cse2[0i][1i], _cse2[1i][1i], _cse2[2i][1i]), 0.0f), vec4<f32>(vec3<f32>(_cse2[0i][2i], _cse2[1i][2i], _cse2[2i][2i]), 0.0f), vec4<f32>(0.0f, 0.0f, 0.0f, 0.0f))));
+    out.gl_Position = (wp * _w_uniform.ViewProjTrafo);
+    out.WorldPositions = wp;
+    out.Normals = n4.xyz;
+    out.Colors = out.Colors;
+    return out;
+}
+
+fn _wombat_fragment_14b6_wombat_fragment_15f4_wombat_fragment_14b6_0(s_in: Wombat_fragment_14b6_wombat_fragment_15f4State) -> Wombat_fragment_14b6_wombat_fragment_15f4State {
+    var out: Wombat_fragment_14b6_wombat_fragment_15f4State = s_in;
+    let n: vec3<f32> = normalize(out.Normals);
+    let c: vec3<f32> = normalize((_w_uniform.LightLocation - out.WorldPositions.xyz));
+    let diffuse: f32 = abs(dot(c, n));
+    let l: f32 = (0.2f + (0.8f * diffuse));
+    out.outColor = vec4<f32>((out.Colors.xyz * l), out.Colors.w);
+    return out;
+}
+
+fn _wombat_fragment_14b6_wombat_fragment_15f4_wombat_fragment_15f4_1(s_in: Wombat_fragment_14b6_wombat_fragment_15f4State) -> Wombat_fragment_14b6_wombat_fragment_15f4State {
+    var out: Wombat_fragment_14b6_wombat_fragment_15f4State = s_in;
+    let n24: f32 = n24Encode(normalize(out.ViewSpaceNormal));
+    let id: vec4<f32> = vec4<f32>(f32(_w_uniform.PickId), n24, out.fragCoord.z, 0.0f);
+    out.outColor = out.outColor;
+    out.pickId = id;
+    out.Depth = out.fragCoord.z;
+    return out;
+}
+
+@fragment
+fn wombat_fragment_14b6_wombat_fragment_15f4(in: Wombat_fragment_14b6_wombat_fragment_15f4Input, @builtin(position) position: vec4<f32>) -> Wombat_fragment_14b6_wombat_fragment_15f4Output {
+    var out: Wombat_fragment_14b6_wombat_fragment_15f4Output;
+    var s: Wombat_fragment_14b6_wombat_fragment_15f4State;
+    s.Normals = in.Normals;
+    s.Colors = in.Colors;
+    s.WorldPositions = in.WorldPositions;
+    s.ViewSpaceNormal = in.ViewSpaceNormal;
+    s.fragCoord = position;
+    s = _wombat_fragment_14b6_wombat_fragment_15f4_wombat_fragment_14b6_0(s);
+    s = _wombat_fragment_14b6_wombat_fragment_15f4_wombat_fragment_15f4_1(s);
+    out.outColor = s.outColor;
+    out.pickId = s.pickId;
+    out.Depth = s.Depth;
+    return out;
+}
+
+=====
+struct Wombat_vertex_ce8_wombat_vertex_a2bState {
+    Positions: vec4<f32>,
+    Normals: vec3<f32>,
+    gl_Position: vec4<f32>,
+    ViewSpaceNormal: vec3<f32>,
+    Colors: vec4<f32>,
+    WorldPositions: vec4<f32>,
+};
+struct Wombat_fragment_14b6_wombat_fragment_15f4State {
+    Normals: vec3<f32>,
+    Colors: vec4<f32>,
+    WorldPositions: vec4<f32>,
+    outColor: vec4<f32>,
+    ViewSpaceNormal: vec3<f32>,
+    fragCoord: vec4<f32>,
+    pickId: vec4<f32>,
+    Depth: f32,
+};
+
+struct _UB_uniform {
+    ModelTrafo: mat4x4<f32>,
+    ViewProjTrafo: mat4x4<f32>,
+    ModelViewTrafoInv: mat4x4<f32>,
+    NormalMatrix: mat4x4<f32>,
+    LightLocation: vec3<f32>,
+    PickId: u32,
+};
+@group(0) @binding(0) var<uniform> _w_uniform: _UB_uniform;
+struct Wombat_vertex_ce8_wombat_vertex_a2bInput {
+    @location(0) Positions: vec4<f32>,
+    @location(1) Normals: vec3<f32>,
+    @location(2) Colors: vec4<f32>,
+};
+struct Wombat_vertex_ce8_wombat_vertex_a2bOutput {
+    @location(0) ViewSpaceNormal: vec3<f32>,
+    @builtin(position) gl_Position: vec4<f32>,
+    @location(1) WorldPositions: vec4<f32>,
+    @location(2) Normals: vec3<f32>,
+    @location(5) Colors: vec4<f32>,
+};
+
+fn n24Encode(v: vec3<f32>) -> f32 {
+    let inv: f32 = (1.0f / ((abs(v.x) + abs(v.y)) + abs(v.z)));
+    let px0: f32 = (v.x * inv);
+    let py0: f32 = (v.y * inv);
+    let sx: f32 = select(-1.0f, 1.0f, (px0 >= 0.0f));
+    let sy: f32 = select(-1.0f, 1.0f, (py0 >= 0.0f));
+    let _cse0: bool = (v.z <= 0.0f);
+    let fx: f32 = select(px0, ((1.0f - abs(py0)) * sx), _cse0);
+    let fy: f32 = select(py0, ((1.0f - abs(px0)) * sy), _cse0);
+    let cx: f32 = clamp(fx, -1.0f, 1.0f);
+    let cy: f32 = clamp(fy, -1.0f, 1.0f);
+    let x0: i32 = i32(floor((((cx * 0.5f) + 0.5f) * 4095.0f)));
+    let y0: i32 = i32(floor((((cy * 0.5f) + 0.5f) * 4095.0f)));
+    let e: f32 = f32(((x0 << u32(12i)) | y0));
+    return e;
+}
+
+fn _wombat_vertex_ce8_wombat_vertex_a2b_wombat_vertex_ce8_0(s_in: Wombat_vertex_ce8_wombat_vertex_a2bState) -> Wombat_vertex_ce8_wombat_vertex_a2bState {
+    var out: Wombat_vertex_ce8_wombat_vertex_a2bState = s_in;
+    let t: mat4x4<f32> = _w_uniform.ModelViewTrafoInv;
+    let v4: vec4<f32> = vec4<f32>(out.Normals.x, out.Normals.y, out.Normals.z, 0.0f);
+    let vn: vec4<f32> = (v4 * t);
+    let n: vec3<f32> = vec3<f32>(vn.x, vn.y, vn.z);
+    out.gl_Position = out.Positions;
+    out.ViewSpaceNormal = normalize(n);
+    return out;
+}
+
+fn _wombat_vertex_ce8_wombat_vertex_a2b_wombat_vertex_a2b_1(s_in: Wombat_vertex_ce8_wombat_vertex_a2bState) -> Wombat_vertex_ce8_wombat_vertex_a2bState {
+    var out: Wombat_vertex_ce8_wombat_vertex_a2bState = s_in;
+    let wp: vec4<f32> = (out.Positions * _w_uniform.ModelTrafo);
+    let n4: vec4<f32> = (vec4<f32>(out.Normals.xyz, 0.0f) * _w_uniform.NormalMatrix);
+    out.gl_Position = (wp * _w_uniform.ViewProjTrafo);
+    out.WorldPositions = wp;
+    out.Normals = n4.xyz;
+    out.Colors = out.Colors;
+    return out;
+}
+
+fn _wombat_fragment_14b6_wombat_fragment_15f4_wombat_fragment_14b6_0(s_in: Wombat_fragment_14b6_wombat_fragment_15f4State) -> Wombat_fragment_14b6_wombat_fragment_15f4State {
+    var out: Wombat_fragment_14b6_wombat_fragment_15f4State = s_in;
+    let n: vec3<f32> = normalize(out.Normals);
+    let c: vec3<f32> = normalize((_w_uniform.LightLocation - out.WorldPositions.xyz));
+    let diffuse: f32 = abs(dot(c, n));
+    let l: f32 = (0.2f + (0.8f * diffuse));
+    out.outColor = vec4<f32>((out.Colors.xyz * l), out.Colors.w);
+    return out;
+}
+
+fn _wombat_fragment_14b6_wombat_fragment_15f4_wombat_fragment_15f4_1(s_in: Wombat_fragment_14b6_wombat_fragment_15f4State) -> Wombat_fragment_14b6_wombat_fragment_15f4State {
+    var out: Wombat_fragment_14b6_wombat_fragment_15f4State = s_in;
+    let n24: f32 = n24Encode(normalize(out.ViewSpaceNormal));
+    let id: vec4<f32> = vec4<f32>(f32(_w_uniform.PickId), n24, out.fragCoord.z, 0.0f);
+    out.outColor = out.outColor;
+    out.pickId = id;
+    out.Depth = out.fragCoord.z;
+    return out;
+}
+
+@vertex
+fn wombat_vertex_ce8_wombat_vertex_a2b(in: Wombat_vertex_ce8_wombat_vertex_a2bInput) -> Wombat_vertex_ce8_wombat_vertex_a2bOutput {
+    var out: Wombat_vertex_ce8_wombat_vertex_a2bOutput;
+    var s: Wombat_vertex_ce8_wombat_vertex_a2bState;
+    s.Positions = in.Positions;
+    s.Normals = in.Normals;
+    s.Colors = in.Colors;
+    s = _wombat_vertex_ce8_wombat_vertex_a2b_wombat_vertex_ce8_0(s);
+    s = _wombat_vertex_ce8_wombat_vertex_a2b_wombat_vertex_a2b_1(s);
+    out.ViewSpaceNormal = s.ViewSpaceNormal;
+    out.gl_Position = s.gl_Position;
+    out.WorldPositions = s.WorldPositions;
+    out.Normals = s.Normals;
+    out.Colors = s.Colors;
+    return out;
+}
+
+=====
+struct Wombat_vertex_ce8_wombat_vertex_a2bState {
+    Positions: vec4<f32>,
+    Normals: vec3<f32>,
+    gl_Position: vec4<f32>,
+    ViewSpaceNormal: vec3<f32>,
+    Colors: vec4<f32>,
+    WorldPositions: vec4<f32>,
+};
+struct Wombat_fragment_14b6_wombat_fragment_15f4State {
+    Normals: vec3<f32>,
+    Colors: vec4<f32>,
+    WorldPositions: vec4<f32>,
+    outColor: vec4<f32>,
+    ViewSpaceNormal: vec3<f32>,
+    fragCoord: vec4<f32>,
+    pickId: vec4<f32>,
+    Depth: f32,
+};
+
+struct _UB_uniform {
+    ModelTrafo: mat4x4<f32>,
+    ViewProjTrafo: mat4x4<f32>,
+    ModelViewTrafoInv: mat4x4<f32>,
+    NormalMatrix: mat4x4<f32>,
+    LightLocation: vec3<f32>,
+    PickId: u32,
+};
+@group(0) @binding(0) var<uniform> _w_uniform: _UB_uniform;
+struct Wombat_fragment_14b6_wombat_fragment_15f4Input {
+    @location(2) Normals: vec3<f32>,
+    @location(5) Colors: vec4<f32>,
+    @location(1) WorldPositions: vec4<f32>,
+    @location(0) ViewSpaceNormal: vec3<f32>,
+};
+struct Wombat_fragment_14b6_wombat_fragment_15f4Output {
+    @location(0) outColor: vec4<f32>,
+    @location(1) pickId: vec4<f32>,
+    @builtin(frag_depth) Depth: f32,
+};
+
+fn n24Encode(v: vec3<f32>) -> f32 {
+    let inv: f32 = (1.0f / ((abs(v.x) + abs(v.y)) + abs(v.z)));
+    let px0: f32 = (v.x * inv);
+    let py0: f32 = (v.y * inv);
+    let sx: f32 = select(-1.0f, 1.0f, (px0 >= 0.0f));
+    let sy: f32 = select(-1.0f, 1.0f, (py0 >= 0.0f));
+    let _cse0: bool = (v.z <= 0.0f);
+    let fx: f32 = select(px0, ((1.0f - abs(py0)) * sx), _cse0);
+    let fy: f32 = select(py0, ((1.0f - abs(px0)) * sy), _cse0);
+    let cx: f32 = clamp(fx, -1.0f, 1.0f);
+    let cy: f32 = clamp(fy, -1.0f, 1.0f);
+    let x0: i32 = i32(floor((((cx * 0.5f) + 0.5f) * 4095.0f)));
+    let y0: i32 = i32(floor((((cy * 0.5f) + 0.5f) * 4095.0f)));
+    let e: f32 = f32(((x0 << u32(12i)) | y0));
+    return e;
+}
+
+fn _wombat_vertex_ce8_wombat_vertex_a2b_wombat_vertex_ce8_0(s_in: Wombat_vertex_ce8_wombat_vertex_a2bState) -> Wombat_vertex_ce8_wombat_vertex_a2bState {
+    var out: Wombat_vertex_ce8_wombat_vertex_a2bState = s_in;
+    let t: mat4x4<f32> = _w_uniform.ModelViewTrafoInv;
+    let v4: vec4<f32> = vec4<f32>(out.Normals.x, out.Normals.y, out.Normals.z, 0.0f);
+    let vn: vec4<f32> = (v4 * t);
+    let n: vec3<f32> = vec3<f32>(vn.x, vn.y, vn.z);
+    out.gl_Position = out.Positions;
+    out.ViewSpaceNormal = normalize(n);
+    return out;
+}
+
+fn _wombat_vertex_ce8_wombat_vertex_a2b_wombat_vertex_a2b_1(s_in: Wombat_vertex_ce8_wombat_vertex_a2bState) -> Wombat_vertex_ce8_wombat_vertex_a2bState {
+    var out: Wombat_vertex_ce8_wombat_vertex_a2bState = s_in;
+    let wp: vec4<f32> = (out.Positions * _w_uniform.ModelTrafo);
+    let n4: vec4<f32> = (vec4<f32>(out.Normals.xyz, 0.0f) * _w_uniform.NormalMatrix);
+    out.gl_Position = (wp * _w_uniform.ViewProjTrafo);
+    out.WorldPositions = wp;
+    out.Normals = n4.xyz;
+    out.Colors = out.Colors;
+    return out;
+}
+
+fn _wombat_fragment_14b6_wombat_fragment_15f4_wombat_fragment_14b6_0(s_in: Wombat_fragment_14b6_wombat_fragment_15f4State) -> Wombat_fragment_14b6_wombat_fragment_15f4State {
+    var out: Wombat_fragment_14b6_wombat_fragment_15f4State = s_in;
+    let n: vec3<f32> = normalize(out.Normals);
+    let c: vec3<f32> = normalize((_w_uniform.LightLocation - out.WorldPositions.xyz));
+    let diffuse: f32 = abs(dot(c, n));
+    let l: f32 = (0.2f + (0.8f * diffuse));
+    out.outColor = vec4<f32>((out.Colors.xyz * l), out.Colors.w);
+    return out;
+}
+
+fn _wombat_fragment_14b6_wombat_fragment_15f4_wombat_fragment_15f4_1(s_in: Wombat_fragment_14b6_wombat_fragment_15f4State) -> Wombat_fragment_14b6_wombat_fragment_15f4State {
+    var out: Wombat_fragment_14b6_wombat_fragment_15f4State = s_in;
+    let n24: f32 = n24Encode(normalize(out.ViewSpaceNormal));
+    let id: vec4<f32> = vec4<f32>(f32(_w_uniform.PickId), n24, out.fragCoord.z, 0.0f);
+    out.outColor = out.outColor;
+    out.pickId = id;
+    out.Depth = out.fragCoord.z;
+    return out;
+}
+
+@fragment
+fn wombat_fragment_14b6_wombat_fragment_15f4(in: Wombat_fragment_14b6_wombat_fragment_15f4Input, @builtin(position) position: vec4<f32>) -> Wombat_fragment_14b6_wombat_fragment_15f4Output {
+    var out: Wombat_fragment_14b6_wombat_fragment_15f4Output;
+    var s: Wombat_fragment_14b6_wombat_fragment_15f4State;
+    s.Normals = in.Normals;
+    s.Colors = in.Colors;
+    s.WorldPositions = in.WorldPositions;
+    s.ViewSpaceNormal = in.ViewSpaceNormal;
+    s.fragCoord = position;
+    s = _wombat_fragment_14b6_wombat_fragment_15f4_wombat_fragment_14b6_0(s);
+    s = _wombat_fragment_14b6_wombat_fragment_15f4_wombat_fragment_15f4_1(s);
+    out.outColor = s.outColor;
+    out.pickId = s.pickId;
+    out.Depth = s.Depth;
+    return out;
+}
