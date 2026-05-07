@@ -15,7 +15,8 @@ import {
 } from "@aardworx/wombat.adaptive";
 import {
   IBuffer,
-  type BufferView, type DrawCall,
+  BufferView,
+  type DrawCall,
 } from "@aardworx/wombat.rendering/core";
 import {
   buildBox, buildWireBox,
@@ -29,25 +30,24 @@ import {
 } from "./geometry.js";
 
 export interface GeometryHandle {
-  readonly vertexAttrs: HashMap<string, aval<BufferView>>;
-  readonly indices: aval<BufferView>;
+  readonly vertexAttrs: HashMap<string, BufferView>;
+  readonly indices: BufferView;
   readonly drawCall: aval<DrawCall>;
   readonly mode: "triangle-list" | "line-list";
 }
 
 function toHandle(g: GeometryData): GeometryHandle {
-  const vCount = g.positions.length / 3;
   const positions: BufferView = {
-    buffer: IBuffer.fromHost(g.positions),
-    offset: 0, count: vCount, stride: 12, format: "float32x3",
+    buffer: AVal.constant(IBuffer.fromHost(g.positions)),
+    elementType: "v3f",
   };
   const normals: BufferView = {
-    buffer: IBuffer.fromHost(g.normals),
-    offset: 0, count: vCount, stride: 12, format: "float32x3",
+    buffer: AVal.constant(IBuffer.fromHost(g.normals)),
+    elementType: "v3f",
   };
   const indices: BufferView = {
-    buffer: IBuffer.fromHost(g.indices),
-    offset: 0, count: g.indices.length, stride: 4, format: "uint32",
+    buffer: AVal.constant(IBuffer.fromHost(g.indices)),
+    elementType: "u32",
   };
   const drawCall: DrawCall = {
     kind: "indexed",
@@ -57,12 +57,12 @@ function toHandle(g: GeometryData): GeometryHandle {
     baseVertex: 0,
     firstInstance: 0,
   };
-  const vertexAttrs = HashMap.empty<string, aval<BufferView>>()
-    .add("Positions", AVal.constant(positions))
-    .add("Normals",   AVal.constant(normals));
+  const vertexAttrs = HashMap.empty<string, BufferView>()
+    .add("Positions", positions)
+    .add("Normals",   normals);
   return {
     vertexAttrs,
-    indices: AVal.constant(indices),
+    indices,
     drawCall: AVal.constant(drawCall),
     mode: g.mode,
   };

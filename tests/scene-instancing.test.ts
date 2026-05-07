@@ -30,11 +30,11 @@ const drawWithInstance = (instanceCount: number): DrawCall => ({
 
 const leaf = (drawCall: DrawCall = dummyDraw): SgLeaf => ({
   kind: "Leaf",
-  vertexAttributes: HashMap.empty<string, aval<BufferView>>(),
+  vertexAttributes: HashMap.empty<string, BufferView>(),
   drawCall: AVal.constant(drawCall),
 });
 
-const dummyAttr = (): HashMap<string, aval<BufferView>> => HashMap.empty();
+const dummyAttr = (): HashMap<string, BufferView> => HashMap.empty();
 
 const instanced = (count: number, child: SgNode): SgInstanced => ({
   kind: "Instanced",
@@ -101,7 +101,7 @@ describe("applyInstancing", () => {
       kind: "Instanced",
       count: AVal.constant(1),
       trafos: AVal.constant(oneTrafo),
-      attributes: HashMap.empty<string, aval<BufferView>>(),
+      attributes: HashMap.empty<string, BufferView>(),
       child: leaf(),
     };
     const applied = applyInstancing(node, idTrafo, idTrafo, idTrafo, idTrafo, stubEffect, leaf());
@@ -135,7 +135,7 @@ describe("applyInstancing", () => {
       kind: "Instanced",
       count: AVal.constant(1),
       trafos: AVal.constant(oneTrafo),
-      attributes: HashMap.empty<string, aval<BufferView>>(),
+      attributes: HashMap.empty<string, BufferView>(),
       child: leaf(),
     };
     const applied = applyInstancing(node, innerModel, parentModel, view, proj, stubEffect, leaf());
@@ -158,14 +158,14 @@ describe("applyInstancing", () => {
   });
 
   it("plain (non-trafo) attributes pass through verbatim", () => {
-    const dummyView = AVal.constant<BufferView>({
-      buffer: { kind: "host", data: new Float32Array(0), sizeBytes: 0 } as never,
-      offset: 0, count: 0, stride: 0, format: "float32x4",
-    });
+    const dummyView: BufferView = {
+      buffer: AVal.constant({ kind: "host", data: new Float32Array(0), sizeBytes: 0 } as never),
+      elementType: "v4f",
+    };
     const node: SgInstanced = {
       kind: "Instanced",
       count: AVal.constant(2),
-      attributes: HashMap.empty<string, aval<BufferView>>().add("Color", dummyView),
+      attributes: HashMap.empty<string, BufferView>().add("Color", dummyView),
       child: leaf(),
     };
     const applied = applyInstancing(node, idTrafo, idTrafo, idTrafo, idTrafo, stubEffect, leaf());

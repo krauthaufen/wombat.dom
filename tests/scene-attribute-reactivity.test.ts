@@ -22,9 +22,13 @@ const dummyDraw: DrawCall = {
 };
 
 function bv(label: string): BufferView {
+  // The label rides on the IBuffer kind:"host" object so callers can
+  // round-trip identity through `AVal.force(view.buffer).label`.
   return {
-    buffer: { kind: "host", data: new Float32Array(0), sizeBytes: 0, label } as unknown as BufferView["buffer"],
-    offset: 0, count: 3, stride: 12, format: "float32x3",
+    buffer: AVal.constant({
+      kind: "host", data: new Float32Array(0), sizeBytes: 0, label,
+    } as never),
+    elementType: "v3f",
   };
 }
 
@@ -43,11 +47,12 @@ function leafOf(rt: RenderTree): RenderTree & { kind: "Leaf" } {
 }
 
 describe("Phase B — per-buffer reactive vertex attributes through compileScene", () => {
-  it("flipping an inner BufferView aval flows through to RenderObject.vertexAttributes without recompiling the scene", () => {
-    const a = bv("A");
-    const b = bv("B");
-    const positionView = cval<BufferView>(a);
-    const map = HashMap.empty<string, ReturnType<typeof AVal.constant<BufferView>>>().add("Positions", positionView);
+  it("flipping the inner aval<IBuffer> flows through to RenderObject.vertexAttributes without recompiling the scene", () => {
+    const ibA = { kind: "host", data: new Float32Array(0), sizeBytes: 0, label: "A" } as never;
+    const ibB = { kind: "host", data: new Float32Array(0), sizeBytes: 0, label: "B" } as never;
+    const bufCval = cval(ibA);
+    const view: BufferView = { buffer: bufCval, elementType: "v3f" };
+    const map = HashMap.empty<string, BufferView>().add("Positions", view);
 
     const sg: SgLeaf = Sg.leaf({
       vertexAttributes: map,
@@ -57,39 +62,12 @@ describe("Phase B — per-buffer reactive vertex attributes through compileScene
     const rt = leafOf(singleRender(cmds));
     const obj = rt.object;
 
-    // The outer map is plain — the same HashMap reference is threaded
-    // through. Per-key avals are still reactive on the leaf.
     const found1 = obj.vertexAttributes.tryFind("Positions");
     expect(found1).toBeDefined();
-    expect((AVal.force(found1!).buffer as { label?: string }).label).toBe("A");
+    expect((AVal.force(found1!.buffer) as { label?: string }).label).toBe("A");
 
-    transact(() => { positionView.value = b; });
+    transact(() => { bufCval.value = ibB; });
     const found2 = obj.vertexAttributes.tryFind("Positions");
-    expect((AVal.force(found2!).buffer as { label?: string }).label).toBe("B");
-  });
-
-  it("Index aval flips between defined and undefined", () => {
-    const idx = bv("idx");
-    const present: BufferView | undefined = idx;
-    const absent: BufferView | undefined = undefined;
-    const dynIdx = cval<BufferView | undefined>(present);
-
-    const sg: SgLeaf = Sg.leaf({
-      vertexAttributes: HashMap.empty<string, ReturnType<typeof AVal.constant<BufferView>>>().add("Positions", AVal.constant(bv("p"))),
-      indices: dynIdx,
-      drawCall: AVal.constant(dummyDraw),
-    });
-    const cmds = compileScene(Sg.shader(fakeEffect, sg), fbo);
-    const rt = leafOf(singleRender(cmds));
-    const obj = rt.object;
-    expect(obj.indices).toBeDefined();
-
-    transact(() => { dynIdx.value = absent; });
-    const view = AVal.force(obj.indices!);
-    expect(view).toBeUndefined();
-
-    transact(() => { dynIdx.value = present; });
-    const view2 = AVal.force(obj.indices!);
-    expect(view2).toBeDefined();
+    expect((AVal.force(found2!.buffer) as { label?: string }).label).toBe("B");
   });
 });

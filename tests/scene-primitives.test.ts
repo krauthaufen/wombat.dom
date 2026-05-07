@@ -17,8 +17,6 @@ describe("primitives", () => {
       const va = leaf.vertexAttributes;
       expect(va.tryFind("Positions")).toBeDefined();
       expect(va.tryFind("Colors")).toBeDefined();
-      const idx = AVal.force(leaf.indices!)!;
-      expect(idx.count).toBe(36);
       const dc = AVal.force(leaf.drawCall);
       expect(dc.kind).toBe("indexed");
       if (dc.kind === "indexed") expect(dc.indexCount).toBe(36);
@@ -26,8 +24,8 @@ describe("primitives", () => {
 
     it("size scales positions to span [-size, +size]", () => {
       const leaf = box({ size: new V3d(2, 3, 4) });
-      const view = AVal.force(leaf.vertexAttributes.tryFind("Positions")!);
-      const data = view.buffer;
+      const view = leaf.vertexAttributes.tryFind("Positions")!;
+      const data = AVal.force(view.buffer);
       if (data.kind !== "host") throw new Error("expected host buffer");
       const ab = data.data as ArrayBuffer;
       const positions = new Float32Array(ab);
@@ -51,10 +49,12 @@ describe("primitives", () => {
   describe("quad", () => {
     it("has 4 vertices, 6 indices", () => {
       const leaf = quad();
-      const idx = AVal.force(leaf.indices!)!;
-      expect(idx.count).toBe(6);
-      const pos = AVal.force(leaf.vertexAttributes.tryFind("Positions")!);
-      expect(pos.count).toBe(4);
+      // BufferView no longer carries `count`; the draw counts live on
+      // `drawCall`. 6 indices for a quad = 2 triangles × 3 indices.
+      const dc = AVal.force(leaf.drawCall);
+      if (dc.kind !== "indexed") throw new Error("quad should be indexed");
+      expect(dc.indexCount).toBe(6);
+      expect(leaf.vertexAttributes.tryFind("Positions")).toBeDefined();
     });
   });
 });

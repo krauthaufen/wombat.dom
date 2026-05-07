@@ -568,7 +568,7 @@ function buildRenderObject(
     textures: HashMap.empty<string, aval<ITexture>>(),
     samplers: HashMap.empty<string, aval<ISampler>>(),
     ...(leaf.storageBuffers !== undefined ? { storageBuffers: leaf.storageBuffers } : {}),
-    ...(leaf.indices !== undefined ? { indices: leaf.indices.map(v => v as BufferView) } : {}),
+    ...(leaf.indices !== undefined ? { indices: leaf.indices } : {}),
     drawCall: leaf.drawCall,
   };
   return obj;
@@ -583,14 +583,14 @@ function buildRenderObject(
  * undefined>.
  */
 function mergeLeafGeometry(leaf: SgLeaf, state: TraversalState): SgLeaf {
-  const vertex: HashMap<string, aval<BufferView>> = (() => {
+  const vertex: HashMap<string, BufferView> = (() => {
     if (state.vertexAttributes.count === 0) return leaf.vertexAttributes;
     let m = state.vertexAttributes;
     for (const [k, v] of leaf.vertexAttributes) m = m.add(k, v);
     return m;
   })();
 
-  let instance: HashMap<string, aval<BufferView>> | undefined;
+  let instance: HashMap<string, BufferView> | undefined;
   if (leaf.instanceAttributes !== undefined) {
     if (state.instanceAttributes.count === 0) {
       instance = leaf.instanceAttributes;
@@ -603,9 +603,8 @@ function mergeLeafGeometry(leaf: SgLeaf, state: TraversalState): SgLeaf {
     instance = state.instanceAttributes;
   }
 
-  // Index: leaf-supplied wins; otherwise use scope. The result is
-  // aval<BufferView | undefined> in either case.
-  const indices: aval<BufferView | undefined> =
+  // Index: leaf-supplied wins; otherwise use scope.
+  const indices: BufferView | undefined =
     leaf.indices !== undefined ? leaf.indices : state.index;
 
   return {

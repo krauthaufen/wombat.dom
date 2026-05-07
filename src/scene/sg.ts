@@ -126,9 +126,9 @@ export interface SgLeaf {
    * threads this through to `RenderObject.vertexAttributes` without
    * forcing.
    */
-  readonly vertexAttributes: HashMap<string, aval<BufferView>>;
-  readonly instanceAttributes?: HashMap<string, aval<BufferView>>;
-  readonly indices?: aval<BufferView | undefined>;
+  readonly vertexAttributes: HashMap<string, BufferView>;
+  readonly instanceAttributes?: HashMap<string, BufferView>;
+  readonly indices?: BufferView | undefined;
   readonly drawCall: aval<DrawCall>;
   /** Storage buffers bound to the shader (read-only or read-write).
    *  Keyed by name, matched against the shader's declared storage
@@ -437,19 +437,19 @@ export interface SgPass {
 
 export interface SgVertexAttributes {
   readonly kind: "VertexAttributes";
-  readonly attributes: HashMap<string, aval<BufferView>>;
+  readonly attributes: HashMap<string, BufferView>;
   readonly child: SgNode;
 }
 
 export interface SgInstanceAttributes {
   readonly kind: "InstanceAttributes";
-  readonly attributes: HashMap<string, aval<BufferView>>;
+  readonly attributes: HashMap<string, BufferView>;
   readonly child: SgNode;
 }
 
 export interface SgIndex {
   readonly kind: "Index";
-  readonly index: aval<BufferView | undefined>;
+  readonly index: BufferView | undefined;
   readonly child: SgNode;
 }
 
@@ -523,6 +523,6 @@ export interface SgInstanced {
    * shader rewrite replaces `ReadInput("Uniform", X)` with
    * `ReadInput("Input", X)` for each name in this map.
    */
-  readonly attributes: HashMap<string, aval<BufferView>>;
+  readonly attributes: HashMap<string, BufferView>;
   readonly child: SgNode;
 }

@@ -99,7 +99,7 @@ export type { SgInstanced };
 export interface AppliedInstancing {
   readonly effect: Effect;
   /** Combined instance-attribute streams (existing leaf + synthesised). */
-  readonly instanceAttributes: HashMap<string, aval<BufferView>>;
+  readonly instanceAttributes: HashMap<string, BufferView>;
   /** Uniform overrides — used to bind ModelTrafo (etc.) to identity. */
   readonly uniformOverrides: HashMap<string, aval<unknown>>;
   /** drawCall override — `instanceCount` set from the scope's `count`. */
@@ -129,7 +129,7 @@ export function applyInstancing(
   const attrNames = collectAttrNames(inst);
   const effect = instanceEffect(innerEffect, attrNames);
 
-  let instAttrs = leaf.instanceAttributes ?? HashMap.empty<string, aval<BufferView>>();
+  let instAttrs = leaf.instanceAttributes ?? HashMap.empty<string, BufferView>();
   let uniformOverrides = HashMap.empty<string, aval<unknown>>();
 
   // Trafo case — pre-merge inner trafo with each per-instance trafo,
@@ -227,8 +227,8 @@ function collectAttrNames(inst: SgInstanced): Set<string> {
 // ---------------------------------------------------------------------------
 
 interface MergedTrafos {
-  readonly fwCols: readonly aval<BufferView>[]; // length 4 — InstanceTrafo
-  readonly bwCols: readonly aval<BufferView>[]; // length 4 — InstanceTrafoInv
+  readonly fwCols: readonly BufferView[]; // length 4 — InstanceTrafo
+  readonly bwCols: readonly BufferView[]; // length 4 — InstanceTrafoInv
 }
 
 const mergeCache = new WeakMap<aval<Trafo3d>, WeakMap<aval<ReadonlyArray<Trafo3d>>, MergedTrafos>>();
@@ -281,22 +281,25 @@ function packMergedBW(parent: Trafo3d, instances: ReadonlyArray<Trafo3d>): Float
 }
 
 
-function colsFromPackedM44(packed: aval<Float32Array>): aval<BufferView>[] {
-  // Four column views, each pointing at the SAME IBuffer at the
-  // appropriate byte offset within each 64-byte matrix entry.
-  // Sharing the IBuffer wrapper by reference is essential for the
-  // runtime's buffer-grouping pass (`prepareRenderObject` packs
-  // multiple attributes into one GPU vertex slot when they share an
-  // IBuffer) — without it we'd hit `maxVertexBuffers` (8) the moment
-  // a leaf has more than two matrix instance attributes.
-  const sharedBuf: aval<{ ib: import("@aardworx/wombat.rendering/core").IBuffer; count: number }> =
-    packed.map((arr) => ({ ib: IBuffer.fromHost(arr), count: arr.length / 16 }));
-  const out: aval<BufferView>[] = [];
+function colsFromPackedM44(packed: aval<Float32Array>): BufferView[] {
+  // Four column views, each pointing at the SAME aval<IBuffer> at the
+  // appropriate byte offset within each 64-byte matrix entry. Sharing
+  // the aval reference is essential for the runtime's buffer-grouping
+  // pass (`prepareRenderObject` packs multiple attributes into one
+  // GPU vertex slot when they share an aval<IBuffer>) — without it
+  // we'd hit `maxVertexBuffers` (8) the moment a leaf has more than
+  // two matrix instance attributes.
+  const sharedBuf: aval<import("@aardworx/wombat.rendering/core").IBuffer> =
+    packed.map((arr) => IBuffer.fromHost(arr));
+  const out: BufferView[] = [];
   for (let col = 0; col < 4; col++) {
     const offset = col * 16;
-    out.push(sharedBuf.map(({ ib, count }): BufferView => ({
-      buffer: ib, offset, count, stride: 64, format: "float32x4",
-    })));
+    out.push({
+      buffer: sharedBuf,
+      elementType: "v4f",
+      offset,
+      stride: 64,
+    });
   }
   return out;
 }

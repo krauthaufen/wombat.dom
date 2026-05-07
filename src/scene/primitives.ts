@@ -13,7 +13,8 @@ import {
 import { V3d, V4f } from "@aardworx/wombat.base";
 import {
   IBuffer,
-  type BufferView, type DrawCall,
+  BufferView,
+  type DrawCall,
 } from "@aardworx/wombat.rendering/core";
 import type { SgLeaf } from "./sg.js";
 import { getBoxGeometry } from "./primitives/shared.js";
@@ -56,8 +57,8 @@ export function box(opts: BoxOptions = {}): SgLeaf {
   // below; explicit-size users get a fresh per-instance buffer.)
   let vertexAttrs = handle.vertexAttrs;
   if (s.x !== 1 || s.y !== 1 || s.z !== 1) {
-    const sharedPos = AVal.force(handle.vertexAttrs.tryFind("Positions")!);
-    const baseHost = sharedPos.buffer;
+    const sharedPos = handle.vertexAttrs.tryFind("Positions")!;
+    const baseHost = AVal.force(sharedPos.buffer);
     if (baseHost.kind !== "host") throw new Error("box: shared positions buffer is not host-backed");
     const baseFloat = new Float32Array(baseHost.data instanceof ArrayBuffer
       ? baseHost.data
@@ -72,10 +73,10 @@ export function box(opts: BoxOptions = {}): SgLeaf {
       scaled[i + 2] = (baseFloat[i + 2]! * 2 - 1) * s.z;
     }
     const posView: BufferView = {
-      buffer: IBuffer.fromHost(scaled.buffer),
-      offset: 0, count: baseFloat.length / 3, stride: 12, format: "float32x3",
+      buffer: AVal.constant(IBuffer.fromHost(scaled.buffer)),
+      elementType: "v3f",
     };
-    vertexAttrs = handle.vertexAttrs.add("Positions", AVal.constant(posView));
+    vertexAttrs = handle.vertexAttrs.add("Positions", posView);
   }
 
   const colorView = colorAval(opts.color ?? WHITE);
@@ -121,17 +122,20 @@ export function quad(opts: QuadOptions = {}): SgLeaf {
   const colorView = colorAval(opts.color ?? WHITE);
   return {
     kind: "Leaf",
-    vertexAttributes: HashMap.empty<string, aval<BufferView>>()
-      .add("Positions", AVal.constant({
-        buffer: IBuffer.fromHost(positions.buffer), offset: 0, count: 4, stride: 12, format: "float32x3",
-      } satisfies BufferView))
-      .add("Normals", AVal.constant({
-        buffer: IBuffer.fromHost(normals.buffer), offset: 0, count: 4, stride: 12, format: "float32x3",
-      } satisfies BufferView))
+    vertexAttributes: HashMap.empty<string, BufferView>()
+      .add("Positions", {
+        buffer: AVal.constant(IBuffer.fromHost(positions.buffer)),
+        elementType: "v3f",
+      })
+      .add("Normals", {
+        buffer: AVal.constant(IBuffer.fromHost(normals.buffer)),
+        elementType: "v3f",
+      })
       .add("Colors", colorView),
-    indices: AVal.constant({
-      buffer: IBuffer.fromHost(indices.buffer), offset: 0, count: 6, stride: 4, format: "uint32",
-    } satisfies BufferView),
+    indices: {
+      buffer: AVal.constant(IBuffer.fromHost(indices.buffer)),
+      elementType: "u32",
+    },
     drawCall: AVal.constant({
       kind: "indexed",
       indexCount: 6, instanceCount: 1, firstIndex: 0, baseVertex: 0, firstInstance: 0,

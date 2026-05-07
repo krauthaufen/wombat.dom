@@ -404,17 +404,12 @@ export function SgText(
   }
   const idxBuf = IBuffer.fromHost(wireframe ? wireIndices! : indices);
 
-  const vertexAttrs = HashMap.empty<string, aval<BufferView>>()
-    .add("a_localPos", AVal.constant<BufferView>({
-      buffer: posBuf, offset: 0, count: totalVerts, stride: 8, format: "float32x2",
-    }))
-    .add("a_klmKind", AVal.constant<BufferView>({
-      buffer: klmBuf, offset: 0, count: totalVerts, stride: 16, format: "float32x4",
-    }));
+  const vertexAttrs = HashMap.empty<string, BufferView>()
+    .add("a_localPos", { buffer: AVal.constant(posBuf), elementType: "v2f" })
+    .add("a_klmKind",  { buffer: AVal.constant(klmBuf), elementType: "v4f" });
   const indexBV: BufferView = {
-    buffer: idxBuf, offset: 0,
-    count: wireframe ? wireIndices!.length : indices.length,
-    stride: 4, format: "uint32",
+    buffer: AVal.constant(idxBuf),
+    elementType: "u32",
   };
 
   // One `<Sg.Leaf>` per unique glyph in the run; all share the
@@ -430,10 +425,8 @@ export function SgText(
     const instCount = offsets.length / 2;
     const instArr = new Float32Array(offsets);
     const instBuf = IBuffer.fromHost(instArr);
-    const instAttrs = HashMap.empty<string, aval<BufferView>>()
-      .add("a_instOffset", AVal.constant<BufferView>({
-        buffer: instBuf, offset: 0, count: instCount, stride: 8, format: "float32x2",
-      }));
+    const instAttrs = HashMap.empty<string, BufferView>()
+      .add("a_instOffset", { buffer: AVal.constant(instBuf), elementType: "v2f" });
     const draw: DrawCall = {
       kind: "indexed",
       indexCount:    wireframe ? record.indexCount * 2 : record.indexCount,
@@ -446,7 +439,7 @@ export function SgText(
       sgVNode(Sg.leaf({
         vertexAttributes: vertexAttrs,
         instanceAttributes: instAttrs,
-        indices: AVal.constant<BufferView>(indexBV),
+        indices: indexBV,
         drawCall: AVal.constant<DrawCall>(draw),
       })),
     );

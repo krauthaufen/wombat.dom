@@ -371,19 +371,12 @@ export function buildSdfTextScene(args: SdfTextArgs): VNode {
   const triBuf  = IBuffer.fromHost(triPacked);
 
   // Per-glyph vertex attribute views — same buffer, different offsets.
-  const vertexAttrs = HashMap.empty<string, aval<BufferView>>()
-    .add("a_pos", AVal.constant<BufferView>({
-      buffer: vertBuf, offset: 0,  count: totalVerts, stride: STRIDE_BYTES, format: "float32x2",
-    }))
-    .add("a_klmKind", AVal.constant<BufferView>({
-      buffer: vertBuf, offset: 8,  count: totalVerts, stride: STRIDE_BYTES, format: "float32x4",
-    }))
-    .add("a_cands", AVal.constant<BufferView>({
-      buffer: vertBuf, offset: 24, count: totalVerts, stride: STRIDE_BYTES, format: "float32x4",
-    }))
-    .add("a_cands2", AVal.constant<BufferView>({
-      buffer: vertBuf, offset: 40, count: totalVerts, stride: STRIDE_BYTES, format: "float32x2",
-    }));
+  const vertBufAval = AVal.constant(vertBuf);
+  const vertexAttrs = HashMap.empty<string, BufferView>()
+    .add("a_pos",     { buffer: vertBufAval, elementType: "v2f", offset: 0,  stride: STRIDE_BYTES })
+    .add("a_klmKind", { buffer: vertBufAval, elementType: "v4f", offset: 8,  stride: STRIDE_BYTES })
+    .add("a_cands",   { buffer: vertBufAval, elementType: "v4f", offset: 24, stride: STRIDE_BYTES })
+    .add("a_cands2",  { buffer: vertBufAval, elementType: "v2f", offset: 40, stride: STRIDE_BYTES });
 
   const storageBuffers = HashMap.empty<string, aval<IBuffer>>()
     .add("tris", AVal.constant<IBuffer>(triBuf));
@@ -399,16 +392,15 @@ export function buildSdfTextScene(args: SdfTextArgs): VNode {
   // Whole SDF index buffer view shared across leaves; per-glyph slice
   // lives in the DrawCall's firstIndex / indexCount.
   const sharedIndexBV: BufferView = {
-    buffer: idxBuf, offset: 0, count: sdfIndices.length, stride: 4, format: "uint32",
+    buffer: AVal.constant(idxBuf),
+    elementType: "u32",
   };
   for (const [, { rec, insts }] of groups) {
     const instCount = insts.length / 2;
     const instArr = new Float32Array(insts);
     const instBuf = IBuffer.fromHost(instArr);
-    const instanceAttrs = HashMap.empty<string, aval<BufferView>>()
-      .add("a_instOffset", AVal.constant<BufferView>({
-        buffer: instBuf, offset: 0, count: instCount, stride: 8, format: "float32x2",
-      }));
+    const instanceAttrs = HashMap.empty<string, BufferView>()
+      .add("a_instOffset", { buffer: AVal.constant(instBuf), elementType: "v2f" });
     const drawCall: DrawCall = {
       kind: "indexed",
       indexCount:    rec.sdfIndexCount,
@@ -420,7 +412,7 @@ export function buildSdfTextScene(args: SdfTextArgs): VNode {
     leafChildren.push(sgVNode(Sg.leaf({
       vertexAttributes: vertexAttrs,
       instanceAttributes: instanceAttrs,
-      indices: AVal.constant<BufferView>(sharedIndexBV),
+      indices: sharedIndexBV,
       drawCall: AVal.constant<DrawCall>(drawCall),
       storageBuffers,
     })));

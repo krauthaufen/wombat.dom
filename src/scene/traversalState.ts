@@ -213,9 +213,9 @@ export class TraversalState {
 
   // ---------------- Phase 2 — geometry attribute scopes ----------------
 
-  readonly vertexAttributes: HashMap<string, aval<BufferView>>;
-  readonly instanceAttributes: HashMap<string, aval<BufferView>>;
-  readonly index: aval<BufferView | undefined>;
+  readonly vertexAttributes: HashMap<string, BufferView>;
+  readonly instanceAttributes: HashMap<string, BufferView>;
+  readonly index: BufferView | undefined;
   readonly mode: aval<ModeValue>;
 
   // ---------------- Phase 3 — misc scopes ------------------------------
@@ -313,9 +313,9 @@ export class TraversalState {
     colorMask: AVal.constant(HashMap.empty<string, ColorMaskValue>()),
     stencilMode: undefined,
     renderPass: 0,
-    vertexAttributes: HashMap.empty<string, aval<BufferView>>(),
-    instanceAttributes: HashMap.empty<string, aval<BufferView>>(),
-    index: AVal.constant<BufferView | undefined>(undefined),
+    vertexAttributes: HashMap.empty<string, BufferView>(),
+    instanceAttributes: HashMap.empty<string, BufferView>(),
+    index: undefined,
     mode: AVal.constant<ModeValue>("triangle-list"),
     noEvents: AVal.constant(false),
     forcePixelPicking: AVal.constant(false),
@@ -419,19 +419,19 @@ export class TraversalState {
   // ---------------- Phase 2 — geometry attribute pushers ---------------
 
   /** `<Sg VertexAttributes={…}>`: COMPOSE per-key (inner-wins on conflict). */
-  pushVertexAttributes(attrs: HashMap<string, aval<BufferView>>): TraversalState {
+  pushVertexAttributes(attrs: HashMap<string, BufferView>): TraversalState {
     let merged = this.vertexAttributes;
     for (const [k, v] of attrs) merged = merged.add(k, v);
     return this.with({ vertexAttributes: merged });
   }
 
-  pushInstanceAttributes(attrs: HashMap<string, aval<BufferView>>): TraversalState {
+  pushInstanceAttributes(attrs: HashMap<string, BufferView>): TraversalState {
     let merged = this.instanceAttributes;
     for (const [k, v] of attrs) merged = merged.add(k, v);
     return this.with({ instanceAttributes: merged });
   }
 
-  pushIndex(index: aval<BufferView | undefined>): TraversalState { return this.with({ index }); }
+  pushIndex(index: BufferView | undefined): TraversalState { return this.with({ index }); }
   pushMode(mode: aval<ModeValue>): TraversalState { return this.with({ mode }); }
 
   // ---------------- Phase 3 — misc scope pushers -----------------------
@@ -527,9 +527,9 @@ interface TraversalSpec {
   colorMask: aval<HashMap<string, ColorMaskValue>>;
   stencilMode: aval<StencilModeValue> | undefined;
   renderPass: number;
-  vertexAttributes: HashMap<string, aval<BufferView>>;
-  instanceAttributes: HashMap<string, aval<BufferView>>;
-  index: aval<BufferView | undefined>;
+  vertexAttributes: HashMap<string, BufferView>;
+  instanceAttributes: HashMap<string, BufferView>;
+  index: BufferView | undefined;
   mode: aval<ModeValue>;
   noEvents: aval<boolean>;
   forcePixelPicking: aval<boolean>;

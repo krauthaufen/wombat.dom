@@ -20,7 +20,7 @@ import type { BufferView, DrawCall } from "@aardworx/wombat.rendering/core";
 const Tvec4f: Type = Vec(Tf32, 4);
 
 const draw: DrawCall = { kind: "non-indexed", vertexCount: 3, instanceCount: 1, firstVertex: 0, firstInstance: 0 };
-const bv: BufferView = { buffer: { kind: "host", data: new Float32Array(0), sizeBytes: 0 }, offset: 0, count: 3, stride: 12, format: "float32x3" };
+const bv: BufferView = { buffer: AVal.constant({ kind: "host", data: new Float32Array(0), sizeBytes: 0  }), offset: 0, stride: 12, elementType: "v3f" };
 
 function buildUserEffect(): Effect {
   const source = `
@@ -43,7 +43,7 @@ function buildUserEffect(): Effect {
 const fakeEffect: Effect = buildUserEffect();
 
 function leaf(): import("../src/scene/index.js").SgLeaf {
-  return Sg.leaf({ vertexAttributes: HashMap.empty<string, AVal<BufferView>>().add("Positions", AVal.constant(bv)), drawCall: AVal.constant(draw) });
+  return Sg.leaf({ vertexAttributes: HashMap.empty<string, BufferView>().add("Positions", bv), drawCall: AVal.constant(draw) });
 }
 type AVal<T> = ReturnType<typeof AVal.constant<T>>;
 

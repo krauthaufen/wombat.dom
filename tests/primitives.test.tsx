@@ -77,28 +77,26 @@ describe("shared geometry caches", () => {
   it("getBoxGeometry returns the same vertex buffers across calls (object identity)", () => {
     const a = getBoxGeometry();
     const b = getBoxGeometry();
-    expect(AVal.force(a.vertexAttrs.tryFind("Positions")!))
-      .toBe(AVal.force(b.vertexAttrs.tryFind("Positions")!));
-    expect(AVal.force(a.indices)).toBe(AVal.force(b.indices));
+    // BufferView is plain (not aval) — compare by identity directly.
+    expect(a.vertexAttrs.tryFind("Positions")).toBe(b.vertexAttrs.tryFind("Positions"));
+    expect(a.indices).toBe(b.indices);
   });
 
   it("two Sg.Sphere with the same tessellation share buffers", () => {
     const a = getSphereGeometry(32);
     const b = getSphereGeometry(32);
-    expect(AVal.force(a.vertexAttrs.tryFind("Positions")!))
-      .toBe(AVal.force(b.vertexAttrs.tryFind("Positions")!));
+    expect(a.vertexAttrs.tryFind("Positions")).toBe(b.vertexAttrs.tryFind("Positions"));
   });
 
   it("different tessellations produce different cached geometries", () => {
     const a = getSphereGeometry(16);
     const b = getSphereGeometry(32);
-    expect(AVal.force(a.vertexAttrs.tryFind("Positions")!))
-      .not.toBe(AVal.force(b.vertexAttrs.tryFind("Positions")!));
+    expect(a.vertexAttrs.tryFind("Positions")).not.toBe(b.vertexAttrs.tryFind("Positions"));
   });
 
   it("cylinder cache keyed by tessellation", () => {
-    expect(AVal.force(getCylinderGeometry(8).vertexAttrs.tryFind("Positions")!))
-      .not.toBe(AVal.force(getCylinderGeometry(16).vertexAttrs.tryFind("Positions")!));
+    expect(getCylinderGeometry(8).vertexAttrs.tryFind("Positions"))
+      .not.toBe(getCylinderGeometry(16).vertexAttrs.tryFind("Positions"));
   });
 });
 
@@ -137,17 +135,17 @@ describe("auto-Intersectable", () => {
 
 describe("colorAval", () => {
   it("returns a stride-0 BufferView with the colour bytes", () => {
-    const view = AVal.force(colorAval(new V4f(0.25, 0.5, 0.75, 1.0)));
-    expect(view.stride).toBe(0);
-    expect(view.count).toBe(1);
-    expect(view.format).toBe("float32x4");
-    if (view.buffer.kind !== "host") throw new Error("expected host buffer");
-    const ab = view.buffer.data instanceof ArrayBuffer
-      ? view.buffer.data
-      : (view.buffer.data.buffer as ArrayBuffer);
+    const view = colorAval(new V4f(0.25, 0.5, 0.75, 1.0));
+    // BufferView is plain. Tight 16-byte buffer; broadcast carried by
+    // singleValue. Stride defaults from elementType (16 bytes for v4f).
+    expect(view.elementType).toBe("v4f");
+    expect(view.singleValue).toBeDefined();
+    const ib = AVal.force(view.buffer);
+    if (ib.kind !== "host") throw new Error("expected host buffer");
+    const ab = ib.data instanceof ArrayBuffer
+      ? ib.data : (ib.data.buffer as ArrayBuffer);
     const f = new Float32Array(ab,
-      view.buffer.data instanceof ArrayBuffer ? 0 : view.buffer.data.byteOffset,
-      4);
+      ib.data instanceof ArrayBuffer ? 0 : ib.data.byteOffset, 4);
     expect(f[0]).toBeCloseTo(0.25, 6);
     expect(f[1]).toBeCloseTo(0.5, 6);
     expect(f[2]).toBeCloseTo(0.75, 6);
@@ -156,23 +154,21 @@ describe("colorAval", () => {
 
   it("ticks when the source cval ticks — buffer bytes change", () => {
     const cv = cval(new V4f(0, 0, 0, 1));
-    const av = colorAval(cv);
-    const v1 = AVal.force(av);
-    if (v1.buffer.kind !== "host") throw new Error("expected host");
-    const ab1 = v1.buffer.data instanceof ArrayBuffer
-      ? v1.buffer.data
-      : (v1.buffer.data.buffer as ArrayBuffer);
+    const view = colorAval(cv);
+    const ib1 = AVal.force(view.buffer);
+    if (ib1.kind !== "host") throw new Error("expected host");
+    const ab1 = ib1.data instanceof ArrayBuffer
+      ? ib1.data : (ib1.data.buffer as ArrayBuffer);
     const f1 = new Float32Array(ab1,
-      v1.buffer.data instanceof ArrayBuffer ? 0 : v1.buffer.data.byteOffset, 4);
+      ib1.data instanceof ArrayBuffer ? 0 : ib1.data.byteOffset, 4);
     expect(f1[0]).toBeCloseTo(0, 6);
     transact(() => { cv.value = new V4f(1, 0, 0, 1); });
-    const v2 = AVal.force(av);
-    if (v2.buffer.kind !== "host") throw new Error("expected host");
-    const ab2 = v2.buffer.data instanceof ArrayBuffer
-      ? v2.buffer.data
-      : (v2.buffer.data.buffer as ArrayBuffer);
+    const ib2 = AVal.force(view.buffer);
+    if (ib2.kind !== "host") throw new Error("expected host");
+    const ab2 = ib2.data instanceof ArrayBuffer
+      ? ib2.data : (ib2.data.buffer as ArrayBuffer);
     const f2 = new Float32Array(ab2,
-      v2.buffer.data instanceof ArrayBuffer ? 0 : v2.buffer.data.byteOffset, 4);
+      ib2.data instanceof ArrayBuffer ? 0 : ib2.data.byteOffset, 4);
     expect(f2[0]).toBeCloseTo(1, 6);
   });
 });

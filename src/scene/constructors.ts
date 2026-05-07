@@ -76,9 +76,9 @@ import {
 const empty: SgNode = { kind: "Empty" };
 
 function leaf(spec: {
-  vertexAttributes: HashMap<string, aval<BufferView>>;
-  instanceAttributes?: HashMap<string, aval<BufferView>>;
-  indices?: aval<BufferView> | aval<BufferView | undefined>;
+  vertexAttributes: HashMap<string, BufferView>;
+  instanceAttributes?: HashMap<string, BufferView>;
+  indices?: BufferView | BufferView | undefined;
   drawCall: aval<DrawCall>;
   storageBuffers?: HashMap<string, aval<IBuffer>>;
 }): SgLeaf {
@@ -86,7 +86,7 @@ function leaf(spec: {
     kind: "Leaf",
     vertexAttributes: spec.vertexAttributes,
     ...(spec.instanceAttributes !== undefined ? { instanceAttributes: spec.instanceAttributes } : {}),
-    ...(spec.indices !== undefined ? { indices: spec.indices as aval<BufferView | undefined> } : {}),
+    ...(spec.indices !== undefined ? { indices: spec.indices as BufferView | undefined } : {}),
     drawCall: spec.drawCall,
     ...(spec.storageBuffers !== undefined ? { storageBuffers: spec.storageBuffers } : {}),
   };
@@ -289,12 +289,12 @@ function pass(value: number, child: SgNode): SgNode {
 // ---------------------------------------------------------------------------
 
 function vertexAttributes(
-  attrs: HashMap<string, aval<BufferView>>,
+  attrs: HashMap<string, BufferView>,
 ): (child: SgNode) => SgNode {
   return (child: SgNode): SgNode => ({ kind: "VertexAttributes", attributes: attrs, child });
 }
 function instanceAttributes(
-  attrs: HashMap<string, aval<BufferView>>,
+  attrs: HashMap<string, BufferView>,
 ): (child: SgNode) => SgNode {
   return (child: SgNode): SgNode => ({ kind: "InstanceAttributes", attributes: attrs, child });
 }
@@ -311,14 +311,14 @@ function instanceAttributes(
 function instanced(
   args: {
     count: number | aval<number>;
-    attributes?: HashMap<string, aval<BufferView>>;
+    attributes?: HashMap<string, BufferView>;
     trafos?: aval<ReadonlyArray<Trafo3d>>;
   },
 ): (child: SgChild) => SgNode {
   const count: aval<number> = isAValRuntime(args.count)
     ? (args.count as aval<number>)
     : AVal.constant(args.count as number);
-  const attributes = args.attributes ?? HashMap.empty<string, aval<BufferView>>();
+  const attributes = args.attributes ?? HashMap.empty<string, BufferView>();
   return (child: SgChild): SgNode => ({
     kind: "Instanced",
     count,
@@ -340,11 +340,8 @@ function instancedTrafos(
   return instanced({ count, trafos });
 }
 
-function index(idx: BufferView | undefined | aval<BufferView | undefined>): (child: SgNode) => SgNode {
-  const i: aval<BufferView | undefined> = isAValRuntime(idx)
-    ? (idx as aval<BufferView | undefined>)
-    : AVal.constant(idx as BufferView | undefined);
-  return (child: SgNode): SgNode => ({ kind: "Index", index: i, child });
+function index(idx: BufferView | undefined): (child: SgNode) => SgNode {
+  return (child: SgNode): SgNode => ({ kind: "Index", index: idx, child });
 }
 function mode(m: ModeValue | aval<ModeValue>): (child: SgNode) => SgNode {
   const v = liftAval(m);
@@ -444,9 +441,9 @@ export interface SgScopeProps {
   Pass?: number;
 
   // Phase 2 — geometry attribute scopes
-  VertexAttributes?: HashMap<string, aval<BufferView>>;
-  InstanceAttributes?: HashMap<string, aval<BufferView>>;
-  Index?: BufferView | undefined | aval<BufferView | undefined>;
+  VertexAttributes?: HashMap<string, BufferView>;
+  InstanceAttributes?: HashMap<string, BufferView>;
+  Index?: BufferView | undefined | BufferView | undefined;
   Mode?: ModeValue | aval<ModeValue>;
 
   // Phase 3 — misc scopes
@@ -909,9 +906,9 @@ function SgWireCone(props: TessProps & PrimitiveColorProps & SgScopeProps = {}):
 // ---- Generic leaf with caller-supplied geometry ----
 
 interface SgLeafJsxProps {
-  vertexAttributes:   HashMap<string, aval<BufferView>>;
-  instanceAttributes?: HashMap<string, aval<BufferView>>;
-  indices?:           aval<BufferView> | aval<BufferView | undefined>;
+  vertexAttributes:   HashMap<string, BufferView>;
+  instanceAttributes?: HashMap<string, BufferView>;
+  indices?:           BufferView | BufferView | undefined;
   drawCall:           aval<DrawCall>;
 }
 

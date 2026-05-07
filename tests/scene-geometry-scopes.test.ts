@@ -18,8 +18,8 @@ import type {
 const draw: DrawCall = { kind: "non-indexed", vertexCount: 3, instanceCount: 1, firstVertex: 0, firstInstance: 0 };
 function bv(name: string): BufferView {
   return {
-    buffer: { kind: "host", data: new Float32Array(0), sizeBytes: 0 },
-    offset: 0, count: 3, stride: 12, format: "float32x3",
+    buffer: AVal.constant({ kind: "host", data: new Float32Array(0), sizeBytes: 0  }),
+    offset: 0, stride: 12, elementType: "v3f",
     // tag the buffer so we can identify it later
     label: name,
   } as BufferView & { label?: string };
@@ -56,7 +56,7 @@ function walk(t: RenderTree, out: RenderObject[]): void {
 
 const minimalLeaf = (): SgNode => Sg.leaf({
   // Truly minimal: empty vertexAttributes — they'll be supplied by scope.
-  vertexAttributes: HashMap.empty<string, AVal<BufferView>>().add("placeholder", AVal.constant(bv("placeholder"))),
+  vertexAttributes: HashMap.empty<string, BufferView>().add("placeholder", bv("placeholder")),
   drawCall: AVal.constant(draw),
 });
 type AVal<T> = ReturnType<typeof AVal.constant<T>>;
@@ -64,8 +64,8 @@ type AVal<T> = ReturnType<typeof AVal.constant<T>>;
 describe("Phase 2 — geometry-attribute scopes", () => {
   it("VertexAttributes scope flows into a leaf without its own attribute", () => {
     const a = bv("scope-a");
-    const scoped: HashMap<string, AVal<BufferView>> =
-      HashMap.empty<string, AVal<BufferView>>().add("scope-pos", AVal.constant(a));
+    const scoped: HashMap<string, BufferView> =
+      HashMap.empty<string, BufferView>().add("scope-pos", a);
     const tree = Sg.vertexAttributes(scoped)(minimalLeaf());
     const [obj] = compile(tree);
     expect(obj!.vertexAttributes.tryFind("scope-pos")).toBeDefined();
@@ -74,23 +74,23 @@ describe("Phase 2 — geometry-attribute scopes", () => {
   it("VertexAttributes COMPOSE (per-key map merge, leaf-wins on conflict)", () => {
     const outer = bv("outer");
     const leafBuf = bv("leaf");
-    const scoped: HashMap<string, AVal<BufferView>> = HashMap.empty<string, AVal<BufferView>>().add("Positions", AVal.constant(outer));
+    const scoped: HashMap<string, BufferView> = HashMap.empty<string, BufferView>().add("Positions", outer);
     const leaf = Sg.leaf({
-      vertexAttributes: HashMap.empty<string, AVal<BufferView>>().add("Positions", AVal.constant(leafBuf)),
+      vertexAttributes: HashMap.empty<string, BufferView>().add("Positions", leafBuf),
       drawCall: AVal.constant(draw),
     });
     const tree = Sg.vertexAttributes(scoped)(leaf);
     const [obj] = compile(tree);
     // Leaf wins.
     const pos = obj!.vertexAttributes.tryFind("Positions");
-    const view = AVal.force(pos!) as BufferView & { label?: string };
+    const view = (pos! as BufferView & { label?: string });
     expect(view.label).toBe("leaf");
   });
 
   it("Index scope used when leaf has no indices", () => {
     const idx = bv("idx");
     const tree = Sg.index(idx)(Sg.leaf({
-      vertexAttributes: HashMap.empty<string, AVal<BufferView>>().add("p", AVal.constant(bv("p"))),
+      vertexAttributes: HashMap.empty<string, BufferView>().add("p", bv("p")),
       drawCall: AVal.constant(draw),
     }));
     const [obj] = compile(tree);
@@ -101,17 +101,17 @@ describe("Phase 2 — geometry-attribute scopes", () => {
     const scopeIdx = bv("scope-idx");
     const leafIdx = bv("leaf-idx");
     const tree = Sg.index(scopeIdx)(Sg.leaf({
-      vertexAttributes: HashMap.empty<string, AVal<BufferView>>().add("p", AVal.constant(bv("p"))),
-      indices: AVal.constant(leafIdx),
+      vertexAttributes: HashMap.empty<string, BufferView>().add("p", bv("p")),
+      indices: leafIdx,
       drawCall: AVal.constant(draw),
     }));
     const [obj] = compile(tree);
-    const it = AVal.force(obj!.indices!) as BufferView & { label?: string };
+    const it = (obj!.indices! as BufferView & { label?: string });
     expect(it.label).toBe("leaf-idx");
   });
 
   it("InstanceAttributes scope flows into the leaf", () => {
-    const inst: HashMap<string, AVal<BufferView>> = HashMap.empty<string, AVal<BufferView>>().add("inst-color", AVal.constant(bv("inst")));
+    const inst: HashMap<string, BufferView> = HashMap.empty<string, BufferView>().add("inst-color", bv("inst"));
     const tree = Sg.instanceAttributes(inst)(minimalLeaf());
     const [obj] = compile(tree);
     expect(obj!.instanceAttributes!.tryFind("inst-color")).toBeDefined();
@@ -128,17 +128,17 @@ describe("Phase 2 — geometry-attribute scopes", () => {
     const innerOnly = bv("inner-only");
     const conflictOuter = bv("conflict-outer");
     const conflictInner = bv("conflict-inner");
-    const o: HashMap<string, AVal<BufferView>> = HashMap.empty<string, AVal<BufferView>>()
-      .add("outer-only", AVal.constant(outerOnly))
-      .add("conflict", AVal.constant(conflictOuter));
-    const i: HashMap<string, AVal<BufferView>> = HashMap.empty<string, AVal<BufferView>>()
-      .add("inner-only", AVal.constant(innerOnly))
-      .add("conflict", AVal.constant(conflictInner));
+    const o: HashMap<string, BufferView> = HashMap.empty<string, BufferView>()
+      .add("outer-only", outerOnly)
+      .add("conflict", conflictOuter);
+    const i: HashMap<string, BufferView> = HashMap.empty<string, BufferView>()
+      .add("inner-only", innerOnly)
+      .add("conflict", conflictInner);
     const tree = Sg.vertexAttributes(o)(Sg.vertexAttributes(i)(minimalLeaf()));
     const [obj] = compile(tree);
     expect(obj!.vertexAttributes.tryFind("outer-only")).toBeDefined();
     expect(obj!.vertexAttributes.tryFind("inner-only")).toBeDefined();
-    const conflict = AVal.force(obj!.vertexAttributes.tryFind("conflict")!) as BufferView & { label?: string };
+    const conflict = (obj!.vertexAttributes.tryFind("conflict")! as BufferView & { label?: string });
     expect(conflict.label).toBe("conflict-inner");
   });
 });

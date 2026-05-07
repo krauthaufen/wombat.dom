@@ -22,16 +22,15 @@ const dummyDraw: DrawCall = {
   firstInstance: 0,
 };
 const dummyView: BufferView = {
-  buffer: { kind: "host", data: new Float32Array(0), sizeBytes: 0 },
+  buffer: AVal.constant({ kind: "host", data: new Float32Array(0), sizeBytes: 0  }),
   offset: 0,
-  count: 3,
   stride: 12,
-  format: "float32x3",
+  elementType: "v3f",
 };
 
 function leaf(): SgLeaf {
   return Sg.leaf({
-    vertexAttributes: HashMap.empty<string, ReturnType<typeof AVal.constant<BufferView>>>().add("Positions", AVal.constant(dummyView)),
+    vertexAttributes: HashMap.empty<string, BufferView>().add("Positions", dummyView),
     drawCall: AVal.constant(dummyDraw),
   });
 }
