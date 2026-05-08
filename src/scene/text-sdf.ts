@@ -295,7 +295,7 @@ function buildSdfTextEffect(): Effect {
     const outG = useDebug ? debugG : realG;
     const outB = useDebug ? debugB : realB;
     const outA = useDebug ? debugA : realA;
-    return { outColor: new V4f(outR, outG, outB, outA) };
+    return { Colors: new V4f(outR, outG, outB, outA) };
   });
 
   sdfTextEffectMemo = effect(vsMain, fsMain);

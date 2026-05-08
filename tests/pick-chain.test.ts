@@ -44,7 +44,7 @@ function buildUserEffect(flags: UserEffectFlags): Effect {
   const vsInputs = ["Positions: V4f"];
   const vsOutputs = ["gl_Position: V4f"];
   const fsInputs: string[] = [];
-  const fsOutputs = ["outColor: V4f"];
+  const fsOutputs = ["Colors: V4f"];
   const fsBody: string[] = [];
 
   const vsBodyExtra: string[] = [];
@@ -73,7 +73,7 @@ function buildUserEffect(flags: UserEffectFlags): Effect {
   }
 
   const vsRet = ["gl_Position: input.Positions", ...vsReturnExtra].join(", ");
-  const fsRetParts = ["outColor: new V4f(1.0, 1.0, 1.0, 1.0)"];
+  const fsRetParts = ["Colors: new V4f(1.0, 1.0, 1.0, 1.0)"];
   if (flags.produceVsn) fsRetParts.push("ViewSpaceNormal: input.vNormal");
   if (flags.producePi)  fsRetParts.push("PickPartIndex: 7.0");
   if (flags.producePvp) fsRetParts.push("PickViewPosition: input.vPvp");
@@ -108,7 +108,7 @@ function buildUserEffect(flags: UserEffectFlags): Effect {
 
   let fsOutLoc = 0;
   const fsOutputDescs: EntryParameter[] = [
-    { name: "outColor", type: Tvec4f, semantic: "Color", decorations: [{ kind: "Location", value: fsOutLoc++ }] },
+    { name: "Colors", type: Tvec4f, semantic: "Color", decorations: [{ kind: "Location", value: fsOutLoc++ }] },
   ];
   if (flags.produceVsn) fsOutputDescs.push({ name: "ViewSpaceNormal",  type: Tvec3f, semantic: "ViewSpaceNormal",  decorations: [{ kind: "Location", value: fsOutLoc++ }] });
   if (flags.producePi)  fsOutputDescs.push({ name: "PickPartIndex",   type: Tf32,   semantic: "PickPartIndex",   decorations: [{ kind: "Location", value: fsOutLoc++ }] });

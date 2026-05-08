@@ -275,9 +275,9 @@ async function initialise(
   // aval<{w,h}>`.
   //
   // Defaults:
-  //   - `colorAttachmentName: "outColor"` aligns the framebuffer
+  //   - `colorAttachmentName: "Colors"` aligns the framebuffer
   //     signature with the de-facto wombat.shader convention (the
-  //     fragment output is named `outColor` in
+  //     fragment output is named `Colors` in
   //     `DefaultSurfaces.basic` and in the renderto-real coverage
   //     in wombat.rendering).
   //   - `depthFormat: "depth24plus"` so the pipeline's `depth: {
@@ -287,7 +287,7 @@ async function initialise(
   //
   // `attach`/`format`/`depthFormat`/`sampleCount` props override.
   const attachment = attachCanvas(device, canvas, {
-    colorAttachmentName: "outColor",
+    colorAttachmentName: "Colors",
     depthFormat: "depth24plus",
     ...(props.attach ?? {}),
     ...(props.format !== undefined ? { format: props.format } : {}),
@@ -318,7 +318,7 @@ async function initialise(
   // registry is created internally per RenderControl instance and
   // exposed back via `onReady`.
   const registry = new PickRegistry();
-  const pickFb = createPickFramebuffer(device, attachment, { colorAttachmentName: "outColor" });
+  const pickFb = createPickFramebuffer(device, attachment, { colorAttachmentName: "Colors" });
   const outputFb = pickFb.pickFramebuffer;
   scope.onDispose(() => pickFb.dispose());
 
@@ -329,11 +329,26 @@ async function initialise(
   // bogus registered ID. Picking can't rely on the user's clear
   // config to know about its own attachments. (See
   // ~/claude/wombat-todo.md: phase 4 / item 11.)
+  //
+  // Also default a canvas-color and depth clear when the user
+  // didn't supply one. Without a depth clear, the GPU sees an
+  // uninitialised depth buffer on the first frame; with the
+  // default `compare: "less"`, almost every fragment fails the
+  // depth test and the canvas stays at whatever the browser drew
+  // (typically white). The defaults match the pickId clear's
+  // alpha=0 (transparent) so RenderControl over a styled
+  // background doesn't paint a hard rectangle, and depth=1.0
+  // (the OpenGL/WebGPU "far" value) so the first frame has a
+  // valid background to test against.
   const userClear = props.clear;
   const userColors = userClear?.colors ?? HashMap.empty<string, ClearColor>();
+  const colorsWithDefaults = userColors.containsKey("Colors")
+    ? userColors
+    : userColors.add("Colors", new V4f(0, 0, 0, 0));
   const clearWithPick: ClearValues = {
     ...(userClear ?? {}),
-    colors: userColors.add(PICK_NAME, new V4f(0, 0, 0, 0)),
+    colors: colorsWithDefaults.add(PICK_NAME, new V4f(0, 0, 0, 0)),
+    depth: userClear?.depth ?? 1.0,
   };
   // Lower the scene; compile into the runtime; drive the loop.
   const commands = compileScene(sceneTree, outputFb, {

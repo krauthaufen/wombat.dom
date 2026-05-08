@@ -115,13 +115,13 @@ let pickFinalACache: Effect | undefined;
 export function pickFinalAEffect(): Effect {
   if (pickFinalACache !== undefined) return pickFinalACache;
   const fs = fragment((input: {
-    outColor: V4f;
+    Colors: V4f;
     ViewSpaceNormal: V3f;
     PickPartIndex: f32;
   }, b: FragmentBuiltinIn) => {
     const n24 = n24Encode(input.ViewSpaceNormal.normalize());
     const id = new V4f((uniform.PickId as number) as f32, n24, b.fragCoord.z, input.PickPartIndex);
-    return { outColor: input.outColor, pickId: id, Depth: b.fragCoord.z };
+    return { Colors: input.Colors, pickId: id, Depth: b.fragCoord.z };
   });
   pickFinalACache = effect(fs);
   return pickFinalACache;
@@ -136,12 +136,12 @@ let pickFinalANoPiCache: Effect | undefined;
 export function pickFinalANoPiEffect(): Effect {
   if (pickFinalANoPiCache !== undefined) return pickFinalANoPiCache;
   const fs = fragment((input: {
-    outColor: V4f;
+    Colors: V4f;
     ViewSpaceNormal: V3f;
   }, b: FragmentBuiltinIn) => {
     const n24 = n24Encode(input.ViewSpaceNormal.normalize());
     const id = new V4f((uniform.PickId as number) as f32, n24, b.fragCoord.z, 0.0);
-    return { outColor: input.outColor, pickId: id, Depth: b.fragCoord.z };
+    return { Colors: input.Colors, pickId: id, Depth: b.fragCoord.z };
   });
   pickFinalANoPiCache = effect(fs);
   return pickFinalANoPiCache;
@@ -157,11 +157,11 @@ let pickFinalANoNormalCache: Effect | undefined;
 export function pickFinalANoNormalEffect(): Effect {
   if (pickFinalANoNormalCache !== undefined) return pickFinalANoNormalCache;
   const fs = fragment((input: {
-    outColor: V4f;
+    Colors: V4f;
     PickPartIndex: f32;
   }, b: FragmentBuiltinIn) => {
     const id = new V4f((uniform.PickId as number) as f32, 0.0, b.fragCoord.z, input.PickPartIndex);
-    return { outColor: input.outColor, pickId: id, Depth: b.fragCoord.z };
+    return { Colors: input.Colors, pickId: id, Depth: b.fragCoord.z };
   });
   pickFinalANoNormalCache = effect(fs);
   return pickFinalANoNormalCache;
@@ -176,10 +176,10 @@ let pickFinalANoNormalNoPiCache: Effect | undefined;
 export function pickFinalANoNormalNoPiEffect(): Effect {
   if (pickFinalANoNormalNoPiCache !== undefined) return pickFinalANoNormalNoPiCache;
   const fs = fragment((input: {
-    outColor: V4f;
+    Colors: V4f;
   }, b: FragmentBuiltinIn) => {
     const id = new V4f((uniform.PickId as number) as f32, 0.0, b.fragCoord.z, 0.0);
-    return { outColor: input.outColor, pickId: id, Depth: b.fragCoord.z };
+    return { Colors: input.Colors, pickId: id, Depth: b.fragCoord.z };
   });
   pickFinalANoNormalNoPiCache = effect(fs);
   return pickFinalANoNormalNoPiCache;
@@ -198,14 +198,14 @@ let pickFinalBCache: Effect | undefined;
 export function pickFinalBEffect(): Effect {
   if (pickFinalBCache !== undefined) return pickFinalBCache;
   const fs = fragment((input: {
-    outColor: V4f;
+    Colors: V4f;
     PickViewPosition: V3f;
   }) => {
     const id = new V4f(
       -((uniform.PickId as number) as f32),
       input.PickViewPosition.x, input.PickViewPosition.y, input.PickViewPosition.z,
     );
-    return { outColor: input.outColor, pickId: id };
+    return { Colors: input.Colors, pickId: id };
   });
   pickFinalBCache = effect(fs);
   return pickFinalBCache;

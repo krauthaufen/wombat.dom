@@ -1,6 +1,6 @@
 // Build a combined IFramebuffer that pairs the canvas's color +
 // depth attachments with a freshly-allocated rgba32float `pickId`
-// attachment. The pick chain shaders write to `outColor` (slot 0)
+// attachment. The pick chain shaders write to `Colors` (slot 0)
 // and `pickId` (slot 1); both targets must be present in the
 // framebuffer signature for pipeline creation to succeed.
 //
@@ -74,11 +74,11 @@ export function createPickFramebuffer(
   device: GPUDevice,
   attachment: CanvasLikeAttachment,
   opts: {
-    /** Color-attachment name in the canvas signature. Default `"outColor"`. */
+    /** Color-attachment name in the canvas signature. Default `"Colors"`. */
     readonly colorAttachmentName?: string;
   } = {},
 ): PickFramebuffer {
-  const colorName = opts.colorAttachmentName ?? "outColor";
+  const colorName = opts.colorAttachmentName ?? "Colors";
   const sampleCount = attachment.signature.sampleCount;
   const isMSAA = sampleCount > 1;
 

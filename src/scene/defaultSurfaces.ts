@@ -102,9 +102,9 @@ export function trafo(): Effect {
 // from the auto-injected uniform set (default = (10,10,10), override
 // via `<Sg Uniform={{LightLocation: cval(...)}}>`).
 //
-// Output is `outColor` — the framebuffer's `Colors` attachment.
+// Output is `Colors` — the framebuffer's `Colors` attachment.
 // Once phase-3 8a (DefaultSemantic registry) lands the output field
-// can be renamed `Colors` and the `outColor` alias dropped.
+// can be renamed `Colors` and the `Colors` alias dropped.
 //
 // LIMITATION: pre-phase-3 we don't have the helper-extraction +
 // universal pass-through pipeline yet, so this effect ships as a
@@ -135,7 +135,7 @@ export function simpleLighting(): Effect {
     const diffuse = abs(c.dot(n));
     const l = ambient + (1.0 - ambient) * diffuse;
     return {
-      outColor: new V4f(v.Colors.xyz.mul(l), v.Colors.w),
+      Colors: new V4f(v.Colors.xyz.mul(l), v.Colors.w),
     };
   });
   return simpleLightingCache;
@@ -146,7 +146,7 @@ export function simpleLighting(): Effect {
 // `DefaultSurfaces.constantColor` (`Effects/Default/Impl/ConstantColor.fs`).
 //
 // Parameterised fragment effect: emits the captured colour as the
-// framebuffer's `outColor`, ignoring all per-fragment varyings.
+// framebuffer's `Colors`, ignoring all per-fragment varyings.
 // Demonstrates closure-capture support in the inline marker form —
 // each call to `constantColor(c)` produces a fresh `Effect` with
 // `c` baked in as a `ReadInput("Closure", ...)` IR hole, so two
@@ -154,7 +154,7 @@ export function simpleLighting(): Effect {
 // ---------------------------------------------------------------------------
 
 export function constantColor(c: V4f): Effect {
-  return fragment(() => ({ outColor: c }));
+  return fragment(() => ({ Colors: c }));
 }
 
 // ---------------------------------------------------------------------------
@@ -162,7 +162,7 @@ export function constantColor(c: V4f): Effect {
 // `DefaultSurfaces.vertexColor` (`Effects/Default/Impl/VertexColor.fs`).
 //
 // One-line fragment effect: emits the interpolated `Colors` varying
-// as the framebuffer's `outColor`. Composes with `trafo` —
+// as the framebuffer's `Colors`. Composes with `trafo` —
 // `effect(trafo, vertexColor)` is the post-phase-3 replacement for
 // today's `DefaultSurfaces.basic`.
 // ---------------------------------------------------------------------------
@@ -172,7 +172,7 @@ let vertexColorCache: Effect | undefined;
 export function vertexColor(): Effect {
   if (vertexColorCache !== undefined) return vertexColorCache;
   vertexColorCache = fragment((v: { Colors: V4f }) => ({
-    outColor: v.Colors,
+    Colors: v.Colors,
   }));
   return vertexColorCache;
 }

@@ -839,7 +839,7 @@ function derivePipelineState(state: TraversalState, opts: CompileSceneOptions): 
     blends = state.colorMask.map(masks => {
       let m = HashMap.empty<string, BlendState>();
       if (blendModeStatic !== undefined) {
-        m = m.add("outColor", blendStateWithMask(blendModeStatic, masks.tryFind("outColor")));
+        m = m.add("Colors", blendStateWithMask(blendModeStatic, masks.tryFind("Colors")));
       }
       for (const [k, v] of masks) {
         if (m.tryFind(k) === undefined) m = m.add(k, defaultBlendForMask(v));

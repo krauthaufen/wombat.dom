@@ -166,7 +166,7 @@ function buildPathTextEffectAaNone(): Effect {
     } else if (input.v_klmKind.w > 0.7 && input.v_klmKind.w < 1.5) {
       if ((input.v_klmKind.x * input.v_klmKind.x - input.v_klmKind.y) * input.v_klmKind.z > 0.0) discard();
     }
-    return { outColor: uniform.PathColor };
+    return { Colors: uniform.PathColor };
   });
   pathTextEffectAaNone = effect(vsBare, fs);
   return pathTextEffectAaNone;
@@ -232,7 +232,7 @@ function buildPathTextEffectAaAlphaBlending(): Effect {
     // in every channel keeps WebKit's optimiser honest and matches
     // the premultiplied blend factors (src=ONE, dst=ONE_MINUS_SRC_ALPHA).
     const aa_ = alpha * uniform.PathColor.w;
-    return { outColor: new V4f(uniform.PathColor.x * aa_, uniform.PathColor.y * aa_, uniform.PathColor.z * aa_, aa_) };
+    return { Colors: new V4f(uniform.PathColor.x * aa_, uniform.PathColor.y * aa_, uniform.PathColor.z * aa_, aa_) };
   });
   pathTextEffectAaAlphaBlending = effect(vsRibbon, fs);
   return pathTextEffectAaAlphaBlending;
@@ -257,7 +257,7 @@ function buildPathTextEffectWireframe(): Effect {
     const r = 0.20 * m0 + 0.95 * m1 + 0.20 * m2 + 0.95 * m3;
     const g = 0.85 * m0 + 0.30 * m1 + 0.40 * m2 + 0.85 * m3;
     const b = 0.30 * m0 + 0.30 * m1 + 0.95 * m2 + 0.20 * m3;
-    return { outColor: new V4f(r, g, b, 1.0) };
+    return { Colors: new V4f(r, g, b, 1.0) };
   });
   pathTextEffectWireframe = effect(vsRibbon, fs);
   return pathTextEffectWireframe;
