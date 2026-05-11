@@ -419,6 +419,16 @@ async function initialise(
     // sleeps until something else marks (cval edit, canvas resize,
     // input handler, etc.).
     onAfterFrame: tickGlobalTime,
+    // GPU-rate pacing. `queue.submit` is fire-and-forget — without
+    // this JS will encode 60 frames/s into a GPU that's actually
+    // running at e.g. 10 fps, the compositor drops frames silently,
+    // and perceived FPS has nothing to do with rAF rate. Awaiting
+    // `onSubmittedWorkDone()` before scheduling the next rAF caps
+    // encode rate to GPU completion rate so the queue stays at
+    // depth 1. Critical during boot-phase pipeline-compile stalls
+    // (without it, 50k addDraws queue up while the first frame is
+    // still compiling).
+    pacer: () => device.queue.onSubmittedWorkDone(),
   });
   scope.onDispose(() => loop.stop());
 
