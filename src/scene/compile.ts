@@ -875,9 +875,14 @@ function derivePipelineState(state: TraversalState, opts: CompileSceneOptions): 
 
   // depthBias: state.depthBias (if present) is the source of truth;
   // otherwise fall back to the static base rasterizer's depthBias.
+  // Use the namespace form `AVal.map(fn, src)` so the adaptive memo
+  // plugin recognises this as a combinator call (it can't infer kind
+  // from `state.depthBias` — that's a property access, opaque to the
+  // plugin's lightweight scanner — but it does know `AVal.map`).
   const baseDepthBias = baseRast.depthBias;
-  const depthBiasAval = state.depthBias !== undefined
-    ? state.depthBias.map(b => b as DepthBiasState | undefined)
+  const _depthBiasSrc = state.depthBias;
+  const depthBiasAval = _depthBiasSrc !== undefined
+    ? AVal.map(_depthBiasSrc, (b: DepthBiasState | undefined) => b)
     : (baseDepthBias !== undefined ? AVal.constant<DepthBiasState | undefined>(baseDepthBias) : undefined);
 
   const rasterizer: RasterizerState = {
@@ -893,8 +898,9 @@ function derivePipelineState(state: TraversalState, opts: CompileSceneOptions): 
   // aval-typed.
   let blends: aval<HashMap<string, BlendState>> | undefined;
   const blendModeStatic = state.blendMode;
-  if (blendModeStatic !== undefined || state.colorMask !== undefined) {
-    blends = state.colorMask.map(masks => {
+  const _colorMaskSrc = state.colorMask;
+  if (blendModeStatic !== undefined || _colorMaskSrc !== undefined) {
+    blends = AVal.map(_colorMaskSrc, (masks: HashMap<string, ColorMaskValue>) => {
       let m = HashMap.empty<string, BlendState>();
       if (blendModeStatic !== undefined) {
         m = m.add("Colors", blendStateWithMask(blendModeStatic, masks.tryFind("Colors")));

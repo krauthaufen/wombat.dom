@@ -130,47 +130,15 @@ export function composePickChain(
  * selected (e.g. to register the leaf's pick mode against the
  * registry: Mode-A for FinalA*, Mode-B for FinalB).
  */
-/**
- * Cache for `composePickChainWithChoice` so identical (userEffect,
- * chain-shape) tuples return the same composed Effect *object*.
- *
- * Why this matters: `effect(...)` builds a fresh Effect every call,
- * so a scene with N leaves sharing one user effect produced N
- * different composed-effect objects. The heap renderer's
- * `familyByEffect` is keyed by Effect reference identity — every
- * leaf then triggered a fresh `compileFamilyFor`, doing the full
- * shader pipeline (composition + DCE + CSE + linkHelpers + …) once
- * per leaf. 4096 leaves × ~12 ms = ~50 s of redundant compile work
- * during boot.
- *
- * The chain shape is fully determined by `chooseChain`'s output
- * (final variant + injectVsn). Anything that produces the same
- * `(eff, choice)` pair would yield bit-identical IR; sharing the
- * Effect object lets the family cache hit and the compile pipeline
- * run once per shape.
- */
-const composeCache: WeakMap<Effect, Map<string, { effect: Effect; choice: PickChainChoice }>> = new WeakMap();
-
 export function composePickChainWithChoice(
   eff: Effect,
   geomHas: (semantic: string) => boolean,
 ): { effect: Effect; choice: PickChainChoice } {
   const choice = chooseChain(eff, geomHas);
-  const key = `${choice.final}|${choice.injectVsn ? 1 : 0}`;
-  let inner = composeCache.get(eff);
-  if (inner === undefined) {
-    inner = new Map();
-    composeCache.set(eff, inner);
-  } else {
-    const hit = inner.get(key);
-    if (hit !== undefined) return hit;
-  }
   const stages: Effect[] = [];
   if (choice.injectVsn) stages.push(viewSpaceNormalVertexEffect());
   stages.push(eff);
   stages.push(finalEffect(choice.final));
   void pickDepthBeforeEffect;
-  const result = { effect: effect(...stages), choice };
-  inner.set(key, result);
-  return result;
+  return { effect: effect(...stages), choice };
 }
