@@ -12,16 +12,20 @@
 // picks an effect from a 5-effect table; instanced effects also wrap
 // the primitive in `Sg.instanced(...)` to stack 6 copies along +Z.
 
-import { mount, type VNode } from "@aardworx/wombat.dom";
+import { mount } from "@aardworx/wombat.dom";
 import {
   OrbitController,
   RenderControl,
   Sg,
   aspectFromViewport,
   perspective,
+  extractSgNode,
+  isSgVNode,
+  sgVNode,
   type SceneEvent,
 } from "@aardworx/wombat.dom/scene";
-import { AVal, HashMap, cval, transact } from "@aardworx/wombat.adaptive";
+import type { SgNode } from "@aardworx/wombat.dom/scene";
+import { AVal, HashMap, cset, cval, transact } from "@aardworx/wombat.adaptive";
 import { V3d, V4f } from "@aardworx/wombat.base";
 import { BufferView, ElementType, IBuffer, ITexture } from "@aardworx/wombat.rendering/core";
 import type { ClearValues } from "@aardworx/wombat.rendering/core";
@@ -239,8 +243,44 @@ function makeLeaf(k: number) {
   }
 }
 
-const leaves: VNode[] = [];
-for (let k = 0; k < ROCount; k++) leaves.push(makeLeaf(k));
+// Build the leaves once, extract their SgNode representation, and
+// stash them in a `cset<SgNode>`. The heap path consumes `aset`
+// deltas directly — adding / removing a leaf is O(1) work per
+// delta (one heap-arena alloc/release + one pool-entry ref tweak),
+// no scene-wide rebuild. Every effect was already compiled when
+// the leaves were first registered, so no shader compile happens
+// on toggle.
+const allLeafNodes: SgNode[] = [];
+for (let k = 0; k < ROCount; k++) {
+  const v = makeLeaf(k);
+  if (v !== undefined && isSgVNode(v)) allLeafNodes.push(extractSgNode(v));
+}
+const liveLeaves = cset<SgNode>(allLeafNodes);
+
+// Toggle: tap the floating "toggle ½" button to remove a deterministic
+// half of the leaves from the cset; tap again to put them back. The
+// heap renderer takes the aset deltas as-is — one heap-arena
+// release + one pool-ref tweak per removed leaf, no shader compile,
+// no scene-wide rebuild. Watch the FPS counter — it stays at 60.
+let halfOut = false;
+const toggleBtn = document.createElement("button");
+toggleBtn.textContent = "toggle ½";
+toggleBtn.style.cssText =
+  "position:fixed;top:8px;right:8px;z-index:10;padding:8px 14px;" +
+  "font:14px system-ui,sans-serif;background:#222;color:#ddd;" +
+  "border:1px solid #555;border-radius:6px;cursor:pointer;" +
+  "-webkit-tap-highlight-color:transparent;";
+toggleBtn.addEventListener("click", () => {
+  halfOut = !halfOut;
+  transact(() => {
+    if (halfOut) {
+      for (let k = 0; k < allLeafNodes.length; k += 2) liveLeaves.remove(allLeafNodes[k]!);
+    } else {
+      for (let k = 0; k < allLeafNodes.length; k += 2) liveLeaves.add(allLeafNodes[k]!);
+    }
+  });
+});
+document.body.appendChild(toggleBtn);
 
 // ─── Mount ─────────────────────────────────────────────────────────────
 
@@ -269,7 +309,7 @@ mount(root, (
       ForcePixelPicking={AVal.constant(true)}
       OnDoubleTap={(e: SceneEvent) => ctl.flyTo(e.worldPos)}
     >
-      {leaves}
+      {sgVNode(Sg.unordered(liveLeaves))}
     </Sg>
   </RenderControl>
 ));
