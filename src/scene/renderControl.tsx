@@ -44,7 +44,7 @@ import { TraversalState } from "./traversalState.js";
 import { PickRegistry } from "./picking/registry.js";
 import { createPickFramebuffer, PICK_NAME } from "./picking/pickFramebuffer.js";
 import { PickDispatcher, type TapThresholds } from "./picking/dispatcher.js";
-import { readPickRegion, type PickRegion } from "./picking/readback.js";
+import { PickRegionReader, type PickRegion } from "./picking/readback.js";
 import { setAmbient, clearAmbient } from "./ambient.js";
 
 // ---------------------------------------------------------------------------
@@ -386,10 +386,20 @@ async function initialise(
     () => canvas.getBoundingClientRect(),
     props.tapThresholds,
   );
-  const readRegion = async (x: number, y: number): Promise<PickRegion | undefined> => {
-    const tex = AVal.force(pickFb.readbackPickTexture);
-    return readPickRegion(device, tex, x, y);
-  };
+  // Pooled + coalescing pickFb readback. Without this, every
+  // pointermove allocates+destroys a fresh GPU staging buffer and
+  // queues a fresh copy+map (60+ readbacks/sec under sustained
+  // pointer-move flood the queue; the pacer's onSubmittedWorkDone
+  // wait then includes all of them, stalling the render loop).
+  // The reader caps in-flight readbacks to 1 and drops intermediate
+  // pointer events that arrive while one is pending.
+  const regionReader = new PickRegionReader(
+    device,
+    () => AVal.force(pickFb.readbackPickTexture),
+  );
+  scope.onDispose(() => regionReader.dispose());
+  const readRegion = (x: number, y: number): Promise<PickRegion | undefined> =>
+    regionReader.read(x, y);
   const detach = dispatcher.attach(canvas, readRegion);
   scope.onDispose(detach);
 

@@ -1,14 +1,16 @@
 // Readback from the rgba32f pick attachment + slot decoder.
 //
-// Two readers:
+// Three readers:
 //   - `readPickPixel` — single pixel (kept for tests / simple uses).
-//   - `readPickRegion` — 33×33 disc-readback used by the spiral
-//     hit-test (`dispatcher.ts`). Aligns bytesPerRow to 256 as
-//     WebGPU requires for copyTextureToBuffer.
-//
-// Pooling is still future work — each readback allocates a fresh
-// staging buffer. For one readback per pointer event that's fine;
-// for sustained pointer-move under load we'd want a 2-3 buffer ring.
+//   - `readPickRegion` — 33×33 disc-readback. One-shot allocation
+//     of a staging buffer; for one-off calls (tests, programmatic
+//     ray queries) that's fine.
+//   - `PickRegionReader` — pooled + coalescing variant used by
+//     `dispatcher.ts` under sustained pointer-move. Owns a small
+//     ring of staging buffers (always sized for the full disc) so
+//     pointermoves don't allocate / destroy a GPU buffer per event,
+//     and discards intermediate reads while one is in flight so the
+//     dispatcher only resolves the LATEST cursor position.
 
 import { V3d } from "@aardworx/wombat.base";
 
@@ -178,6 +180,197 @@ export async function readPickRegion(
     return undefined;
   } finally {
     try { buffer.destroy(); } catch { /* already gone */ }
+  }
+}
+
+/**
+ * Pooled + coalescing reader for the `(2·SNAP_RADIUS_MAX+1)²` pick
+ * disc. Reuses a small ring of staging buffers across reads (avoids
+ * a per-pointer-event `createBuffer` + `destroy`) and coalesces:
+ * while a readback is in flight, additional `read(x, y)` calls
+ * overwrite the pending target so the dispatcher only resolves the
+ * latest cursor position. Drops intermediate samples — a sustained
+ * pointer-move under load runs at most one readback in flight + one
+ * pending, no matter the event rate.
+ *
+ * The staging buffers are always sized for the *full* disc
+ * (`SNAP_REGION_SIZE²`), which is the worst case; this lets all
+ * reads reuse the same buffer even as the cursor crosses the
+ * texture-edge clamp region (the deinterleave step honours the
+ * actual region the GPU produced).
+ *
+ * Lifetime is tied to the picker; call `dispose()` on unmount.
+ */
+export class PickRegionReader {
+  private readonly device: GPUDevice;
+  private readonly textureSrc: () => GPUTexture | undefined;
+  private readonly pool: { buffer: GPUBuffer; size: number; inFlight: boolean }[] = [];
+  private static readonly POOL_LIMIT = 3;
+  // Sized for the full SNAP_REGION_SIZE × SNAP_REGION_SIZE disc with
+  // bytesPerRow padded to 256. rgba32f = 16 B/px, so per-row tight
+  // bytes are SNAP_REGION_SIZE * 16. Pad up.
+  private static readonly BYTES_PER_ROW =
+    Math.ceil(SNAP_REGION_SIZE * 16 / 256) * 256;
+  private static readonly STAGING_BYTES =
+    PickRegionReader.BYTES_PER_ROW * SNAP_REGION_SIZE;
+  // Coalescer: if a request arrives while one is in flight, it
+  // replaces `pending`. After the in-flight one resolves, we kick
+  // off the latest pending coords (and discard everything that
+  // arrived in between).
+  private current: { resolveLatest: (r: PickRegion | undefined) => void } | undefined;
+  private pending: { x: number; y: number; resolve: (r: PickRegion | undefined) => void } | undefined;
+  private disposed = false;
+
+  constructor(device: GPUDevice, textureSrc: () => GPUTexture | undefined) {
+    this.device = device;
+    this.textureSrc = textureSrc;
+  }
+
+  /**
+   * Same shape as `readPickRegion`. Returns a Promise that resolves
+   * with the region read at coords (x, y) — UNLESS a newer call
+   * supersedes it before the GPU work finishes, in which case the
+   * older promise resolves to `undefined` (caller filters via its
+   * own seq counter the same way it always did).
+   */
+  read(x: number, y: number): Promise<PickRegion | undefined> {
+    if (this.disposed) return Promise.resolve(undefined);
+    if (this.current !== undefined) {
+      // Already a readback in flight. Replace any prior pending
+      // request — its caller gets `undefined` (their result was
+      // superseded by the newer cursor position before the GPU
+      // work for them ever started).
+      if (this.pending !== undefined) this.pending.resolve(undefined);
+      return new Promise<PickRegion | undefined>((resolve) => {
+        this.pending = { x, y, resolve };
+      });
+    }
+    return this.start(x, y);
+  }
+
+  private async start(x: number, y: number): Promise<PickRegion | undefined> {
+    let resolveOuter!: (r: PickRegion | undefined) => void;
+    const outer = new Promise<PickRegion | undefined>((res) => { resolveOuter = res; });
+    this.current = { resolveLatest: resolveOuter };
+    void this.runOne(x, y, resolveOuter);
+    return outer;
+  }
+
+  private async runOne(
+    x: number, y: number,
+    resolveOuter: (r: PickRegion | undefined) => void,
+  ): Promise<void> {
+    const region = await this.execute(x, y);
+    resolveOuter(region);
+    this.current = undefined;
+    // Drain the pending slot if anything queued.
+    const next = this.pending;
+    this.pending = undefined;
+    if (next !== undefined && !this.disposed) {
+      // Reuse the same code path: chain start() and hand the
+      // pending caller's resolve into it.
+      void this.start(next.x, next.y).then(next.resolve, () => next.resolve(undefined));
+    }
+  }
+
+  private acquire(): { buffer: GPUBuffer; release: () => void } | undefined {
+    // Reuse an idle buffer first.
+    for (const e of this.pool) {
+      if (!e.inFlight) {
+        e.inFlight = true;
+        return { buffer: e.buffer, release: () => { e.inFlight = false; } };
+      }
+    }
+    // No idle entry. Grow the pool up to POOL_LIMIT.
+    if (this.pool.length < PickRegionReader.POOL_LIMIT) {
+      let buffer: GPUBuffer;
+      try {
+        buffer = this.device.createBuffer({
+          size: PickRegionReader.STAGING_BYTES,
+          usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+          label: `pick.region.readback.pool#${this.pool.length}`,
+        });
+      } catch {
+        return undefined;
+      }
+      const entry = { buffer, size: PickRegionReader.STAGING_BYTES, inFlight: true };
+      this.pool.push(entry);
+      return { buffer, release: () => { entry.inFlight = false; } };
+    }
+    // Pool exhausted (3 in flight). With coalescing this shouldn't
+    // normally happen — only one in-flight at a time per reader.
+    // Fall back to one-shot allocation.
+    let buffer: GPUBuffer;
+    try {
+      buffer = this.device.createBuffer({
+        size: PickRegionReader.STAGING_BYTES,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+        label: "pick.region.readback.spill",
+      });
+    } catch {
+      return undefined;
+    }
+    return { buffer, release: () => { try { buffer.destroy(); } catch { /* gone */ } } };
+  }
+
+  private async execute(centerX: number, centerY: number): Promise<PickRegion | undefined> {
+    const tex = this.textureSrc();
+    if (tex === undefined) return undefined;
+    const w = tex.width;
+    const h = tex.height;
+    if (w <= 0 || h <= 0) return undefined;
+    const r = SNAP_RADIUS_MAX;
+    const cx = centerX | 0;
+    const cy = centerY | 0;
+    const x0 = Math.max(0, cx - r);
+    const y0 = Math.max(0, cy - r);
+    const x1 = Math.min(w, cx + r + 1);
+    const y1 = Math.min(h, cy + r + 1);
+    const sizeX = x1 - x0;
+    const sizeY = y1 - y0;
+    if (sizeX <= 0 || sizeY <= 0) return undefined;
+    const bytesPerRow = PickRegionReader.BYTES_PER_ROW;
+    const totalBytes = bytesPerRow * sizeY;
+    const lease = this.acquire();
+    if (lease === undefined) return undefined;
+    const { buffer, release } = lease;
+    try {
+      const encoder = this.device.createCommandEncoder({ label: "pick.region.readback.encoder" });
+      encoder.copyTextureToBuffer(
+        { texture: tex, origin: { x: x0, y: y0, z: 0 } },
+        { buffer, bytesPerRow, rowsPerImage: sizeY },
+        { width: sizeX, height: sizeY, depthOrArrayLayers: 1 },
+      );
+      this.device.queue.submit([encoder.finish()]);
+      await buffer.mapAsync(GPUMapMode.READ, 0, totalBytes);
+      const staging = new Float32Array(buffer.getMappedRange(0, totalBytes).slice(0));
+      const floatsPerStagingRow = bytesPerRow / 4;
+      const floatsPerTightRow = sizeX * 4;
+      const data = new Float32Array(sizeX * sizeY * 4);
+      for (let y = 0; y < sizeY; y++) {
+        const src = y * floatsPerStagingRow;
+        const dst = y * floatsPerTightRow;
+        data.set(staging.subarray(src, src + floatsPerTightRow), dst);
+      }
+      buffer.unmap();
+      return { data, originX: x0, originY: y0, sizeX, sizeY };
+    } catch {
+      return undefined;
+    } finally {
+      release();
+    }
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    if (this.pending !== undefined) {
+      this.pending.resolve(undefined);
+      this.pending = undefined;
+    }
+    for (const e of this.pool) {
+      try { e.buffer.destroy(); } catch { /* gone */ }
+    }
+    this.pool.length = 0;
   }
 }
 
