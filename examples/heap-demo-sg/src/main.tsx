@@ -21,7 +21,7 @@ import {
   perspective,
   type SceneEvent,
 } from "@aardworx/wombat.dom/scene";
-import { AVal, HashMap } from "@aardworx/wombat.adaptive";
+import { AVal, HashMap, cval, transact } from "@aardworx/wombat.adaptive";
 import { V3d, V4f } from "@aardworx/wombat.base";
 import { BufferView, ElementType, IBuffer, ITexture } from "@aardworx/wombat.rendering/core";
 import type { ClearValues } from "@aardworx/wombat.rendering/core";
@@ -156,13 +156,21 @@ const instanceOffsetsView = makeInstanceOffsets(instCount, 0.7);
 
 // ─── Build the scene as a naive flat list of nodes ─────────────────────
 
+const WHITE = new V4f(1, 1, 1, 1);
+
 function makeLeaf(k: number) {
   const fxIdx = forcedFx >= 0 ? forcedFx : k % fxTable.length;
   const fx    = fxTable[fxIdx]!;
   const Shape = shapes[k % shapes.length]!;
-  const color = colors[k % colors.length]!;
+  const baseColor = colors[k % colors.length]!;
   const tint  = tints[(k >> 3) % tints.length]!;
   const tex   = allTextures[k % allTextures.length]!;
+
+  // Per-leaf reactive colour. Hover handlers below flip it to white;
+  // pointer-leave flips back to `baseColor`. Only the hovered leaf's
+  // cval ticks per pointer event → one heap-arena slot repacks +
+  // one writeBuffer to the GPU. Everything else stays put.
+  const color = cval<V4f>(baseColor);
 
   // Grid placement.
   const side = Math.ceil(Math.sqrt(ROCount));
@@ -171,7 +179,11 @@ function makeLeaf(k: number) {
   const ix = k % side, iy = Math.floor(k / side);
   const trafo = Sg.translate(new V3d((ix - center) * spacing, (iy - center) * spacing, 0));
 
-  const prim = <Shape Trafo={trafo} Color={color} />;
+  const onEnter = (): void => { transact(() => { color.value = WHITE; }); };
+  const onLeave = (): void => { transact(() => { color.value = baseColor; }); };
+
+  const prim = <Shape Trafo={trafo} Color={color}
+    OnPointerEnter={onEnter} OnPointerLeave={onLeave} />;
 
   switch (fx) {
     case "surface":
