@@ -730,9 +730,17 @@ function autoInjectedUniforms(state: TraversalState): HashMap<string, aval<unkno
   const model = state.model;
   const view  = state.view;
   const proj  = state.proj;
+  // All combinators here use the `AVal.{zip, map}` namespace form so
+  // the adaptive memo plugin recognises them. With the method form
+  // (`t.map(fn)` where `t` is a function parameter), the plugin can't
+  // infer that the receiver is aval-kind — its lightweight scanner
+  // only tracks locals declared via `const x = ...`, not function
+  // parameters — so every leaf would build fresh derived avals
+  // instead of sharing across leaves with the same view / proj.
   const compose = (a: aval<Trafo3d>, b: aval<Trafo3d>): aval<Trafo3d> =>
     AVal.zip(a, b).map((aT, bT) => aT.mul(bT));
-  const inv = (t: aval<Trafo3d>): aval<Trafo3d> => t.map(x => x.inverse());
+  const inv = (t: aval<Trafo3d>): aval<Trafo3d> =>
+    AVal.map(t, (x: Trafo3d) => x.inverse());
 
   const modelView    = compose(model, view);
   const viewProj     = compose(view, proj);
@@ -743,7 +751,7 @@ function autoInjectedUniforms(state: TraversalState): HashMap<string, aval<unkno
   // exposes the upper-left M33; we expose the full M44 here. Shaders
   // pad V3f normals to V4f(n.xyz, 0) before multiplying so the 4th
   // column (translation) is ignored — mathematically equivalent.
-  const normalMatrix = model.map(t => {
+  const normalMatrix = AVal.map(model, (t: Trafo3d) => {
     const invT = t.backward.transpose();
     return Trafo3d.fromMatrices(invT, invT.transpose());
   });
@@ -751,7 +759,7 @@ function autoInjectedUniforms(state: TraversalState): HashMap<string, aval<unkno
   // CameraLocation: position of the camera in world space =
   // ViewTrafoInv applied to the origin. Same as the translation
   // column of view.backward.
-  const cameraLocation = view.map(v => {
+  const cameraLocation = AVal.map(view, (v: Trafo3d) => {
     const o = v.backward.transformPos(V3d.zero);
     return new V3f(o.x, o.y, o.z);
   });
