@@ -56,6 +56,8 @@ import type {
 } from "./sg.js";
 import { TraversalState } from "./traversalState.js";
 import { applyInstancing, validateInstancingSubtree } from "./instancing.js";
+import { isITexture, resolveTextureAval } from "./textureResolver.js";
+import { ISampler as ISamplerImpl } from "@aardworx/wombat.rendering/core";
 import { composePickChainWithChoice } from "./picking/pickChain.js";
 import type { PickRegistry } from "./picking/registry.js";
 
@@ -548,7 +550,8 @@ function buildRenderObject(
   opts: CompileSceneOptions,
   pickId: number | undefined,
 ): RenderObject {
-  const uniforms = mergeUniforms(leaf, state, opts, pickId);
+  const merged = mergeUniforms(leaf, state, opts, pickId);
+  const { uniforms, textures, samplers } = splitTexturesFromUniforms(merged);
   const pipelineState = derivePipelineState(state, opts);
 
   // RenderObject.indices is `aval<BufferView>` (no undefined). The
@@ -565,8 +568,8 @@ function buildRenderObject(
     vertexAttributes: leaf.vertexAttributes,
     ...(leaf.instanceAttributes !== undefined ? { instanceAttributes: leaf.instanceAttributes } : {}),
     uniforms,
-    textures: HashMap.empty<string, aval<ITexture>>(),
-    samplers: HashMap.empty<string, aval<ISampler>>(),
+    textures,
+    samplers,
     ...(leaf.storageBuffers !== undefined ? { storageBuffers: leaf.storageBuffers } : {}),
     ...(leaf.indices !== undefined ? { indices: leaf.indices } : {}),
     drawCall: leaf.drawCall,
@@ -656,6 +659,59 @@ function adaptForGpu(v: aval<unknown>): aval<unknown> {
     if (value instanceof Trafo3d) return M44f.fromArray(value.forward.toArray());
     return value;
   });
+}
+
+// Default sampler — linear/linear/mip-linear/repeat. Shared across
+// every Sg leaf that doesn't declare its own samplers. Cached so the
+// runtime's value-equality keyed sampler cache collapses to one
+// GPUSampler.
+const _defaultSampler = ISamplerImpl.fromDescriptor({
+  magFilter: "linear", minFilter: "linear", mipmapFilter: "linear",
+  addressModeU: "repeat", addressModeV: "repeat",
+});
+const _defaultSamplerAval = AVal.constant(_defaultSampler);
+
+/**
+ * Split texture-valued uniforms out of the merged uniform map. The
+ * Sg API treats textures as ordinary uniforms whose value happens to
+ * be an `ITexture`; the rendering runtime needs them on separate
+ * `textures` / `samplers` maps (paired by name per the
+ * `legaliseTypes` IR pass — `Sampler X` binding + `Texture X_view`).
+ *
+ * We bind the texture aval under both `name` and `${name}_view` so
+ * `prepareRenderObject` finds the binding whichever name the iface
+ * uses, and supply a shared default sampler under `name`. URL-deferred
+ * `ITexture` values pass through `resolveTextureAval` so they start
+ * out as a checker placeholder until the fetch completes.
+ *
+ * Why force here: a structural one-shot read at compile-scene time —
+ * we need to know each uniform's *shape* (texture vs scalar) to lay
+ * out the RenderObject. The force fires once per leaf during
+ * lowering; the render walk never reaches it. Same category as the
+ * pass-bucketing static forces above.
+ */
+function splitTexturesFromUniforms(
+  merged: HashMap<string, aval<unknown>>,
+): {
+  uniforms: HashMap<string, aval<unknown>>;
+  textures: HashMap<string, aval<ITexture>>;
+  samplers: HashMap<string, aval<ISampler>>;
+} {
+  let outU = HashMap.empty<string, aval<unknown>>();
+  let outT = HashMap.empty<string, aval<ITexture>>();
+  let outS = HashMap.empty<string, aval<ISampler>>();
+  for (const [k, v] of merged) {
+    // Why force here: structural classification at compile-scene time.
+    const current = v.force();
+    if (isITexture(current)) {
+      const texAval = resolveTextureAval(v as aval<ITexture>);
+      outT = outT.add(k, texAval).add(`${k}_view`, texAval);
+      outS = outS.add(k, _defaultSamplerAval);
+    } else {
+      outU = outU.add(k, v);
+    }
+  }
+  return { uniforms: outU, textures: outT, samplers: outS };
 }
 
 function autoInjectedUniforms(state: TraversalState): HashMap<string, aval<unknown>> {

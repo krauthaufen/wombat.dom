@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM"],
+    "types": ["@webgpu/types"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "verbatimModuleSyntax": false,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "@aardworx/wombat.dom",
+    "plugins": [
+      { "transform": "@boperators/plugin-tsc", "transformProgram": true },
+      { "name": "@boperators/plugin-ts-language-server" }
+    ]
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
+}
