@@ -12,19 +12,15 @@
 // picks an effect from a 5-effect table; instanced effects also wrap
 // the primitive in `Sg.instanced(...)` to stack 6 copies along +Z.
 
-import { mount } from "@aardworx/wombat.dom";
+import { mount, type VNode } from "@aardworx/wombat.dom";
 import {
   OrbitController,
   RenderControl,
   Sg,
   aspectFromViewport,
   perspective,
-  extractSgNode,
-  isSgVNode,
-  sgVNode,
   type SceneEvent,
 } from "@aardworx/wombat.dom/scene";
-import type { SgNode } from "@aardworx/wombat.dom/scene";
 import { AVal, HashMap, cset, cval, transact } from "@aardworx/wombat.adaptive";
 import { V3d, V4f } from "@aardworx/wombat.base";
 import { BufferView, ElementType, IBuffer, ITexture } from "@aardworx/wombat.rendering/core";
@@ -171,13 +167,7 @@ const instanceOffsetsView = makeInstanceOffsets(instCount, 0.7);
 
 const WHITE = new V4f(1, 1, 1, 1);
 
-// makeLeaf builds an SgNode directly (not a JSX VNode) so we can drop
-// the result into the `cset<SgNode>` below. JSX components only get
-// evaluated at mount time — they don't return SgNodes immediately —
-// so we use the function-form Sg API (`Sg.shader`, `Sg.uniform`,
-// `Sg.instanced`) and the primitive helpers (which return sgVNode-
-// tagged FragmentVNodes that we unwrap with `extractSgNode`).
-function makeLeaf(k: number): SgNode {
+function makeLeaf(k: number) {
   const fxIdx = forcedFx >= 0 ? forcedFx : k % fxTable.length;
   const fx    = fxTable[fxIdx]!;
   const Shape = shapes[k % shapes.length]!;
@@ -200,61 +190,63 @@ function makeLeaf(k: number): SgNode {
   const onEnter = (): void => { transact(() => { color.value = WHITE; }); };
   const onLeave = (): void => { transact(() => { color.value = baseColor; }); };
 
-  // Primitive — already an SgNode wrapped in a FragmentVNode by the
-  // Sg* component helpers; unwrap directly.
-  const primNode: SgNode = extractSgNode(Shape({
-    Trafo: trafo, Color: color,
-    OnPointerEnter: onEnter, OnPointerLeave: onLeave,
-  }) as never);
+  const prim = <Shape Trafo={trafo} Color={color}
+    OnPointerEnter={onEnter} OnPointerLeave={onLeave} />;
 
   switch (fx) {
     case "surface":
-      return Sg.shader(surface, primNode);
+      return <Sg Shader={surface}>{prim}</Sg>;
     case "tinted":
-      return Sg.shader(tintedSurface,
-        Sg.uniform({ Tint: AVal.constant(tint) }, primNode));
+      return <Sg Shader={tintedSurface} Uniform={{ Tint: AVal.constant(tint) }}>{prim}</Sg>;
     case "pulsing":
-      return Sg.shader(pulsingSurface,
-        Sg.uniform({ Time: time }, primNode));
+      return <Sg Shader={pulsingSurface} Uniform={{ Time: time }}>{prim}</Sg>;
     case "instanced": {
       const instanced = Sg.instanced({
         count: instCount,
         attributes: HashMap.empty<string, BufferView>().add("InstanceOffset", instanceOffsetsView),
       });
-      return Sg.shader(instancedSurface, instanced(primNode));
+      return <Sg Shader={instancedSurface}>{instanced(prim)}</Sg>;
     }
     case "wobbling": {
       const instanced = Sg.instanced({
         count: instCount,
         attributes: HashMap.empty<string, BufferView>().add("InstanceOffset", instanceOffsetsView),
       });
-      return Sg.shader(wobblingInstancedSurface,
-        Sg.uniform({ Time: time }, instanced(primNode)));
+      return (
+        <Sg Shader={wobblingInstancedSurface} Uniform={{ Time: time }}>
+          {instanced(prim)}
+        </Sg>
+      );
     }
     case "textured":
-      return Sg.shader(texturedSurface,
-        Sg.uniform({ DiffuseTex: AVal.constant(tex) }, primNode));
+      return (
+        <Sg Shader={texturedSurface} Uniform={{ DiffuseTex: AVal.constant(tex) }}>
+          {prim}
+        </Sg>
+      );
     case "texturedInstanced": {
       const instanced = Sg.instanced({
         count: instCount,
         attributes: HashMap.empty<string, BufferView>().add("InstanceOffset", instanceOffsetsView),
       });
-      return Sg.shader(texturedInstancedSurface,
-        Sg.uniform({ DiffuseTex: AVal.constant(tex) }, instanced(primNode)));
+      return (
+        <Sg Shader={texturedInstancedSurface} Uniform={{ DiffuseTex: AVal.constant(tex) }}>
+          {instanced(prim)}
+        </Sg>
+      );
     }
   }
 }
 
-// Build the leaves once, extract their SgNode representation, and
-// stash them in a `cset<SgNode>`. The heap path consumes `aset`
-// deltas directly — adding / removing a leaf is O(1) work per
-// delta (one heap-arena alloc/release + one pool-entry ref tweak),
-// no scene-wide rebuild. Every effect was already compiled when
-// the leaves were first registered, so no shader compile happens
-// on toggle.
-const allLeafNodes: SgNode[] = [];
+// Build the JSX leaves once and stash them in a `cset<VNode>`. The
+// `<Sg>{cset}</Sg>` form is fully supported — `collectSgChildren`
+// maps each VNode → SgNode through the same path JSX-children take,
+// and the heap path consumes the resulting aset deltas as-is
+// (one heap-arena alloc/release + one pool-entry ref tweak per
+// delta, no scene rebuild, no shader recompile).
+const allLeafNodes: VNode[] = [];
 for (let k = 0; k < ROCount; k++) allLeafNodes.push(makeLeaf(k));
-const liveLeaves = cset<SgNode>(allLeafNodes);
+const liveLeaves = cset<VNode>(allLeafNodes);
 
 // Toggle: tap the floating "toggle ½" button to remove a deterministic
 // half of the leaves from the cset; tap again to put them back. The
@@ -308,7 +300,7 @@ mount(root, (
       ForcePixelPicking={AVal.constant(true)}
       OnDoubleTap={(e: SceneEvent) => ctl.flyTo(e.worldPos)}
     >
-      {sgVNode(Sg.unordered(liveLeaves))}
+      {liveLeaves}
     </Sg>
   </RenderControl>
 ));

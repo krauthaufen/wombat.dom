@@ -998,9 +998,15 @@ function collectImpl(value: unknown): SgNode[] {
   if (typeof value === "function") {
     return [delay(value as (state: import("./traversalState.js").TraversalState) => SgChild)];
   }
-  if (isAVal(value))  return [adaptive(value as aval<SgNode>)];
-  if (isAList(value)) return [group(value as alist<SgNode>)];
-  if (isASet(value))  return [unordered(value as aset<SgNode>)];
+  // Adaptive containers — each entry can be anything `collectImpl`
+  // accepts (raw SgNode, sgVNode, JSX `ComponentVNode`, Fragment,
+  // function-form delay, …). We funnel every entry through
+  // `collectSgChildren`, which returns a single SgNode (grouping
+  // multi-segment results), and let the adaptive collection's own
+  // `.map` propagate deltas — no eager materialisation.
+  if (isAVal(value))  return [adaptive((value as aval<unknown>).map(v => collectSgChildren(v)))];
+  if (isAList(value)) return [group((value as alist<unknown>).map(v => collectSgChildren(v)))];
+  if (isASet(value))  return [unordered((value as aset<unknown>).map(v => collectSgChildren(v)))];
   return [];
 }
 
