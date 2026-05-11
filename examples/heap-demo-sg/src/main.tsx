@@ -171,7 +171,13 @@ const instanceOffsetsView = makeInstanceOffsets(instCount, 0.7);
 
 const WHITE = new V4f(1, 1, 1, 1);
 
-function makeLeaf(k: number) {
+// makeLeaf builds an SgNode directly (not a JSX VNode) so we can drop
+// the result into the `cset<SgNode>` below. JSX components only get
+// evaluated at mount time — they don't return SgNodes immediately —
+// so we use the function-form Sg API (`Sg.shader`, `Sg.uniform`,
+// `Sg.instanced`) and the primitive helpers (which return sgVNode-
+// tagged FragmentVNodes that we unwrap with `extractSgNode`).
+function makeLeaf(k: number): SgNode {
   const fxIdx = forcedFx >= 0 ? forcedFx : k % fxTable.length;
   const fx    = fxTable[fxIdx]!;
   const Shape = shapes[k % shapes.length]!;
@@ -179,10 +185,9 @@ function makeLeaf(k: number) {
   const tint  = tints[(k >> 3) % tints.length]!;
   const tex   = allTextures[k % allTextures.length]!;
 
-  // Per-leaf reactive colour. Hover handlers below flip it to white;
-  // pointer-leave flips back to `baseColor`. Only the hovered leaf's
-  // cval ticks per pointer event → one heap-arena slot repacks +
-  // one writeBuffer to the GPU. Everything else stays put.
+  // Per-leaf reactive colour. Hover handlers flip it to white;
+  // pointer-leave flips back. One cval tick per pointer event →
+  // one heap-arena slot repacks, no scene rebuild.
   const color = cval<V4f>(baseColor);
 
   // Grid placement.
@@ -195,50 +200,47 @@ function makeLeaf(k: number) {
   const onEnter = (): void => { transact(() => { color.value = WHITE; }); };
   const onLeave = (): void => { transact(() => { color.value = baseColor; }); };
 
-  const prim = <Shape Trafo={trafo} Color={color}
-    OnPointerEnter={onEnter} OnPointerLeave={onLeave} />;
+  // Primitive — already an SgNode wrapped in a FragmentVNode by the
+  // Sg* component helpers; unwrap directly.
+  const primNode: SgNode = extractSgNode(Shape({
+    Trafo: trafo, Color: color,
+    OnPointerEnter: onEnter, OnPointerLeave: onLeave,
+  }) as never);
 
   switch (fx) {
     case "surface":
-      return <Sg Shader={surface}>{prim}</Sg>;
+      return Sg.shader(surface, primNode);
     case "tinted":
-      return <Sg Shader={tintedSurface} Uniform={{ Tint: AVal.constant(tint) }}>{prim}</Sg>;
+      return Sg.shader(tintedSurface,
+        Sg.uniform({ Tint: AVal.constant(tint) }, primNode));
     case "pulsing":
-      return <Sg Shader={pulsingSurface} Uniform={{ Time: time }}>{prim}</Sg>;
+      return Sg.shader(pulsingSurface,
+        Sg.uniform({ Time: time }, primNode));
     case "instanced": {
       const instanced = Sg.instanced({
         count: instCount,
         attributes: HashMap.empty<string, BufferView>().add("InstanceOffset", instanceOffsetsView),
       });
-      return <Sg Shader={instancedSurface}>{instanced(prim)}</Sg>;
+      return Sg.shader(instancedSurface, instanced(primNode));
     }
     case "wobbling": {
       const instanced = Sg.instanced({
         count: instCount,
         attributes: HashMap.empty<string, BufferView>().add("InstanceOffset", instanceOffsetsView),
       });
-      return (
-        <Sg Shader={wobblingInstancedSurface} Uniform={{ Time: time }}>
-          {instanced(prim)}
-        </Sg>
-      );
+      return Sg.shader(wobblingInstancedSurface,
+        Sg.uniform({ Time: time }, instanced(primNode)));
     }
     case "textured":
-      return (
-        <Sg Shader={texturedSurface} Uniform={{ DiffuseTex: AVal.constant(tex) }}>
-          {prim}
-        </Sg>
-      );
+      return Sg.shader(texturedSurface,
+        Sg.uniform({ DiffuseTex: AVal.constant(tex) }, primNode));
     case "texturedInstanced": {
       const instanced = Sg.instanced({
         count: instCount,
         attributes: HashMap.empty<string, BufferView>().add("InstanceOffset", instanceOffsetsView),
       });
-      return (
-        <Sg Shader={texturedInstancedSurface} Uniform={{ DiffuseTex: AVal.constant(tex) }}>
-          {instanced(prim)}
-        </Sg>
-      );
+      return Sg.shader(texturedInstancedSurface,
+        Sg.uniform({ DiffuseTex: AVal.constant(tex) }, instanced(primNode)));
     }
   }
 }
@@ -251,10 +253,7 @@ function makeLeaf(k: number) {
 // the leaves were first registered, so no shader compile happens
 // on toggle.
 const allLeafNodes: SgNode[] = [];
-for (let k = 0; k < ROCount; k++) {
-  const v = makeLeaf(k);
-  if (v !== undefined && isSgVNode(v)) allLeafNodes.push(extractSgNode(v));
-}
+for (let k = 0; k < ROCount; k++) allLeafNodes.push(makeLeaf(k));
 const liveLeaves = cset<SgNode>(allLeafNodes);
 
 // Toggle: tap the floating "toggle ½" button to remove a deterministic
