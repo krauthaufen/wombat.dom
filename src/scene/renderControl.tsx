@@ -100,6 +100,21 @@ export interface RenderControlProps {
    */
   readonly runtime?: Runtime;
 
+  /**
+   * §7 derived uniforms — when true, ModelView / ViewProj /
+   * ModelViewProj / *Inv / NormalMatrix are produced by a df32
+   * compute pre-pass instead of CPU-packed per-RO every frame.
+   * Sg-driven scenes are the primary beneficiary: `autoInjectedUniforms`
+   * supplies 16 trafo-derived uniforms per leaf; in derived mode only
+   * Model / View / Proj are uploaded, the GPU computes the rest.
+   *
+   * Default: `true` when RenderControl constructs its own Runtime.
+   * Ignored when `runtime` is supplied (caller controls the option).
+   * Set to `false` here to opt out (e.g. for backends without df32
+   * compute, or to A/B-compare).
+   */
+  readonly enableDerivedUniforms?: boolean;
+
   /** Forwarded to `attachCanvas` — see wombat.rendering. */
   readonly attach?: Omit<AttachCanvasOptions, "format" | "depthFormat" | "sampleCount">;
   readonly format?: GPUTextureFormat;
@@ -267,7 +282,11 @@ async function initialise(
   }
 
   // Runtime — supplied or constructed.
-  const runtime = props.runtime ?? new Runtime({ device });
+  const derivedUniforms = props.enableDerivedUniforms ?? true;
+  const runtime = props.runtime ?? new Runtime({
+    device,
+    ...(derivedUniforms ? { enableDerivedUniforms: true } : {}),
+  });
   const ownsRuntime = props.runtime === undefined;
 
   // Canvas attachment — picks the right format + sample count;

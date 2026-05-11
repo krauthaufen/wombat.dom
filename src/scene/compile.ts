@@ -655,10 +655,12 @@ function mergeUniforms(
 }
 
 function adaptForGpu(v: aval<unknown>): aval<unknown> {
-  return v.map(value => {
-    if (value instanceof Trafo3d) return M44f.fromArray(value.forward.toArray());
-    return value;
-  });
+  // No conversion — both the runtime UBO packer and the derived-uniforms
+  // compute pass recognise `Trafo3d` directly (forward/backward). The
+  // previous `Trafo3d → M44f` map lost the `.backward` half, which broke
+  // §7 derived uniforms (the compute pass packs both fwd + inv into df32
+  // slots). Kept as a hook for future per-value adapters.
+  return v;
 }
 
 // Default sampler — linear/linear/mip-linear/repeat. Shared across

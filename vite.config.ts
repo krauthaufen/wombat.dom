@@ -20,6 +20,7 @@ import { readdirSync, statSync } from "node:fs";
 import { resolve, relative } from "node:path";
 import dts from "vite-plugin-dts";
 import { wombatShader } from "@aardworx/wombat.shader-vite";
+import { adaptiveMemoPlugin } from "@aardworx/wombat.adaptive/plugin";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const srcDir = resolve(here, "src");
@@ -45,6 +46,13 @@ function collectEntries(): Record<string, string> {
 
 export default defineConfig({
   plugins: [
+    // Memoize aval/aset/alist/amap combinator call-sites so identical
+    // (source, fn-closure-deps) tuples collapse to a single shared
+    // adaptive node at runtime. Without this, helpers like
+    // `autoInjectedUniforms` allocate a fresh `compose(view, proj)`
+    // aval per leaf, blowing up the reactive graph proportional to
+    // scene-leaf count instead of unique-input count.
+    adaptiveMemoPlugin(),
     wombatShader({ rootDir: here }),
     dts({
       entryRoot: "src",
