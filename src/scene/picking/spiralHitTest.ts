@@ -26,7 +26,7 @@
 // `scope.noEvents` are all permitted here.
 
 import { AVal } from "@aardworx/wombat.adaptive";
-import { Box3d, Ray3d, Trafo3d, V2i, V3d, V4d } from "@aardworx/wombat.base";
+import { Plane3d, Ray3d, Trafo3d, V2i, V3d, V4d } from "@aardworx/wombat.base";
 
 import { n24DecodeF32 } from "./normal24.js";
 import type { PickRegion } from "./readback.js";
@@ -257,11 +257,15 @@ export function spiralHitTest(
   // file-top policy.
   const bvh = AVal.force(registry.bvhAval);
   if (bvh.count > 0) {
-    // World-space AABB of the unprojected pick disc (extends from near
-    // to far through the 33×33-pixel cone). 8 frustum corners; the
-    // resulting box is conservative and tight enough that
-    // `bvh.getIntersecting` typically returns O(few) candidates even
-    // for 10k+ scenes.
+    // Unproject the 4 corners of the 33×33 pick disc through near
+    // and far → 8 world-space frustum corners. From those, build the
+    // 6 inward-facing planes (left/right/bottom/top + near/far) and
+    // use `bvh.getIntersectingFrustum` to walk the tree with a tight
+    // convex-hull test instead of an AABB. AABB-of-corners would be
+    // arbitrarily loose along the camera-diagonal — entire scene
+    // can collapse into one box for a typical orbit angle. The
+    // plane test stays tight (~6 SAT-style classifications per
+    // node) and prunes whole subtrees.
     const pxMinX = pointer.devX - SNAP_RADIUS_MAX;
     const pxMaxX = pointer.devX + SNAP_RADIUS_MAX;
     const pxMinY = pointer.devY - SNAP_RADIUS_MAX;
@@ -270,17 +274,37 @@ export function spiralHitTest(
       x: (2 * (px + 0.5) / sX) - 1,
       y: 1 - (2 * (py + 0.5) / sY),
     });
-    const cornersNDC = [
-      ndcAt(pxMinX, pxMinY), ndcAt(pxMaxX, pxMinY),
+    // Order: bl, br, tr, tl. Pair (nearN, farN) per corner.
+    const cN = [
       ndcAt(pxMinX, pxMaxY), ndcAt(pxMaxX, pxMaxY),
+      ndcAt(pxMaxX, pxMinY), ndcAt(pxMinX, pxMinY),
     ];
-    const cornersWorld: V3d[] = [];
-    for (const c of cornersNDC) {
-      cornersWorld.push(unprojClipToWorld(c.x, c.y, -1, pBwd, vBwd));
-      cornersWorld.push(unprojClipToWorld(c.x, c.y,  1, pBwd, vBwd));
-    }
-    const cursorAabb = Box3d.fromPoints(cornersWorld);
-    const candidates = bvh.getIntersecting(cursorAabb);
+    const nearW = cN.map(c => unprojClipToWorld(c.x, c.y, -1, pBwd, vBwd));
+    const farW  = cN.map(c => unprojClipToWorld(c.x, c.y,  1, pBwd, vBwd));
+    // Inward-facing planes. fromThreePoints' normal uses RH on
+    // (b-a, c-a); pick triplets so the normal points into the
+    // frustum interior. We always flip to enforce: a sanity
+    // anchor inside the frustum should have positive signedDistance.
+    // Use the disc-centre near point as the anchor.
+    const ndcC = ndcAt(pointer.devX, pointer.devY);
+    const anchor = unprojClipToWorld(ndcC.x, ndcC.y, 0, pBwd, vBwd);
+    const inward = (p: Plane3d): Plane3d =>
+      p.signedDistance(anchor) >= 0 ? p : p.flipped();
+    const planes: Plane3d[] = [
+      // bottom: near0-far0-near1 (y- side of disc)
+      inward(Plane3d.fromThreePoints(nearW[0]!, farW[0]!, nearW[1]!)),
+      // right:  near1-far1-near2
+      inward(Plane3d.fromThreePoints(nearW[1]!, farW[1]!, nearW[2]!)),
+      // top:    near2-far2-near3
+      inward(Plane3d.fromThreePoints(nearW[2]!, farW[2]!, nearW[3]!)),
+      // left:   near3-far3-near0
+      inward(Plane3d.fromThreePoints(nearW[3]!, farW[3]!, nearW[0]!)),
+      // near:   near0-near1-near2
+      inward(Plane3d.fromThreePoints(nearW[0]!, nearW[1]!, nearW[2]!)),
+      // far:    far2-far1-far0
+      inward(Plane3d.fromThreePoints(farW[2]!,  farW[1]!,  farW[0]!)),
+    ];
+    const candidates = bvh.getIntersectingFrustum(planes);
     for (const item of candidates) {
       const scope = item.value.scope;
       const trafo = AVal.force(scope.model);
