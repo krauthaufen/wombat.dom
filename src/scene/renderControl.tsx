@@ -538,6 +538,26 @@ function sniffViewProj(node: SgNode): SniffResult {
       case "PixelSnapRadius":
       case "On":
       case "Active":
+      case "NoEvents":
+      case "ForcePixelPicking":
+      case "CanFocus":
+      case "DepthTest":
+      case "DepthMask":
+      case "DepthBias":
+      case "DepthClamp":
+      case "CullMode":
+      case "FrontFace":
+      case "FillMode":
+      case "BlendConstant":
+      case "ColorMask":
+      case "StencilMode":
+      case "Pass":
+      case "VertexAttributes":
+      case "InstanceAttributes":
+      case "Index":
+      case "Mode":
+      case "Intersectable":
+      case "Instanced":
         cur = cur.child;
         continue;
       case "Delay":
