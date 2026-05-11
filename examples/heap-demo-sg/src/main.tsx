@@ -19,6 +19,7 @@ import {
   Sg,
   aspectFromViewport,
   perspective,
+  type SceneEvent,
 } from "@aardworx/wombat.dom/scene";
 import { AVal, HashMap } from "@aardworx/wombat.adaptive";
 import { V3d, V4f } from "@aardworx/wombat.base";
@@ -245,6 +246,7 @@ mount(root, (
         far: 200,
       })}
       ForcePixelPicking={AVal.constant(true)}
+      OnDoubleTap={(e: SceneEvent) => ctl.flyTo(e.worldPos)}
     >
       {leaves}
     </Sg>
