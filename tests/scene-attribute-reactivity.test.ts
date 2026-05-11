@@ -59,7 +59,7 @@ describe("Phase B — per-buffer reactive vertex attributes through compileScene
       vertexAttributes: map,
       drawCall: AVal.constant(dummyDraw),
     });
-    const cmds = compileScene(Sg.shader(fakeEffect, sg), fbo);
+    const cmds = compileScene(Sg.shader(fakeEffect, sg));
     const rt = leafOf(singleRender(cmds));
     const obj = rt.object;
 

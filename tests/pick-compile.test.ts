@@ -94,7 +94,7 @@ describe("compileScene — picking integration", () => {
     const onClick = (_e: unknown): void => { /* noop test handler */ };
 
     const tree = Sg.shader(userEff, Sg.on({ bubble: { OnClick: onClick } }, leaf()));
-    const cmds = compileScene(tree, fbo, { picking: { registry } });
+    const cmds = compileScene(tree, { picking: { registry } });
     const lt = getLeaf(singleRender(cmds));
 
     // exactly one entry
@@ -131,7 +131,7 @@ describe("compileScene — picking integration", () => {
         Sg.on({ bubble: { OnClick: onB } }, leaf()),
       ]),
     );
-    const cmds = compileScene(tree, fbo, { picking: { registry } });
+    const cmds = compileScene(tree, { picking: { registry } });
     const rt = singleRender(cmds);
     if (rt.kind !== "OrderedFromList") throw new Error("expected OrderedFromList");
     const children = AVal.force(rt.children.content).toArray();
@@ -149,7 +149,7 @@ describe("compileScene — picking integration", () => {
   it("no picking option → effect is the user's, no PickId uniform", () => {
     const userEff = buildUserEffect();
     const tree = Sg.shader(userEff, leaf());
-    const cmds = compileScene(tree, fbo);
+    const cmds = compileScene(tree);
     const lt = getLeaf(singleRender(cmds));
     expect(lt.object.effect).toBe(userEff);
     expect(lt.object.uniforms.tryFind("PickId")).toBeUndefined();

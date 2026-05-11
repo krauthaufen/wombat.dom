@@ -92,6 +92,8 @@ describe("applyInstancing", () => {
     stages: [], id: "stub",
     compile: () => { throw new Error("stub compile not callable"); },
     dumpIR: () => "",
+    substitute: () => stubEffect,
+    rename: () => stubEffect,
   };
   const oneTrafo: Trafo3d[] = [Trafo3d.identity];
 

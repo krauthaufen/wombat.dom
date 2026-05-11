@@ -351,13 +351,13 @@ async function initialise(
     depth: userClear?.depth ?? 1.0,
   };
   // Lower the scene; compile into the runtime; drive the loop.
-  const commands = compileScene(sceneTree, outputFb, {
+  const commands = compileScene(sceneTree, {
     initialState: initial,
     ...(props.defaultEffect !== undefined ? { defaultEffect: props.defaultEffect } : {}),
     clear: clearWithPick,
     picking: { registry },
   });
-  const task = runtime.compile(commands);
+  const task = runtime.compile(pickFb.signature, commands);
   scope.onDispose(() => task.dispose());
 
   const dispatcher = new PickDispatcher(
@@ -383,7 +383,7 @@ async function initialise(
   const runResolve = pickFb.maybeRunResolve;
   const loop = runFrame(attachment, (token) => {
     if (scope.isDisposed) return;
-    task.run(token);
+    task.run(outputFb.getValue(token), token);
     if (runResolve !== undefined) {
       const enc = device.createCommandEncoder({ label: "pick.resolve.frame" });
       runResolve(enc);

@@ -101,11 +101,11 @@ export interface PickingOptions {
 /**
  * Compile a scene-graph tree into the `alist<Command>` that
  * `Runtime.compile` consumes. Returns one `Render` command (and
- * optionally one `Clear` ahead of it).
+ * optionally one `Clear` ahead of it). The framebuffer is no longer
+ * part of the Command — it's supplied at `task.run(framebuffer, token)`.
  */
 export function compileScene(
   sg: SgNode,
-  output: aval<IFramebuffer>,
   opts: CompileSceneOptions = {},
 ): alist<Command> {
   const initial = opts.initialState ?? TraversalState.empty;
@@ -118,9 +118,9 @@ export function compileScene(
     : lower(sg, initial, opts);
   const cmds: Command[] = [];
   if (opts.clear !== undefined) {
-    cmds.push({ kind: "Clear", output, values: opts.clear });
+    cmds.push({ kind: "Clear", values: opts.clear });
   }
-  cmds.push({ kind: "Render", output, tree });
+  cmds.push({ kind: "Render", tree });
   return AList.ofList(cmds);
 }
 

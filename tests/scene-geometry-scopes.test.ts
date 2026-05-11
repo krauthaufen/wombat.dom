@@ -32,7 +32,7 @@ function compile(node: SgNode | import("../src/vnode.js").VNode): RenderObject[]
   const sg: SgNode = (node as { _tag?: string })._tag !== undefined
     ? collectSgChildren(node)
     : (node as SgNode);
-  const cmds = compileScene(sg, AVal.constant({} as never), { defaultEffect: fakeEffect });
+  const cmds = compileScene(sg, { defaultEffect: fakeEffect });
   const out: RenderObject[] = [];
   for (const c of AVal.force(cmds.content)) {
     if (c.kind !== "Render") continue;

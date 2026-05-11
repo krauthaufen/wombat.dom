@@ -69,17 +69,17 @@ function getLeafObject(tree: RenderTree): RenderTree extends infer _ ? RenderTre
 
 describe("compileScene — lowering basics", () => {
   it("Empty SG → Empty RenderTree", () => {
-    const cmds = compileScene(Sg.empty, fbo);
+    const cmds = compileScene(Sg.empty);
     expect(singleRender(cmds).kind).toBe("Empty");
   });
 
   it("Leaf without a Shader scope or defaultEffect drops silently", () => {
-    const cmds = compileScene(leaf(), fbo);
+    const cmds = compileScene(leaf());
     expect(singleRender(cmds).kind).toBe("Empty");
   });
 
   it("Leaf with defaultEffect builds a RenderObject", () => {
-    const cmds = compileScene(leaf(), fbo, { defaultEffect: fakeEffect });
+    const cmds = compileScene(leaf(), { defaultEffect: fakeEffect });
     const lt = getLeafObject(singleRender(cmds));
     expect(lt.object.effect).toBe(fakeEffect);
     expect(lt.object.drawCall).toBeDefined();
@@ -87,23 +87,23 @@ describe("compileScene — lowering basics", () => {
 
   it("Shader scope wins over defaultEffect", () => {
     const tree = Sg.shader(fakeEffect2, leaf());
-    const cmds = compileScene(tree, fbo, { defaultEffect: fakeEffect });
+    const cmds = compileScene(tree, { defaultEffect: fakeEffect });
     const lt = getLeafObject(singleRender(cmds));
     expect(lt.object.effect).toBe(fakeEffect2);
   });
 
   it("Group → OrderedFromList; UnorderedGroup → UnorderedFromSet", () => {
     const ordered = Sg.shader(fakeEffect, Sg.group([leaf(), leaf()]));
-    expect(singleRender(compileScene(ordered, fbo)).kind).toBe("OrderedFromList");
+    expect(singleRender(compileScene(ordered)).kind).toBe("OrderedFromList");
 
     const unordered = Sg.shader(fakeEffect, Sg.unordered([leaf(), leaf()]));
-    expect(singleRender(compileScene(unordered, fbo)).kind).toBe("UnorderedFromSet");
+    expect(singleRender(compileScene(unordered)).kind).toBe("UnorderedFromSet");
   });
 
   it("AdaptiveGroup → Adaptive(aval<RenderTree>)", () => {
     const c = cval<SgNode>(leaf());
     const tree = Sg.shader(fakeEffect, Sg.adaptive(c));
-    const rt = singleRender(compileScene(tree, fbo));
+    const rt = singleRender(compileScene(tree));
     expect(rt.kind).toBe("Adaptive");
     if (rt.kind === "Adaptive") {
       const inner = AVal.force(rt.tree);
@@ -121,7 +121,7 @@ describe("compileScene — lowering basics", () => {
 
 describe("compileScene — auto-injected uniforms", () => {
   it("ModelTrafo / ViewTrafo / ProjTrafo / ViewProjTrafo are injected by default", () => {
-    const cmds = compileScene(Sg.shader(fakeEffect, leaf()), fbo);
+    const cmds = compileScene(Sg.shader(fakeEffect, leaf()));
     const lt = getLeafObject(singleRender(cmds));
     for (const k of ["ModelTrafo", "ViewTrafo", "ProjTrafo", "ViewProjTrafo", "ViewportSize"]) {
       expect(lt.object.uniforms.tryFind(k)).toBeDefined();
@@ -129,7 +129,7 @@ describe("compileScene — auto-injected uniforms", () => {
   });
 
   it("autoUniforms: false suppresses the injection", () => {
-    const cmds = compileScene(Sg.shader(fakeEffect, leaf()), fbo, { autoUniforms: false });
+    const cmds = compileScene(Sg.shader(fakeEffect, leaf()), { autoUniforms: false });
     const lt = getLeafObject(singleRender(cmds));
     expect(lt.object.uniforms.tryFind("ModelTrafo")).toBeUndefined();
   });
@@ -141,7 +141,7 @@ describe("compileScene — auto-injected uniforms", () => {
         fakeEffect,
         Sg.uniform({ ModelTrafo: userTrafo }, leaf()),
       );
-    const cmds = compileScene(tree, fbo);
+    const cmds = compileScene(tree);
     const lt = getLeafObject(singleRender(cmds));
     const got = lt.object.uniforms.tryFind("ModelTrafo")!;
     // After GPU-adapter: Trafo3d → M44f. Translation x is at row-
@@ -159,7 +159,7 @@ describe("compileScene — auto-injected uniforms", () => {
           Sg.trafo(Sg.scale(2) as Trafo3d, leaf()),
         ),
       );
-    const cmds = compileScene(tree, fbo);
+    const cmds = compileScene(tree);
     const lt = getLeafObject(singleRender(cmds));
     const model = lt.object.uniforms.tryFind("ModelTrafo")!;
     const m = AVal.force(model) as { _data: Float32Array };
@@ -181,18 +181,18 @@ describe("compileScene — auto-injected uniforms", () => {
 describe("compileScene — Active gating", () => {
   it("constantly-active leaf passes through as a Leaf", () => {
     const tree = Sg.shader(fakeEffect, Sg.active(AVal.constant(true), leaf()));
-    expect(singleRender(compileScene(tree, fbo)).kind).toBe("Leaf");
+    expect(singleRender(compileScene(tree)).kind).toBe("Leaf");
   });
 
   it("constantly-inactive leaf becomes Empty", () => {
     const tree = Sg.shader(fakeEffect, Sg.active(AVal.constant(false), leaf()));
-    expect(singleRender(compileScene(tree, fbo)).kind).toBe("Empty");
+    expect(singleRender(compileScene(tree)).kind).toBe("Empty");
   });
 
   it("dynamic active wraps as Adaptive(aval<Leaf|Empty>)", () => {
     const a = cval(true);
     const tree = Sg.shader(fakeEffect, Sg.active(a, leaf()));
-    const rt = singleRender(compileScene(tree, fbo));
+    const rt = singleRender(compileScene(tree));
     expect(rt.kind).toBe("Adaptive");
     if (rt.kind === "Adaptive") {
       expect(AVal.force(rt.tree).kind).toBe("Leaf");
@@ -210,7 +210,7 @@ describe("compileScene — children", () => {
   it("Group with alist children produces a derived alist of RenderTrees", () => {
     const list = AList.ofList<SgNode>([leaf(), leaf()]);
     const tree = Sg.shader(fakeEffect, Sg.group(list));
-    const rt = singleRender(compileScene(tree, fbo));
+    const rt = singleRender(compileScene(tree));
     expect(rt.kind).toBe("OrderedFromList");
     if (rt.kind === "OrderedFromList") {
       const arr = AVal.force(rt.children.content).toArray();
@@ -226,7 +226,7 @@ describe("compileScene — children", () => {
 
 describe("compileScene — Clear", () => {
   it("emits a Clear command before Render when `clear` is set", () => {
-    const cmds = compileScene(leaf(), fbo, {
+    const cmds = compileScene(leaf(), {
       defaultEffect: fakeEffect,
       clear: { colors: HashMap.empty() } as never,
     });
@@ -237,7 +237,7 @@ describe("compileScene — Clear", () => {
   });
 
   it("omits Clear when not set", () => {
-    const cmds = compileScene(leaf(), fbo, { defaultEffect: fakeEffect });
+    const cmds = compileScene(leaf(), { defaultEffect: fakeEffect });
     const arr = AVal.force(cmds.content).toArray();
     expect(arr).toHaveLength(1);
     expect(arr[0]!.kind).toBe("Render");
@@ -253,7 +253,7 @@ describe("compileScene — View / Proj / Delay", () => {
     const v = AVal.constant(Trafo3d.translation(new V3d(0, 0, -5)));
     const p = AVal.constant(Trafo3d.scaling(0.5));
     const tree = Sg.shader(fakeEffect, Sg.view(v, Sg.proj(p, leaf())));
-    const lt = getLeafObject(singleRender(compileScene(tree, fbo)));
+    const lt = getLeafObject(singleRender(compileScene(tree)));
     const view = AVal.force(lt.object.uniforms.tryFind("ViewTrafo")!) as { _data: Float32Array };
     const proj = AVal.force(lt.object.uniforms.tryFind("ProjTrafo")!) as { _data: Float32Array };
     // Translate-z(-5): row-major [11] = -5
@@ -266,7 +266,7 @@ describe("compileScene — View / Proj / Delay", () => {
     const v = AVal.constant(Trafo3d.translation(new V3d(1, 2, 3)));
     const p = AVal.constant(Trafo3d.scaling(2));
     const tree = Sg.shader(fakeEffect, Sg.camera(v, p, leaf()));
-    const lt = getLeafObject(singleRender(compileScene(tree, fbo)));
+    const lt = getLeafObject(singleRender(compileScene(tree)));
     const view = AVal.force(lt.object.uniforms.tryFind("ViewTrafo")!) as { _data: Float32Array };
     const proj = AVal.force(lt.object.uniforms.tryFind("ProjTrafo")!) as { _data: Float32Array };
     expect(view._data[3]).toBeCloseTo(1, 6);   // tx
@@ -288,7 +288,7 @@ describe("compileScene — View / Proj / Delay", () => {
         }),
       ),
     );
-    const rt = singleRender(compileScene(tree, fbo));
+    const rt = singleRender(compileScene(tree));
     expect(rt.kind).toBe("Leaf");
   });
 });
@@ -297,7 +297,7 @@ describe("compileScene — non-mutating", () => {
   it("supplied initialState is not mutated", () => {
     const before = TraversalState.empty;
     const tree = Sg.shader(fakeEffect, Sg.trafo(Sg.translate(new V3d(7, 0, 0)) as Trafo3d, leaf()));
-    compileScene(tree, fbo, { initialState: before });
+    compileScene(tree, { initialState: before });
     expect(AVal.force(before.model)).toBe(Trafo3d.identity);
     expect(before.shader).toBeUndefined();
   });

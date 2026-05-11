@@ -46,7 +46,7 @@ function compileToObjects(input: import("../src/scene/index.js").SgNode | VNode)
     ? collectSgChildren(input)
     : (input as import("../src/scene/index.js").SgNode);
   const out: RenderObject[] = [];
-  const cmds = compileScene(node, AVal.constant({} as never), { defaultEffect: fakeEffect });
+  const cmds = compileScene(node, { defaultEffect: fakeEffect });
   for (const cmd of AVal.force(cmds.content)) {
     if (cmd.kind !== "Render") continue;
     walk(cmd.tree, out);

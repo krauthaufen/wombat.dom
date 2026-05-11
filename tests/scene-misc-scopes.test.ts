@@ -52,20 +52,20 @@ describe("Phase 3 — NoEvents", () => {
   it("NoEvents=true skips PickRegistry registration", () => {
     const reg = new PickRegistry();
     const tree = Sg.noEvents(true, leaf());
-    compileScene(tree, AVal.constant({} as never), { defaultEffect: fakeEffect, picking: { registry: reg } });
+    compileScene(tree, { defaultEffect: fakeEffect, picking: { registry: reg } });
     expect(reg.size()).toBe(0);
   });
 
   it("NoEvents=false (or absent) registers normally", () => {
     const reg = new PickRegistry();
-    compileScene(leaf(), AVal.constant({} as never), { defaultEffect: fakeEffect, picking: { registry: reg } });
+    compileScene(leaf(), { defaultEffect: fakeEffect, picking: { registry: reg } });
     expect(reg.size()).toBe(1);
   });
 
   it("NoEvents wraps subtree — descendant leaves all skipped", () => {
     const reg = new PickRegistry();
     const tree = Sg.noEvents(true, Sg.group([leaf(), leaf(), leaf()]));
-    compileScene(tree, AVal.constant({} as never), { defaultEffect: fakeEffect, picking: { registry: reg } });
+    compileScene(tree, { defaultEffect: fakeEffect, picking: { registry: reg } });
     expect(reg.size()).toBe(0);
   });
 });
@@ -74,7 +74,7 @@ describe("Phase 3 — CanFocus", () => {
   it("CanFocus is captured on LeafPickScope", () => {
     const reg = new PickRegistry();
     const tree = Sg.canFocus(true, leaf());
-    compileScene(tree, AVal.constant({} as never), { defaultEffect: fakeEffect, picking: { registry: reg } });
+    compileScene(tree, { defaultEffect: fakeEffect, picking: { registry: reg } });
     expect(reg.size()).toBe(1);
     const scope = reg.lookup(1);
     expect(scope).toBeDefined();
@@ -83,7 +83,7 @@ describe("Phase 3 — CanFocus", () => {
 
   it("CanFocus default is false (no scope)", () => {
     const reg = new PickRegistry();
-    compileScene(leaf(), AVal.constant({} as never), { defaultEffect: fakeEffect, picking: { registry: reg } });
+    compileScene(leaf(), { defaultEffect: fakeEffect, picking: { registry: reg } });
     const scope = reg.lookup(1)!;
     // Either undefined or AVal of false — both fine; doc says default false.
     if (scope.canFocus !== undefined) {
