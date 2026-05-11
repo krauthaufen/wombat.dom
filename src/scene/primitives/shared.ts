@@ -56,9 +56,19 @@ function toHandle(g: GeometryData): GeometryHandle {
     baseVertex: 0,
     firstInstance: 0,
   };
-  const vertexAttrs = HashMap.empty<string, BufferView>()
+  let vertexAttrs = HashMap.empty<string, BufferView>()
     .add("Positions", positions)
     .add("Normals",   normals);
+  // Solid builders emit per-vertex UVs (`DiffuseColorCoordinates`).
+  // Wire variants leave `g.uvs` undefined; they don't carry a
+  // surface for texturing.
+  if (g.uvs !== undefined) {
+    const uvs: BufferView = {
+      buffer: AVal.constant(IBuffer.fromHost(g.uvs)),
+      elementType: ElementType.V2f,
+    };
+    vertexAttrs = vertexAttrs.add("DiffuseColorCoordinates", uvs);
+  }
   return {
     vertexAttrs,
     indices,

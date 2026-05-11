@@ -10,6 +10,22 @@
 export interface GeometryData {
   readonly positions: Float32Array;
   readonly normals: Float32Array;
+  /**
+   * Optional per-vertex texture coordinates. Emitted by the SOLID
+   * builders (box / sphere / cylinder / cone / tetra / octa); the
+   * wire variants leave this undefined since wireframes don't carry
+   * a UV-relevant surface.
+   *
+   * Layout convention (`DiffuseColorCoordinates`):
+   *   Box     — each face spans [0,1]² independently.
+   *   Sphere  — equirectangular: u = azimuth/2π, v = elevation/π + 1/2.
+   *   Cylinder— lateral wraps once (u = angle, v = height ∈ [0,1]);
+   *             caps map their disc radially to [0,1]².
+   *   Cone    — lateral wraps once (u = angle, v = height ∈ [0,1]);
+   *             base disc maps radially.
+   *   Tetra/Octa — each face is its own [0,1]² (right-triangle slot).
+   */
+  readonly uvs?: Float32Array;
   readonly indices: Uint32Array;
   readonly mode: "triangle-list" | "line-list";
 }
@@ -86,9 +102,18 @@ export function buildTetrahedron(): GeometryData {
   const positions = new Float32Array(verts.length * 3);
   const normals = new Float32Array(verts.length * 3);
   for (let i = 0; i < verts.length; i++) { pushV3(positions, i * 3, verts[i]!); pushV3(normals, i * 3, norms[i]!); }
+  // Each face maps the bottom-left right-triangle slot of [0,1]²:
+  // (0,0)-(1,0)-(0,1). All four faces share the same slot so the
+  // texture reads identically on every side.
+  const uvs = new Float32Array(verts.length * 2);
+  const triUv: ReadonlyArray<[number, number]> = [[0, 0], [1, 0], [0, 1]];
+  for (let i = 0; i < verts.length; i++) {
+    uvs[i*2]   = triUv[i % 3]![0];
+    uvs[i*2+1] = triUv[i % 3]![1];
+  }
   const indices = new Uint32Array(verts.length);
   for (let i = 0; i < indices.length; i++) indices[i] = i;
-  return { positions, normals, indices, mode: "triangle-list" };
+  return { positions, normals, uvs, indices, mode: "triangle-list" };
 }
 
 export function buildWireTetrahedron(): GeometryData {
@@ -164,9 +189,16 @@ export function buildOctahedron(): GeometryData {
   const positions = new Float32Array(verts.length * 3);
   const normals = new Float32Array(verts.length * 3);
   for (let i = 0; i < verts.length; i++) { pushV3(positions, i * 3, verts[i]!); pushV3(normals, i * 3, norms[i]!); }
+  // Each face → bottom-left right-triangle in [0,1]².
+  const uvs = new Float32Array(verts.length * 2);
+  const triUv: ReadonlyArray<[number, number]> = [[0, 0], [1, 0], [0, 1]];
+  for (let i = 0; i < verts.length; i++) {
+    uvs[i*2]   = triUv[i % 3]![0];
+    uvs[i*2+1] = triUv[i % 3]![1];
+  }
   const indices = new Uint32Array(verts.length);
   for (let i = 0; i < indices.length; i++) indices[i] = i;
-  return { positions, normals, indices, mode: "triangle-list" };
+  return { positions, normals, uvs, indices, mode: "triangle-list" };
 }
 
 export function buildWireOctahedron(): GeometryData {
@@ -215,12 +247,26 @@ export function buildBox(): GeometryData {
     [-1,0,0], [-1,0,0], [-1,0,0], [-1,0,0], [-1,0,0], [-1,0,0],
     [ 1,0,0], [ 1,0,0], [ 1,0,0], [ 1,0,0], [ 1,0,0], [ 1,0,0],
   ];
+  // Per-face UVs: each face is independent in the same triangle
+  // order, mapping its two triangles to a full [0,1]² of the
+  // texture. Triangles share orientation (00, 01, 10) + (10, 01, 11).
+  const faceUv: ReadonlyArray<[number, number]> = [
+    [0, 0], [0, 1], [1, 0], [1, 0], [0, 1], [1, 1],
+  ];
+  const uvs = new Float32Array(verts.length * 2);
+  for (let f = 0; f < 6; f++) {
+    for (let i = 0; i < 6; i++) {
+      const slot = (f * 6 + i) * 2;
+      uvs[slot]     = faceUv[i]![0];
+      uvs[slot + 1] = faceUv[i]![1];
+    }
+  }
   const positions = new Float32Array(verts.length * 3);
   const normals = new Float32Array(verts.length * 3);
   for (let i = 0; i < verts.length; i++) { pushV3(positions, i * 3, verts[i]!); pushV3(normals, i * 3, n[i]!); }
   const indices = new Uint32Array(verts.length);
   for (let i = 0; i < indices.length; i++) indices[i] = i;
-  return { positions, normals, indices, mode: "triangle-list" };
+  return { positions, normals, uvs, indices, mode: "triangle-list" };
 }
 
 export function buildWireBox(): GeometryData {
@@ -247,6 +293,7 @@ export function buildCone(tessellation: number): GeometryData {
   const fvc = tessellation * 6;
   const positions = new Float32Array(fvc * 3);
   const normals = new Float32Array(fvc * 3);
+  const uvs = new Float32Array(fvc * 2);
   const step = TWO_PI / tessellation;
   let phi = 0;
   let oi = 0;
@@ -261,19 +308,26 @@ export function buildCone(tessellation: number): GeometryData {
     const n1: [number, number, number] = [cp1 * SQRT2_HALF, sp1 * SQRT2_HALF, -SQRT2_HALF];
     const n2 = normalize([n0[0] + n1[0], n0[1] + n1[1], n0[2] + n1[2]]);
 
-    pushV3(positions, oi * 3, p0); pushV3(normals, oi * 3, n0); oi++;
-    pushV3(positions, oi * 3, p2); pushV3(normals, oi * 3, n2); oi++;
-    pushV3(positions, oi * 3, p1); pushV3(normals, oi * 3, n1); oi++;
+    // Lateral: u wraps the side once (slice i covers [i/T, (i+1)/T]),
+    // v goes apex (=0) → base (=1).
+    const u0 = i / tessellation;
+    const u1 = (i + 1) / tessellation;
+    const uMid = (u0 + u1) * 0.5;
+    pushV3(positions, oi * 3, p0); pushV3(normals, oi * 3, n0); uvs[oi*2]=u0; uvs[oi*2+1]=1; oi++;
+    pushV3(positions, oi * 3, p2); pushV3(normals, oi * 3, n2); uvs[oi*2]=uMid; uvs[oi*2+1]=0; oi++;
+    pushV3(positions, oi * 3, p1); pushV3(normals, oi * 3, n1); uvs[oi*2]=u1; uvs[oi*2+1]=1; oi++;
 
-    pushV3(positions, oi * 3, p0); pushV3(normals, oi * 3, [0, 0, 1]); oi++;
-    pushV3(positions, oi * 3, p1); pushV3(normals, oi * 3, [0, 0, 1]); oi++;
-    pushV3(positions, oi * 3, [0, 0, 1]); pushV3(normals, oi * 3, [0, 0, 1]); oi++;
+    // Base disc: radial mapping, centre = (0.5, 0.5), rim follows
+    // the (cos, sin) circle pre-mapped to [0,1].
+    pushV3(positions, oi * 3, p0); pushV3(normals, oi * 3, [0, 0, 1]); uvs[oi*2]=cp*0.5+0.5;  uvs[oi*2+1]=sp*0.5+0.5;  oi++;
+    pushV3(positions, oi * 3, p1); pushV3(normals, oi * 3, [0, 0, 1]); uvs[oi*2]=cp1*0.5+0.5; uvs[oi*2+1]=sp1*0.5+0.5; oi++;
+    pushV3(positions, oi * 3, [0, 0, 1]); pushV3(normals, oi * 3, [0, 0, 1]); uvs[oi*2]=0.5; uvs[oi*2+1]=0.5; oi++;
 
     phi += step;
   }
   const indices = new Uint32Array(fvc);
   for (let i = 0; i < fvc; i++) indices[i] = i;
-  return { positions, normals, indices, mode: "triangle-list" };
+  return { positions, normals, uvs, indices, mode: "triangle-list" };
 }
 
 export function buildWireCone(tessellation: number): GeometryData {
@@ -309,6 +363,7 @@ export function buildCylinder(tessellation: number): GeometryData {
   const indexCount = tessellation * 12;
   const positions = new Float32Array(vertexCount * 3);
   const normals = new Float32Array(vertexCount * 3);
+  const uvs = new Float32Array(vertexCount * 2);
 
   const step = TWO_PI / tessellation;
   let oi = 0;
@@ -320,16 +375,18 @@ export function buildCylinder(tessellation: number): GeometryData {
     const n0: [number, number, number] = [0, 0, -1];
     const n1: [number, number, number] = [0, 0, 1];
     const n: [number, number, number] = [c, s, 0];
-    pushV3(positions, oi * 3, p0); pushV3(normals, oi * 3, n0); oi++;
-    pushV3(positions, oi * 3, p0); pushV3(normals, oi * 3, n);  oi++;
-    pushV3(positions, oi * 3, p1); pushV3(normals, oi * 3, n1); oi++;
-    pushV3(positions, oi * 3, p1); pushV3(normals, oi * 3, n);  oi++;
+    const u = i / tessellation;
+    // 4 slots per ring vertex: [bottomCap, lateralBottom, topCap, lateralTop].
+    pushV3(positions, oi * 3, p0); pushV3(normals, oi * 3, n0); uvs[oi*2]=c*0.5+0.5; uvs[oi*2+1]=s*0.5+0.5; oi++;
+    pushV3(positions, oi * 3, p0); pushV3(normals, oi * 3, n);  uvs[oi*2]=u;          uvs[oi*2+1]=0;         oi++;
+    pushV3(positions, oi * 3, p1); pushV3(normals, oi * 3, n1); uvs[oi*2]=c*0.5+0.5; uvs[oi*2+1]=s*0.5+0.5; oi++;
+    pushV3(positions, oi * 3, p1); pushV3(normals, oi * 3, n);  uvs[oi*2]=u;          uvs[oi*2+1]=1;         oi++;
     phi += step;
   }
   const bottom = oi;
-  pushV3(positions, oi * 3, [0, 0, 0]); pushV3(normals, oi * 3, [0, 0, -1]); oi++;
+  pushV3(positions, oi * 3, [0, 0, 0]); pushV3(normals, oi * 3, [0, 0, -1]); uvs[oi*2]=0.5; uvs[oi*2+1]=0.5; oi++;
   const top = oi;
-  pushV3(positions, oi * 3, [0, 0, 1]); pushV3(normals, oi * 3, [0, 0, 1]);  oi++;
+  pushV3(positions, oi * 3, [0, 0, 1]); pushV3(normals, oi * 3, [0, 0, 1]);  uvs[oi*2]=0.5; uvs[oi*2+1]=0.5; oi++;
 
   const indices = new Uint32Array(indexCount);
   let ii = 0;
@@ -351,7 +408,7 @@ export function buildCylinder(tessellation: number): GeometryData {
     indices[ii++] = j00; indices[ii++] = bottom; indices[ii++] = j10;
     indices[ii++] = j01; indices[ii++] = j11; indices[ii++] = top;
   }
-  return { positions, normals, indices, mode: "triangle-list" };
+  return { positions, normals, uvs, indices, mode: "triangle-list" };
 }
 
 export function buildWireCylinder(tessellation: number): GeometryData {
@@ -395,15 +452,20 @@ export function buildSphere(tessellation: number): GeometryData {
   const vertCount = (tessellation + 1) * (h - 1) + 2 * tessellation;
   const positions = new Float32Array(vertCount * 3);
   const normals = new Float32Array(vertCount * 3);
+  const uvs = new Float32Array(vertCount * 2);
   let oi = 0;
   let theta = -PI / 2 + dTheta;
   for (let y = 1; y < h; y++) {
     let phi = 0;
     const ct = Math.cos(theta), st = Math.sin(theta);
+    // Equirectangular: v = elevation / π + 1/2 (theta in [-π/2, π/2]).
+    const vTex = theta / PI + 0.5;
     for (let x = 0; x <= tessellation; x++) {
       const v: [number, number, number] = [Math.cos(phi) * ct, Math.sin(phi) * ct, st];
       pushV3(positions, oi * 3, v);
       pushV3(normals, oi * 3, v);
+      uvs[oi*2]   = x / tessellation;
+      uvs[oi*2+1] = vTex;
       oi++;
       phi += dPhi;
     }
@@ -412,13 +474,21 @@ export function buildSphere(tessellation: number): GeometryData {
   const n = oi;
   let phi2 = dPhi / 2;
   for (let i = 0; i < tessellation; i++) {
-    pushV3(positions, oi * 3, [0, 0, 1]); pushV3(normals, oi * 3, [0, 0, 1]); oi++;
+    pushV3(positions, oi * 3, [0, 0, 1]); pushV3(normals, oi * 3, [0, 0, 1]);
+    // North-pole fan vertices spread their u over the band beneath
+    // so the triangle isn't pathologically stretched.
+    uvs[oi*2]   = (i + 0.5) / tessellation;
+    uvs[oi*2+1] = 1;
+    oi++;
     phi2 += dPhi;
   }
   const sIdx = oi;
   phi2 = dPhi / 2;
   for (let i = 0; i < tessellation; i++) {
-    pushV3(positions, oi * 3, [0, 0, -1]); pushV3(normals, oi * 3, [0, 0, -1]); oi++;
+    pushV3(positions, oi * 3, [0, 0, -1]); pushV3(normals, oi * 3, [0, 0, -1]);
+    uvs[oi*2]   = (i + 0.5) / tessellation;
+    uvs[oi*2+1] = 0;
+    oi++;
     phi2 += dPhi;
   }
 
@@ -449,7 +519,7 @@ export function buildSphere(tessellation: number): GeometryData {
       indices[ii++] = i10; indices[ii++] = i01; indices[ii++] = i11;
     }
   }
-  return { positions, normals, indices, mode: "triangle-list" };
+  return { positions, normals, uvs, indices, mode: "triangle-list" };
 }
 
 export function buildWireSphere(tessellation: number): GeometryData {
