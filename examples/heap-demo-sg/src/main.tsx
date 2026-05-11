@@ -20,7 +20,7 @@ import {
   aspectFromViewport,
   perspective,
 } from "@aardworx/wombat.dom/scene";
-import { AVal, HashMap, cval, transact } from "@aardworx/wombat.adaptive";
+import { AVal, HashMap } from "@aardworx/wombat.adaptive";
 import { V3d, V4f } from "@aardworx/wombat.base";
 import { BufferView, ElementType, IBuffer, ITexture } from "@aardworx/wombat.rendering/core";
 import type { ClearValues } from "@aardworx/wombat.rendering/core";
@@ -64,10 +64,14 @@ const forcedFx = (() => {
   return Math.max(0, Math.min(6, n));
 })();
 
-// ─── Camera + time ─────────────────────────────────────────────────────
+// ─── Camera ────────────────────────────────────────────────────────────
 
 const ctl = OrbitController.create({ radius: 22, phi: Math.PI / 5, theta: 0.5 });
-const time = cval(0);
+// `RenderControl.time` is the post-frame clock — ticked in `onAfterFrame`
+// AFTER the encode + pacer-await complete. Using it directly avoids a
+// second per-frame transact and keeps animations sync'd with the
+// frames the GPU actually finished.
+const time = RenderControl.time;
 
 // ─── Per-leaf parameter tables ─────────────────────────────────────────
 
@@ -228,7 +232,6 @@ mount(root, (
     clear={clear}
     onReady={({ canvas, time: rcTime }) => {
       ctl.attach(canvas, rcTime);
-      rcTime.addCallback(() => transact(() => { time.value = AVal.force(rcTime); }));
       const inst = fxTable.filter(f => f === "instanced" || f === "wobbling" || f === "texturedInstanced").length;
       setStatus(`ready — ${ROCount} naive leaves (~${ROCount + Math.round(ROCount * inst / fxTable.length * (instCount - 1))} draws collapsed by heap)`);
     }}
