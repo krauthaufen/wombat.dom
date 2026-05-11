@@ -92,16 +92,24 @@ function resolveUrl(spec: Extract<ITexture, { kind: "url" }>): aval<ITexture> {
 /**
  * Wrap a user-supplied `aval<ITexture>` so URL-deferred textures
  * resolve through a per-URL placeholder. Non-url values pass through
- * untouched. If the source aval never produces a `url` value the wrap
- * is essentially a `.map(x => x)` — fine because compile-scene runs
- * once per leaf.
+ * untouched.
+ *
+ * The wrap is cached per source aval — otherwise N leaves sharing one
+ * `aval<ITexture>` would each get their own `AVal.custom` wrapper,
+ * defeating the atlas pool's aval-identity dedup (every leaf would
+ * acquire its own atlas sub-rect for the same texture).
  */
+const resolveCache = new WeakMap<aval<ITexture>, aval<ITexture>>();
 export function resolveTextureAval(src: aval<ITexture>): aval<ITexture> {
-  return AVal.custom(token => {
+  const cached = resolveCache.get(src);
+  if (cached !== undefined) return cached;
+  const wrapped = AVal.custom<ITexture>(token => {
     const t = src.getValue(token);
     if (t.kind !== "url") return t;
     return resolveUrl(t).getValue(token);
   });
+  resolveCache.set(src, wrapped);
+  return wrapped;
 }
 
 /**

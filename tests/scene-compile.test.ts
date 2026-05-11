@@ -144,13 +144,14 @@ describe("compileScene — auto-injected uniforms", () => {
     const cmds = compileScene(tree);
     const lt = getLeafObject(singleRender(cmds));
     const got = lt.object.uniforms.tryFind("ModelTrafo")!;
-    // After GPU-adapter: Trafo3d → M44f. Translation x is at row-
-    // major index [3]. User wins over auto-injected identity.
-    const m = AVal.force(got) as { _data: Float32Array };
-    expect(m._data[3]).toBeCloseTo(99, 6);
+    // Sg now passes Trafo3d through unchanged — the runtime UBO
+    // packer and §7 derived compute pass both recognise it. The
+    // forward row-major translation column sits at .forward._data[3].
+    const t = AVal.force(got) as Trafo3d;
+    expect(t.forward._data[3]).toBeCloseTo(99, 6);
   });
 
-  it("ModelTrafo reflects accumulated Trafo scopes (adapted to M44f for the GPU)", () => {
+  it("ModelTrafo reflects accumulated Trafo scopes", () => {
     const tree =
       Sg.shader(
         fakeEffect,
@@ -162,7 +163,8 @@ describe("compileScene — auto-injected uniforms", () => {
     const cmds = compileScene(tree);
     const lt = getLeafObject(singleRender(cmds));
     const model = lt.object.uniforms.tryFind("ModelTrafo")!;
-    const m = AVal.force(model) as { _data: Float32Array };
+    const t = AVal.force(model) as Trafo3d;
+    const m = t.forward;
     // Row-major: m._data[0..3] is row 0; the translation column
     // sits at indices [3, 7, 11]. Outer trafo is translate(1,0,0)
     // applied last; inner is scale(2). Combined: scale then
@@ -249,13 +251,13 @@ describe("compileScene — Clear", () => {
 // ---------------------------------------------------------------------------
 
 describe("compileScene — View / Proj / Delay", () => {
-  it("View / Proj scopes feed ViewTrafo / ProjTrafo auto-uniforms (M44f-adapted)", () => {
+  it("View / Proj scopes feed ViewTrafo / ProjTrafo auto-uniforms", () => {
     const v = AVal.constant(Trafo3d.translation(new V3d(0, 0, -5)));
     const p = AVal.constant(Trafo3d.scaling(0.5));
     const tree = Sg.shader(fakeEffect, Sg.view(v, Sg.proj(p, leaf())));
     const lt = getLeafObject(singleRender(compileScene(tree)));
-    const view = AVal.force(lt.object.uniforms.tryFind("ViewTrafo")!) as { _data: Float32Array };
-    const proj = AVal.force(lt.object.uniforms.tryFind("ProjTrafo")!) as { _data: Float32Array };
+    const view = (AVal.force(lt.object.uniforms.tryFind("ViewTrafo")!) as Trafo3d).forward;
+    const proj = (AVal.force(lt.object.uniforms.tryFind("ProjTrafo")!) as Trafo3d).forward;
     // Translate-z(-5): row-major [11] = -5
     expect(view._data[11]).toBeCloseTo(-5, 6);
     // Uniform scale 0.5: row-major [0,5,10] = 0.5
@@ -267,8 +269,8 @@ describe("compileScene — View / Proj / Delay", () => {
     const p = AVal.constant(Trafo3d.scaling(2));
     const tree = Sg.shader(fakeEffect, Sg.camera(v, p, leaf()));
     const lt = getLeafObject(singleRender(compileScene(tree)));
-    const view = AVal.force(lt.object.uniforms.tryFind("ViewTrafo")!) as { _data: Float32Array };
-    const proj = AVal.force(lt.object.uniforms.tryFind("ProjTrafo")!) as { _data: Float32Array };
+    const view = (AVal.force(lt.object.uniforms.tryFind("ViewTrafo")!) as Trafo3d).forward;
+    const proj = (AVal.force(lt.object.uniforms.tryFind("ProjTrafo")!) as Trafo3d).forward;
     expect(view._data[3]).toBeCloseTo(1, 6);   // tx
     expect(view._data[7]).toBeCloseTo(2, 6);   // ty
     expect(view._data[11]).toBeCloseTo(3, 6);  // tz
