@@ -146,9 +146,9 @@ describe("compileScene — auto-injected uniforms", () => {
     const got = lt.object.uniforms.tryFind("ModelTrafo")!;
     // Sg now passes Trafo3d through unchanged — the runtime UBO
     // packer and §7 derived compute pass both recognise it. The
-    // forward row-major translation column sits at .forward._data[3].
+    // forward row-major translation column is at M03 / M13 / M23.
     const t = AVal.force(got) as Trafo3d;
-    expect(t.forward._data[3]).toBeCloseTo(99, 6);
+    expect(t.forward.M03).toBeCloseTo(99, 6);
   });
 
   it("ModelTrafo reflects accumulated Trafo scopes", () => {
@@ -165,14 +165,12 @@ describe("compileScene — auto-injected uniforms", () => {
     const model = lt.object.uniforms.tryFind("ModelTrafo")!;
     const t = AVal.force(model) as Trafo3d;
     const m = t.forward;
-    // Row-major: m._data[0..3] is row 0; the translation column
-    // sits at indices [3, 7, 11]. Outer trafo is translate(1,0,0)
-    // applied last; inner is scale(2). Combined: scale then
-    // translate; tx = 1, scale = 2.
-    expect(m._data[3]).toBeCloseTo(1, 6);
-    expect(m._data[0]).toBeCloseTo(2, 6);
-    expect(m._data[5]).toBeCloseTo(2, 6);
-    expect(m._data[10]).toBeCloseTo(2, 6);
+    // Outer trafo is translate(1,0,0) applied last; inner is scale(2).
+    // Combined: scale then translate; tx = 1, sx = sy = sz = 2.
+    expect(m.M03).toBeCloseTo(1, 6);
+    expect(m.M00).toBeCloseTo(2, 6);
+    expect(m.M11).toBeCloseTo(2, 6);
+    expect(m.M22).toBeCloseTo(2, 6);
   });
 });
 
@@ -258,10 +256,10 @@ describe("compileScene — View / Proj / Delay", () => {
     const lt = getLeafObject(singleRender(compileScene(tree)));
     const view = (AVal.force(lt.object.uniforms.tryFind("ViewTrafo")!) as Trafo3d).forward;
     const proj = (AVal.force(lt.object.uniforms.tryFind("ProjTrafo")!) as Trafo3d).forward;
-    // Translate-z(-5): row-major [11] = -5
-    expect(view._data[11]).toBeCloseTo(-5, 6);
-    // Uniform scale 0.5: row-major [0,5,10] = 0.5
-    expect(proj._data[0]).toBeCloseTo(0.5, 6);
+    // Translate-z(-5): M23 = -5
+    expect(view.M23).toBeCloseTo(-5, 6);
+    // Uniform scale 0.5: M00 = 0.5
+    expect(proj.M00).toBeCloseTo(0.5, 6);
   });
 
   it("Sg.camera sets both at once", () => {
@@ -271,10 +269,10 @@ describe("compileScene — View / Proj / Delay", () => {
     const lt = getLeafObject(singleRender(compileScene(tree)));
     const view = (AVal.force(lt.object.uniforms.tryFind("ViewTrafo")!) as Trafo3d).forward;
     const proj = (AVal.force(lt.object.uniforms.tryFind("ProjTrafo")!) as Trafo3d).forward;
-    expect(view._data[3]).toBeCloseTo(1, 6);   // tx
-    expect(view._data[7]).toBeCloseTo(2, 6);   // ty
-    expect(view._data[11]).toBeCloseTo(3, 6);  // tz
-    expect(proj._data[0]).toBeCloseTo(2, 6);   // scale
+    expect(view.M03).toBeCloseTo(1, 6);   // tx
+    expect(view.M13).toBeCloseTo(2, 6);   // ty
+    expect(view.M23).toBeCloseTo(3, 6);   // tz
+    expect(proj.M00).toBeCloseTo(2, 6);   // scale
   });
 
   it("Sg.delay produces a sub-tree from the accumulated state", () => {

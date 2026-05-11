@@ -244,6 +244,7 @@ mount(root, (
         near: 0.1,
         far: 200,
       })}
+      ForcePixelPicking={AVal.constant(true)}
     >
       {leaves}
     </Sg>

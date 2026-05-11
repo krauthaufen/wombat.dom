@@ -106,7 +106,7 @@ describe("Phase 3 — ForcePixelPicking suppresses BVH fall-through", () => {
     const sz = SNAP_REGION_SIZE;
     return { data: new Float32Array(sz * sz * 4), originX: cx - SNAP_RADIUS_MAX, originY: cy - SNAP_RADIUS_MAX, sizeX: sz, sizeY: sz };
   }
-  it("BVH fall-through skips a scope whose forcePixelPicking=true", async () => {
+  it("pickPath=\"pixel\" leaves the scope out of the BVH entirely", async () => {
     const reg = new PickRegistry();
     const box = Intersectable.box(Box3d.fromMinMax(new V3d(-1, -1, -0.5), new V3d(1, 1, 0.5)));
     reg.acquire({
@@ -115,28 +115,17 @@ describe("Phase 3 — ForcePixelPicking suppresses BVH fall-through", () => {
       proj: AVal.constant(Trafo3d.identity), model: AVal.constant(Trafo3d.identity),
       pixelSnapRadius: AVal.constant(1),
       intersectable: AVal.constant(box),
-      forcePixelPicking: AVal.constant(true),
+      pickPath: "pixel",
     });
     const canvas = makeCanvas();
     const d = new PickDispatcher(reg, () => Trafo3d.identity, () => Trafo3d.identity, () => canvas.getBoundingClientRect());
-    const calls: number[] = [];
-    // No way to register a global handler; just confirm registry sees no hit.
-    // Use the BVH directly to test the closestHit filter behaviour.
+    // Pixel-path scopes don't participate in BVH ray queries — the
+    // BVH stays empty regardless of how many leaves register with
+    // intersectables. (Pre-change behaviour scoped via
+    // `forcePixelPicking` and a per-hit filter; the new pickPath
+    // model decides at register time so the BVH itself is small.)
     const bvh = AVal.force(reg.bvhAval);
-    expect(bvh.count).toBeGreaterThan(0);
-    // Cursor ray (identity view+proj). Hit predicate inside dispatcher
-    // returns undefined for forcePixelPicking. Mirror that here.
-    const hit = bvh.closestHit(
-      // ray pointing through origin along +z
-      { origin: new V3d(0, 0, -10), direction: new V3d(0, 0, 1) } as never,
-      0, Number.POSITIVE_INFINITY,
-      (_key, entry) => {
-        const s = entry.scope;
-        if (s.forcePixelPicking !== undefined && AVal.force(s.forcePixelPicking)) return undefined;
-        return entry.intersectable.intersects({ origin: new V3d(0, 0, -10), direction: new V3d(0, 0, 1) } as never, 0, Number.POSITIVE_INFINITY);
-      },
-    );
-    expect(hit).toBeUndefined();
-    calls.push(0); void d; void calls; void emptyRegion;
+    expect(bvh.count).toBe(0);
+    void d; void emptyRegion;
   });
 });

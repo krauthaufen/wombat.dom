@@ -482,11 +482,32 @@ function lowerLeaf(
   //     `noEvents` on the scope. The dispatcher consults it per-event
   //     (its forces run in event-handler context, where "now" is the
   //     user's tick and AVal.force is permitted by the policy).
-  const constantNoEvents = state.noEvents.isConstant;
-  // AVal.force OK: isConstant guard — value is by definition immutable.
-  const noEventsNow = constantNoEvents ? state.noEvents.force() : false;
-  const skipRegister = constantNoEvents && noEventsNow;
-  if (opts.picking !== undefined && !skipRegister) {
+  // Pick path selection — chosen at compile-scene time from constant
+  // snapshots of `noEvents` and `forcePixelPicking`. Pixel and BVH
+  // ray-cast are mutually exclusive: every registered leaf takes one
+  // of three paths.
+  //
+  //   noEvents=const true     → "none"  — not registered. Invisible to
+  //                                       picking.
+  //   forcePixelPicking       → "pixel" — pick-chain in FS (writes
+  //   =const true                         pickId), NOT in BVH.
+  //   otherwise (default)     → "bvh"   — pick-chain in FS AND
+  //                                       intersectable in BVH (when
+  //                                       provided). Ray-cast queries
+  //                                       (sceneQuery, fall-through)
+  //                                       work as today.
+  //
+  // The flags must resolve to constants here. Reactive avals are
+  // accepted but only the constant branch counts — a non-constant
+  // aval defaults to BVH path.
+  // AVal.force OK: constant-aval one-shot reads at compile-scene time.
+  const noEventsConst = state.noEvents.isConstant && state.noEvents.force();
+  const fppConst = state.forcePixelPicking.isConstant && state.forcePixelPicking.force();
+  const pickPath: "none" | "pixel" | "bvh" =
+    noEventsConst ? "none" :
+    fppConst      ? "pixel" :
+                    "bvh";
+  if (opts.picking !== undefined && pickPath !== "none") {
     const geomHas = opts.picking.geomHas ?? defaultGeomHas(merged);
     const composed = composePickChainWithChoice(userEffect, geomHas);
     effect = composed.effect;
@@ -500,9 +521,8 @@ function lowerLeaf(
       proj: state.proj,
       model: state.model,
       pixelSnapRadius: state.pixelSnapRadius,
-      forcePixelPicking: state.forcePixelPicking,
       canFocus: state.canFocus,
-      ...(constantNoEvents ? {} : { noEvents: state.noEvents }),
+      pickPath,
       ...(state.intersectable !== undefined ? { intersectable: state.intersectable } : {}),
     }, mode);
   }

@@ -92,10 +92,23 @@ export interface LeafPickScope {
    */
   readonly intersectable?: aval<IIntersectable>;
   /**
-   * When true, the dispatcher's BVH ray fall-through is suppressed
-   * for hits on this scope: the pixel-pick result is final.
+   * Pick path chosen at compile-scene time. Pixel and BVH are
+   * complementary: a leaf takes ONE path so the picker doesn't
+   * pay both costs.
+   *
+   *   - "pixel" — pick-chain rendered to pickFb; the dispatcher
+   *               resolves hits via the spiral readback. BVH-add is
+   *               skipped (the scene-wide BVH stays small).
+   *   - "bvh"   — pick-chain rendered AND the intersectable joins
+   *               the BVH. `sceneQuery.intersect` and the
+   *               dispatcher's pickThrough fall-through both work.
+   *
+   * Default is "bvh" (matching pre-change behaviour) so existing
+   * `sceneQuery` callers stay green. Dense scenes that don't need
+   * ray-cast queries should set `Sg.ForcePixelPicking={true}` on a
+   * surrounding scope to opt into the cheaper pixel path.
    */
-  readonly forcePixelPicking?: aval<boolean>;
+  readonly pickPath?: "pixel" | "bvh";
   /** When true, this scope can receive keyboard / focus events. */
   readonly canFocus?: aval<boolean>;
   /**
@@ -241,7 +254,14 @@ export class PickRegistry {
     const full: LeafPickScope = { pickId, ...scope };
     this.entries.set(pickId, full);
     this.modes.set(pickId, mode);
-    if (scope.intersectable !== undefined) {
+    // BVH-add gate. Pixel and BVH ray-cast are complementary — pixel-
+    // path scopes resolve through the pickFb readback alone, so the
+    // BVH only needs ray-cast-path entries. Without this gate a 10k-
+    // leaf scene's BVH grows to 10k entries and `spiralHitTest` walks
+    // them for every pointermove (800 spiral offsets × cullCount =
+    // multi-second stalls).
+    const path = scope.pickPath ?? "bvh";
+    if (path === "bvh" && scope.intersectable !== undefined) {
       transact(() => {
         this._pickObjects.add({
           scope: full,

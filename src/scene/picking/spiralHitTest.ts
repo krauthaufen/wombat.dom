@@ -26,7 +26,7 @@
 // `scope.noEvents` are all permitted here.
 
 import { AVal } from "@aardworx/wombat.adaptive";
-import { Ray3d, Trafo3d, V2i, V3d, V4d } from "@aardworx/wombat.base";
+import { Box3d, Ray3d, Trafo3d, V2i, V3d, V4d } from "@aardworx/wombat.base";
 
 import { n24DecodeF32 } from "./normal24.js";
 import type { PickRegion } from "./readback.js";
@@ -241,8 +241,12 @@ export function spiralHitTest(
     return Ray3d.fromPoints(near, far);
   };
 
-  // Cull set — every scope with an intersectable. F# pre-filters
-  // here too; we match.
+  // Cull set — scopes with an intersectable whose world-space bbox
+  // touches the cursor disc's frustum cone. F# Aardvark.Dom pre-
+  // filters with `bvh.getIntersecting(frustumAabb)`; we do the same.
+  // Without this, a 10k-leaf scene flattens the entire BVH and the
+  // 800-spiral-offset inner loop becomes O(800 × N) per pointer
+  // event — turning every hover into a multi-second stall.
   interface Cull {
     readonly scope: LeafPickScope;
     readonly intersectable: import("@aardworx/wombat.base").IIntersectable;
@@ -250,14 +254,34 @@ export function spiralHitTest(
   }
   const cullSet: Cull[] = [];
   // AVal.force OK: dispatcher pointer event handler context — see
-  // file-top policy. Each BvhEntry already carries the scope and the
-  // intersectable; we re-fetch `scope.model` here so the cull-set
-  // trafo reflects the absolute latest tick (the BVH's stored entry
-  // trafo is from when the delta was applied, which lags by one
-  // bvhAval recompute against the current frame's model aval).
+  // file-top policy.
   const bvh = AVal.force(registry.bvhAval);
   if (bvh.count > 0) {
-    for (const item of bvh.items()) {
+    // World-space AABB of the unprojected pick disc (extends from near
+    // to far through the 33×33-pixel cone). 8 frustum corners; the
+    // resulting box is conservative and tight enough that
+    // `bvh.getIntersecting` typically returns O(few) candidates even
+    // for 10k+ scenes.
+    const pxMinX = pointer.devX - SNAP_RADIUS_MAX;
+    const pxMaxX = pointer.devX + SNAP_RADIUS_MAX;
+    const pxMinY = pointer.devY - SNAP_RADIUS_MAX;
+    const pxMaxY = pointer.devY + SNAP_RADIUS_MAX;
+    const ndcAt = (px: number, py: number): { x: number; y: number } => ({
+      x: (2 * (px + 0.5) / sX) - 1,
+      y: 1 - (2 * (py + 0.5) / sY),
+    });
+    const cornersNDC = [
+      ndcAt(pxMinX, pxMinY), ndcAt(pxMaxX, pxMinY),
+      ndcAt(pxMinX, pxMaxY), ndcAt(pxMaxX, pxMaxY),
+    ];
+    const cornersWorld: V3d[] = [];
+    for (const c of cornersNDC) {
+      cornersWorld.push(unprojClipToWorld(c.x, c.y, -1, pBwd, vBwd));
+      cornersWorld.push(unprojClipToWorld(c.x, c.y,  1, pBwd, vBwd));
+    }
+    const cursorAabb = Box3d.fromPoints(cornersWorld);
+    const candidates = bvh.getIntersecting(cursorAabb);
+    for (const item of candidates) {
       const scope = item.value.scope;
       const trafo = AVal.force(scope.model);
       cullSet.push({ scope, intersectable: item.value.intersectable, trafo });

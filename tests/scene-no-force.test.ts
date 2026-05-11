@@ -47,6 +47,12 @@ const ALLOWLIST: readonly string[] = [
   // scene time. Reads each merged uniform's current value once to
   // decide texture vs scalar; runs only during leaf lowering.
   "const current = v.force();",
+  // Pick-path selection — `forcePixelPicking` / `noEvents` constants
+  // are resolved once at register-time so the picker can decide
+  // pixel-vs-BVH path. Reactive forms fall through to the "bvh"
+  // default. Constant-aval one-shot reads at compile-scene time.
+  "const fppConst = state.forcePixelPicking.isConstant && state.forcePixelPicking.force();",
+  "const noEventsConst = state.noEvents.isConstant && state.noEvents.force();",
 ];
 
 describe("compile.ts — zero force on the live render path", () => {
