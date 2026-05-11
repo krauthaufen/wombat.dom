@@ -133,6 +133,15 @@ const urlTextures: readonly ITexture[] = [
   ITexture.fromUrl("https://picsum.photos/seed/wombat1/256/256"),
   ITexture.fromUrl("https://picsum.photos/seed/wombat2/256/256"),
   ITexture.fromUrl("https://picsum.photos/seed/wombat3/256/256"),
+  ITexture.fromUrl("https://picsum.photos/seed/wombat4/256/256"),
+  ITexture.fromUrl("https://picsum.photos/seed/wombat5/256/256"),
+  ITexture.fromUrl("https://picsum.photos/seed/wombat6/256/256"),
+  ITexture.fromUrl("https://picsum.photos/seed/wombat7/256/256"),
+  ITexture.fromUrl("https://picsum.photos/seed/wombat8/256/256"),
+  ITexture.fromUrl("https://picsum.photos/seed/wombat9/256/256"),
+  ITexture.fromUrl("https://picsum.photos/seed/wombatA/256/256"),
+  ITexture.fromUrl("https://picsum.photos/seed/wombatB/256/256"),
+  ITexture.fromUrl("https://picsum.photos/seed/wombatC/256/256"),
 ];
 const canvasTexture: ITexture = makeCanvasTexture();
 const allTextures: readonly ITexture[] = [...urlTextures, canvasTexture];

@@ -12,7 +12,7 @@
 // collapsed by the heap+family path.
 
 import { effect, vertex, fragment } from "@aardworx/wombat.shader";
-import { abs, sin, type Sampler2D, texture } from "@aardworx/wombat.shader/types";
+import { abs, asin, atan2, sin, type Sampler2D, texture } from "@aardworx/wombat.shader/types";
 import { uniform } from "@aardworx/wombat.shader/uniforms";
 import { V2f, V3f, V4f } from "@aardworx/wombat.base";
 
@@ -99,21 +99,32 @@ const clipVS = vertex((v: {
   Colors:         v.Colors,
 }));
 
-// Object-space planar projection for UVs. Primitives in this demo
-// don't carry a `Uv` attribute, so we derive one from `Positions.xy`
-// (centered, scale-1 unit-ish box / sphere fits). Good enough to
-// show texturing works — real apps would pass a `Uv` attribute.
-const planarUvVS = vertex((v: {
+// Spherical UV mapping from the object-space normal. Primitives in
+// this demo don't carry a `Uv` attribute, so we derive one
+// per-vertex from `Normals` (which the primitive helpers DO
+// supply). Equirectangular: u = atan2(n.z, n.x) / 2π + 0.5,
+// v = asin(n.y) / π + 0.5. Looks reasonable on spheres / cylinders /
+// cones / tetrahedra / octahedra and on boxes (it maps each face to
+// a wedge of the texture). A real app would pass an explicit `Uv`
+// attribute.
+const ONE_OVER_TWO_PI = 1 / (2 * Math.PI);
+const ONE_OVER_PI     = 1 / Math.PI;
+const sphericalUvVS = vertex((v: {
   Positions:      V4f;
   WorldPositions: V4f;
   Normals:        V3f;
   Colors:         V4f;
-}) => ({
-  WorldPositions: v.WorldPositions,
-  Normals:        v.Normals,
-  Colors:         v.Colors,
-  Uv:             new V2f(v.Positions.x.mul(0.5).add(0.5), v.Positions.y.mul(0.5).add(0.5)),
-}));
+}) => {
+  const n = v.Normals.normalize();
+  const u = atan2(n.z, n.x).mul(ONE_OVER_TWO_PI).add(0.5);
+  const w = asin(n.y).mul(ONE_OVER_PI).add(0.5);
+  return {
+    WorldPositions: v.WorldPositions,
+    Normals:        v.Normals,
+    Colors:         v.Colors,
+    Uv:             new V2f(u, w),
+  };
+});
 
 // ─── Fragment stages ───────────────────────────────────────────────────
 
@@ -178,7 +189,7 @@ export const pulsingSurface           = effect(modelVS, clipVS, lambertFS, pulse
 export const wobblingInstancedSurface = effect(
   modelVS, wobbleVS, instanceOffsetVS, clipVS, lambertFS,
 );
-export const texturedSurface          = effect(modelVS, planarUvVS, texturedLitFS);
+export const texturedSurface          = effect(modelVS, sphericalUvVS, texturedLitFS);
 export const texturedInstancedSurface = effect(
-  modelVS, instanceOffsetVS, clipVS, planarUvVS, texturedLitFS,
+  modelVS, instanceOffsetVS, clipVS, sphericalUvVS, texturedLitFS,
 );
