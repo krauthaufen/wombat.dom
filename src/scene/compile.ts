@@ -130,7 +130,15 @@ export function compileScene(
   sg: SgNode,
   opts: CompileSceneOptions = {},
 ): alist<Command> {
-  const initial = opts.initialState ?? TraversalState.empty;
+  const base = opts.initialState ?? TraversalState.empty;
+  // Derive the root `PipelineState` once and stash it on the state.
+  // Descendants inherit it unchanged until a render-state scope clears
+  // it (then the leaf path re-derives for that subtree). For a scene
+  // with no render-state scopes — the common case, and the heap-demo —
+  // every leaf shares this one object, so the heap path's bucket-key
+  // cache computes the pipeline-state content key just once instead of
+  // once per leaf, and `derivePipelineState` runs once instead of N×.
+  const initial = base.withPipelineState(derivePipelineState(base, opts));
   // If the scene uses any `Sg.pass` scope, fall through to a flat
   // lowering that orders leaves by pass first, scene-graph order
   // second. Otherwise the structural lower path is identical to the
@@ -652,7 +660,13 @@ function buildRenderObject(
     (opts.autoUniforms ?? true)
       ? UniformProvider.union(UniformProvider.ofMap(scalarUniforms), autoInjectedUniforms(state))
       : UniformProvider.ofMap(scalarUniforms);
-  const pipelineState = derivePipelineState(state, opts);
+  // Use the `PipelineState` the traversal already derived for this
+  // subtree (shared across all leaves under the same render-state
+  // scopes); only fall back to deriving here when there isn't one
+  // (e.g. `TraversalState.empty` used directly, or a render-state
+  // scope cleared it — descendants of such a scope re-derive once
+  // each, same as before).
+  const pipelineState = state.pipelineState ?? derivePipelineState(state, opts);
 
   // RenderObject.indices is `aval<BufferView>` (no undefined). The
   // leaf carries `aval<BufferView | undefined>`; lift to a

@@ -55,7 +55,7 @@ import {
 } from "@aardworx/wombat.adaptive";
 import { Trafo3d, type IIntersectable } from "@aardworx/wombat.base";
 import type { Effect } from "@aardworx/wombat.shader";
-import type { BlendState, BufferView } from "@aardworx/wombat.rendering/core";
+import type { BlendState, BufferView, PipelineState } from "@aardworx/wombat.rendering/core";
 import type {
   BlendConstantValue,
   ColorMaskValue,
@@ -250,6 +250,21 @@ export class TraversalState {
    */
   readonly instancingParentModel: aval<Trafo3d> | undefined;
 
+  /**
+   * The `PipelineState` derived from the render-state scopes accumulated
+   * so far (blend/depth/cull/fill/colour-mask/stencil/pass + the base
+   * rasterizer). Computed **once per render-state scope** (and once for
+   * the root), then inherited unchanged by descendants — `<Sg Trafo>`,
+   * `<Sg Shader>`, geometry scopes etc. don't touch it. Leaves read it
+   * directly instead of each rebuilding an identical `PipelineState`;
+   * sharing the object also lets the heap path bucket sibling draws
+   * together (it keys buckets by `PipelineState` content, cached per
+   * object). `undefined` only before any pipeline-state context is set
+   * (e.g. `TraversalState.empty` used directly in tests) — in that case
+   * the leaf-lowering path derives one on the spot.
+   */
+  readonly pipelineState: PipelineState | undefined;
+
   private constructor(spec: TraversalSpec) {
     this.model = spec.model;
     this.view = spec.view;
@@ -285,6 +300,7 @@ export class TraversalState {
     this.time = spec.time;
     this.instancing = spec.instancing;
     this.instancingParentModel = spec.instancingParentModel;
+    this.pipelineState = spec.pipelineState;
   }
 
   /** Empty initial state — identity transforms, no shader, no uniforms, active=true. */
@@ -323,6 +339,7 @@ export class TraversalState {
     time: AVal.constant(0),
     instancing: undefined,
     instancingParentModel: undefined,
+    pipelineState: undefined,
   });
 
   // ---------------------------------------------------------------------------
@@ -351,9 +368,10 @@ export class TraversalState {
     return this.with({ uniforms: merged });
   }
 
-  /** `<Sg BlendMode={m}>`: override. */
+  /** `<Sg BlendMode={m}>`: override. Clears `pipelineState` (changes a
+   *  field `derivePipelineState` reads). */
   pushBlendMode(mode: BlendState): TraversalState {
-    return this.with({ blendMode: mode });
+    return this.with({ blendMode: mode, pipelineState: undefined });
   }
 
   /** `<Sg Cursor={c}>`: override. */
@@ -403,18 +421,23 @@ export class TraversalState {
   }
 
   // ---------------- Phase 1 — render-state pushers ---------------------
+  //
+  // Each clears `pipelineState` (it changes a field `derivePipelineState`
+  // reads) so the leaf-lowering path re-derives one for the subtree; the
+  // non-render-state pushers (`pushTrafo`, `pushShader`, …) leave it
+  // intact so a whole subtree without a render-state scope shares one.
 
-  pushDepthTest(mode: aval<DepthCompare>): TraversalState { return this.with({ depthTest: mode }); }
-  pushDepthMask(write: aval<boolean>): TraversalState { return this.with({ depthMask: write }); }
-  pushDepthBias(bias: aval<DepthBiasValue>): TraversalState { return this.with({ depthBias: bias }); }
-  pushDepthClamp(clamp: aval<boolean>): TraversalState { return this.with({ depthClamp: clamp }); }
-  pushCullMode(mode: aval<CullValue>): TraversalState { return this.with({ cullMode: mode }); }
-  pushFrontFace(mode: aval<FrontFaceValue>): TraversalState { return this.with({ frontFace: mode }); }
-  pushFillMode(mode: aval<FillModeValue>): TraversalState { return this.with({ fillMode: mode }); }
-  pushBlendConstant(value: aval<BlendConstantValue>): TraversalState { return this.with({ blendConstant: value }); }
-  pushColorMask(mask: aval<HashMap<string, ColorMaskValue>>): TraversalState { return this.with({ colorMask: mask }); }
-  pushStencilMode(mode: aval<StencilModeValue>): TraversalState { return this.with({ stencilMode: mode }); }
-  pushRenderPass(pass: number): TraversalState { return this.with({ renderPass: pass }); }
+  pushDepthTest(mode: aval<DepthCompare>): TraversalState { return this.with({ depthTest: mode, pipelineState: undefined }); }
+  pushDepthMask(write: aval<boolean>): TraversalState { return this.with({ depthMask: write, pipelineState: undefined }); }
+  pushDepthBias(bias: aval<DepthBiasValue>): TraversalState { return this.with({ depthBias: bias, pipelineState: undefined }); }
+  pushDepthClamp(clamp: aval<boolean>): TraversalState { return this.with({ depthClamp: clamp, pipelineState: undefined }); }
+  pushCullMode(mode: aval<CullValue>): TraversalState { return this.with({ cullMode: mode, pipelineState: undefined }); }
+  pushFrontFace(mode: aval<FrontFaceValue>): TraversalState { return this.with({ frontFace: mode, pipelineState: undefined }); }
+  pushFillMode(mode: aval<FillModeValue>): TraversalState { return this.with({ fillMode: mode, pipelineState: undefined }); }
+  pushBlendConstant(value: aval<BlendConstantValue>): TraversalState { return this.with({ blendConstant: value, pipelineState: undefined }); }
+  pushColorMask(mask: aval<HashMap<string, ColorMaskValue>>): TraversalState { return this.with({ colorMask: mask, pipelineState: undefined }); }
+  pushStencilMode(mode: aval<StencilModeValue>): TraversalState { return this.with({ stencilMode: mode, pipelineState: undefined }); }
+  pushRenderPass(pass: number): TraversalState { return this.with({ renderPass: pass, pipelineState: undefined }); }
 
   // ---------------- Phase 2 — geometry attribute pushers ---------------
 
@@ -432,7 +455,8 @@ export class TraversalState {
   }
 
   pushIndex(index: BufferView | undefined): TraversalState { return this.with({ index }); }
-  pushMode(mode: aval<ModeValue>): TraversalState { return this.with({ mode }); }
+  /** Clears `pipelineState` — `mode` feeds the topology in `derivePipelineState`. */
+  pushMode(mode: aval<ModeValue>): TraversalState { return this.with({ mode, pipelineState: undefined }); }
 
   // ---------------- Phase 3 — misc scope pushers -----------------------
 
@@ -496,13 +520,21 @@ export class TraversalState {
       time: patch.time ?? this.time,
       instancing: "instancing" in patch ? patch.instancing : this.instancing,
       instancingParentModel: "instancingParentModel" in patch ? patch.instancingParentModel : this.instancingParentModel,
+      pipelineState: "pipelineState" in patch ? patch.pipelineState : this.pipelineState,
     });
+  }
+
+  /** Attach a derived `PipelineState` — inherited unchanged by
+   *  descendants until the next render-state scope re-derives it. */
+  withPipelineState(ps: PipelineState | undefined): TraversalState {
+    return this.with({ pipelineState: ps });
   }
 }
 
 interface TraversalSpec {
   instancing: import("./sg.js").SgInstanced | undefined;
   instancingParentModel: aval<Trafo3d> | undefined;
+  pipelineState: PipelineState | undefined;
   model: aval<Trafo3d>;
   view: aval<Trafo3d>;
   proj: aval<Trafo3d>;
