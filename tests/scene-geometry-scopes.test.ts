@@ -69,7 +69,7 @@ describe("Phase 2 — geometry-attribute scopes", () => {
       HashMap.empty<string, BufferView>().add("scope-pos", a);
     const tree = Sg.vertexAttributes(scoped)(minimalLeaf());
     const [obj] = compile(tree);
-    expect(obj!.vertexAttributes.tryFind("scope-pos")).toBeDefined();
+    expect(obj!.vertexAttributes.tryGet("scope-pos")).toBeDefined();
   });
 
   it("VertexAttributes COMPOSE (per-key map merge, leaf-wins on conflict)", () => {
@@ -83,7 +83,7 @@ describe("Phase 2 — geometry-attribute scopes", () => {
     const tree = Sg.vertexAttributes(scoped)(leaf);
     const [obj] = compile(tree);
     // Leaf wins.
-    const pos = obj!.vertexAttributes.tryFind("Positions");
+    const pos = obj!.vertexAttributes.tryGet("Positions");
     const view = (pos! as BufferView & { label?: string });
     expect(view.label).toBe("leaf");
   });
@@ -115,7 +115,7 @@ describe("Phase 2 — geometry-attribute scopes", () => {
     const inst: HashMap<string, BufferView> = HashMap.empty<string, BufferView>().add("inst-color", bv("inst"));
     const tree = Sg.instanceAttributes(inst)(minimalLeaf());
     const [obj] = compile(tree);
-    expect(obj!.instanceAttributes!.tryFind("inst-color")).toBeDefined();
+    expect(obj!.instanceAttributes!.tryGet("inst-color")).toBeDefined();
   });
 
   it("Mode scope flows into pipelineState.rasterizer.topology", () => {
@@ -137,9 +137,9 @@ describe("Phase 2 — geometry-attribute scopes", () => {
       .add("conflict", conflictInner);
     const tree = Sg.vertexAttributes(o)(Sg.vertexAttributes(i)(minimalLeaf()));
     const [obj] = compile(tree);
-    expect(obj!.vertexAttributes.tryFind("outer-only")).toBeDefined();
-    expect(obj!.vertexAttributes.tryFind("inner-only")).toBeDefined();
-    const conflict = (obj!.vertexAttributes.tryFind("conflict")! as BufferView & { label?: string });
+    expect(obj!.vertexAttributes.tryGet("outer-only")).toBeDefined();
+    expect(obj!.vertexAttributes.tryGet("inner-only")).toBeDefined();
+    const conflict = (obj!.vertexAttributes.tryGet("conflict")! as BufferView & { label?: string });
     expect(conflict.label).toBe("conflict-inner");
   });
 });

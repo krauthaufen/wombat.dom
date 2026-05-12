@@ -173,6 +173,11 @@ export class PickRegistry {
   // at silhouettes can otherwise surface a valid pickId with the
   // wrong layout).
   private readonly modes = new Map<PickId, PickMode>();
+  // Side map for the BVH path so `release(pickId)` can drop the exact
+  // PickObject reference from `_pickObjects`. Without this we'd have
+  // no way to identify which entry to remove (the underlying cset is
+  // identity-keyed, not pickId-keyed).
+  private readonly bvhEntries = new Map<PickId, PickObject>();
 
   // ------------------------------------------------------------------
   // Reactive BVH (mirrors Aardvark.Dom SceneHandler.fs:1444-1468).
@@ -262,19 +267,53 @@ export class PickRegistry {
     // multi-second stalls).
     const path = scope.pickPath ?? "bvh";
     if (path === "bvh" && scope.intersectable !== undefined) {
-      transact(() => {
-        this._pickObjects.add({
-          scope: full,
-          intersectable: scope.intersectable!,
-          trafo: scope.model,
-        });
-      });
+      const po: PickObject = {
+        scope: full,
+        intersectable: scope.intersectable!,
+        trafo: scope.model,
+      };
+      this.bvhEntries.set(pickId, po);
+      transact(() => { this._pickObjects.add(po); });
     }
     return pickId;
   }
 
   lookup(id: PickId): LeafPickScope | undefined {
     return this.entries.get(id);
+  }
+
+  /**
+   * Drop a previously-acquired pickId. Removes the scope record from
+   * `entries`/`modes` and, when the scope landed in the BVH path,
+   * removes its `PickObject` from `_pickObjects` (which transitively
+   * removes the entry from the live BVH on the next `bvhAval` pull).
+   *
+   * Called by the scene-graph layer when a lowered leaf is dropped
+   * from an adaptive container (aset/alist/aval) — without this, every
+   * `cset.remove(...)` leaked one pickId, and any toggle/restream
+   * workload grew `entries`/`modes` unboundedly.
+   */
+  release(id: PickId): void {
+    const scope = this.entries.get(id);
+    if (scope === undefined) return;
+    this.entries.delete(id);
+    this.modes.delete(id);
+    // Drop focus if we just removed the focused scope.
+    // AVal.force OK: isConstant guard avoided — _focused is a cval,
+    // so `force()` is one-shot here at the API boundary (same shape as
+    // setFocus/clearFocus, which also call force).
+    if (AVal.force(this._focused) === id) {
+      transact(() => { this._focused.value = undefined; });
+    }
+    // BVH-path scopes also live in `_pickObjects`. The path is decided
+    // at acquire-time and stored on the scope; mirror that here so we
+    // don't blindly call `_pickObjects.remove` for pixel/none paths
+    // (would be a no-op but wastes a transact + Set lookup).
+    const po = this.bvhEntries.get(id);
+    if (po !== undefined) {
+      this.bvhEntries.delete(id);
+      transact(() => { this._pickObjects.remove(po); });
+    }
   }
 
   /**
@@ -293,6 +332,7 @@ export class PickRegistry {
     });
     this.entries.clear();
     this.modes.clear();
+    this.bvhEntries.clear();
     this.next = 1;
   }
 

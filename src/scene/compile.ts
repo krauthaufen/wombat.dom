@@ -39,11 +39,11 @@ import {
   type alist, type aset, type aval,
 } from "@aardworx/wombat.adaptive";
 import { M44f, Trafo3d, V3d, V3f } from "@aardworx/wombat.base";
-import { RenderTree } from "@aardworx/wombat.rendering/core";
+import { RenderTree, UniformProvider, AttributeProvider } from "@aardworx/wombat.rendering/core";
 import type {
   BlendState, BufferView,
   Command, ClearValues, DepthBiasState, DepthState,
-  IFramebuffer, ISampler, ITexture,
+  IFramebuffer, ISampler, ITexture, IUniformProvider,
   PipelineState, PlainRasterizerState, RasterizerState, RenderObject,
   StencilState, Topology,
 } from "@aardworx/wombat.rendering/core";
@@ -58,7 +58,7 @@ import { TraversalState } from "./traversalState.js";
 import { applyInstancing, validateInstancingSubtree } from "./instancing.js";
 import { isITexture, resolveTextureAval } from "./textureResolver.js";
 import { ISampler as ISamplerImpl } from "@aardworx/wombat.rendering/core";
-import { composePickChainWithChoice } from "./picking/pickChain.js";
+import { composePickChainWithChoiceCached } from "./picking/pickChain.js";
 import type { PickRegistry } from "./picking/registry.js";
 
 // ---------------------------------------------------------------------------
@@ -98,6 +98,26 @@ export interface PickingOptions {
    * instance-attribute keys (see `defaultGeomHas`).
    */
   readonly geomHas?: (semantic: string) => boolean;
+  /**
+   * Optional cache key for `geomHas`. When supplied alongside
+   * `geomHas`, `composePickChainWithChoice` results are memoised
+   * across leaves sharing the same `(userEffect, geomKey)`. Required
+   * if you want caching on the user-supplied predicate path —
+   * otherwise the call falls back to a sentinel key, defeating the
+   * cache when the predicate semantically varies across leaves.
+   */
+  readonly geomKey?: string;
+  /**
+   * Notification hook called once per `registry.acquire()` performed
+   * during `lower` (i.e. once per leaf with `pickPath !== "none"`).
+   * The reactive structural cases (Group / UnorderedGroup /
+   * AdaptiveGroup) override this hook on their recursive `lower`
+   * call so the pickIds produced under each child are collected into
+   * a cleanup list keyed by the child's mapped result; when the
+   * adaptive collection evicts that result, the cleanup releases all
+   * pickIds it acquired.
+   */
+  readonly onAcquire?: (pickId: number) => void;
 }
 
 /**
@@ -299,14 +319,27 @@ function lower(
 
     case "UnorderedGroup": {
       // aset<SgNode> → aset<RenderTree>; outer is UnorderedFromSet.
-      const children: aset<RenderTree> = node.children.map(
-        child => lowerInsideInstancing(child, state, opts),
-      );
+      // `mapUse` (rather than `map`) ties the lowering's acquired
+      // pickIds to the source entry's lifetime: when a child is
+      // removed from the underlying aset, the cleanup callback
+      // releases every `pickId` registered while lowering that
+      // child. Without this, every `cset.remove` leaked pickIds in
+      // `PickRegistry` (and a corresponding `_pickObjects` slot for
+      // BVH-path scopes).
+      const children: aset<RenderTree> = ASet.mapUse(
+        (child: SgNode) => lowerWithCleanup(child, state, opts),
+        (wc) => wc.dispose(),
+        node.children,
+      ).map(wc => wc.tree);
       return RenderTree.unorderedFromSet(children);
     }
 
     case "AdaptiveGroup":
       // single-slot subtree swap: aval<SgNode> → aval<RenderTree>.
+      // TODO(adaptive-cleanup): mirror UnorderedGroup's mapUse here —
+      // an `aval.mapUse` (release-on-tick) variant is needed so a
+      // swap of the inner SgNode releases the previous lowering's
+      // pickIds.
       return RenderTree.adaptive(node.child.map(
         child => lowerInsideInstancing(child, state, opts),
       ));
@@ -422,6 +455,38 @@ function lower(
  *
  * Outside an instancing scope this is a thin pass-through to `lower`.
  */
+/**
+ * Recurse into a child SgNode while collecting every pickId
+ * `lowerLeaf` acquires under it. Returns the lowered `RenderTree`
+ * plus a `dispose` closure that releases all collected pickIds —
+ * called by the adaptive-collection cleanup (see `mapUse` in the
+ * UnorderedGroup case of `lower`) when the source entry is removed.
+ *
+ * Re-validates `Sg.Instanced` invariants on swap-in via
+ * `lowerInsideInstancing` to preserve the existing behaviour.
+ */
+interface LoweredChild {
+  readonly tree: RenderTree;
+  readonly dispose: () => void;
+}
+function lowerWithCleanup(
+  child: SgNode,
+  state: TraversalState,
+  opts: CompileSceneOptions,
+): LoweredChild {
+  if (opts.picking === undefined) {
+    return { tree: lowerInsideInstancing(child, state, opts), dispose: () => {} };
+  }
+  const ids: number[] = [];
+  const childOpts: CompileSceneOptions = {
+    ...opts,
+    picking: { ...opts.picking, onAcquire: (pid) => ids.push(pid) },
+  };
+  const tree = lowerInsideInstancing(child, state, childOpts);
+  const registry = opts.picking.registry;
+  return { tree, dispose: () => { for (const id of ids) registry.release(id); } };
+}
+
 function lowerInsideInstancing(
   child: SgNode,
   state: TraversalState,
@@ -508,11 +573,13 @@ function lowerLeaf(
     fppConst      ? "pixel" :
                     "bvh";
   if (opts.picking !== undefined && pickPath !== "none") {
-    const geomHas = opts.picking.geomHas ?? defaultGeomHas(merged);
-    const composed = composePickChainWithChoice(userEffect, geomHas);
+    const geom = opts.picking.geomHas !== undefined
+      ? { has: opts.picking.geomHas, key: opts.picking.geomKey ?? "__user" }
+      : defaultGeomHas(merged);
+    const composed = composePickChainWithChoiceCached(userEffect, geom.key, geom.has);
     effect = composed.effect;
     const mode = composed.choice.final === "FinalB" ? "B" : "A";
-    pickId = opts.picking.registry.acquire({
+    const pid = opts.picking.registry.acquire({
       handlers: state.handlers,
       cursor: state.cursor,
       pickThrough: state.pickThrough,
@@ -525,6 +592,8 @@ function lowerLeaf(
       pickPath,
       ...(state.intersectable !== undefined ? { intersectable: state.intersectable } : {}),
     }, mode);
+    pickId = pid;
+    if (opts.picking.onAcquire !== undefined) opts.picking.onAcquire(pid);
   }
 
   // If an `Sg.Instanced` scope is in effect, rewrite the effect via
@@ -570,8 +639,19 @@ function buildRenderObject(
   opts: CompileSceneOptions,
   pickId: number | undefined,
 ): RenderObject {
-  const merged = mergeUniforms(leaf, state, opts, pickId);
-  const { uniforms, textures, samplers } = splitTexturesFromUniforms(merged);
+  const userUniformMap = mergeUniforms(leaf, state, pickId);
+  const { uniforms: scalarUniforms, textures, samplers } = splitTexturesFromUniforms(userUniformMap);
+  // Compose the uniform provider: user-supplied uniforms (incl. PickId)
+  // first so they shadow the auto-injected defaults, then the lazy
+  // auto-inject — which materialises `ModelViewProjTrafo` / `NormalMatrix`
+  // / the inverses etc. only if some effect's interface actually reads
+  // the name. With one cval/leaf, 1000 leaves used to eagerly build
+  // ~15 derived avals each (each a `compose`/`inverse` + a memo-intern
+  // matrix hash); now a leaf builds only the ~2-4 its shader names.
+  const uniforms: IUniformProvider =
+    (opts.autoUniforms ?? true)
+      ? UniformProvider.union(UniformProvider.ofMap(scalarUniforms), autoInjectedUniforms(state))
+      : UniformProvider.ofMap(scalarUniforms);
   const pipelineState = derivePipelineState(state, opts);
 
   // RenderObject.indices is `aval<BufferView>` (no undefined). The
@@ -585,8 +665,10 @@ function buildRenderObject(
   const obj: RenderObject = {
     effect,
     pipelineState,
-    vertexAttributes: leaf.vertexAttributes,
-    ...(leaf.instanceAttributes !== undefined ? { instanceAttributes: leaf.instanceAttributes } : {}),
+    vertexAttributes: AttributeProvider.ofMap(leaf.vertexAttributes),
+    ...(leaf.instanceAttributes !== undefined
+      ? { instanceAttributes: AttributeProvider.ofMap(leaf.instanceAttributes) }
+      : {}),
     uniforms,
     textures,
     samplers,
@@ -649,38 +731,22 @@ function mergeLeafGeometry(leaf: SgLeaf, state: TraversalState): SgLeaf {
 // shaders that don't reference these names.
 // ---------------------------------------------------------------------------
 
+// Build the user-supplied uniform map for a leaf: the `Sg.uniform({...})`
+// scope entries plus the per-leaf `PickId` (when picking is on). The
+// auto-injected derived trafos are NOT mixed in here — they go through
+// the lazy `autoInjectedUniforms` provider, composed under the user
+// map in `buildRenderObject` (user wins on key conflict).
 function mergeUniforms(
   _leaf: SgLeaf,
   state: TraversalState,
-  opts: CompileSceneOptions,
   pickId: number | undefined,
 ): HashMap<string, aval<unknown>> {
-  const auto = (opts.autoUniforms ?? true) ? autoInjectedUniforms(state) : HashMap.empty<string, aval<unknown>>();
-  // Inner-wins: state.uniforms entries override auto.
-  let merged = auto;
+  let merged = HashMap.empty<string, aval<unknown>>();
   for (const [k, v] of state.uniforms) merged = merged.add(k, v);
-  // PickId is per-leaf and supplied last — never an auto-uniform
-  // and never something the user can override at scope (the chain
-  // shader binds it as the leaf's identity).
+  // PickId is per-leaf — never an auto-uniform, never user-overridable
+  // at scope (the pick-chain shader binds it as the leaf's identity).
   if (pickId !== undefined) merged = merged.add("PickId", AVal.constant(pickId));
-  // Adapt non-GPU-bindable values (Trafo3d → M44f) for the runtime
-  // UBO packer, which expects `{ _data: Float32Array }` sources.
-  // Done as a per-value lazy `.map` so the user-facing semantic of
-  // `aval<Trafo3d>` for ModelTrafo / ViewTrafo / ProjTrafo etc.
-  // stays intact (state.uniforms is queried by code that wants the
-  // semantic Trafo3d; the GPU only sees the adapted form).
-  let out = HashMap.empty<string, aval<unknown>>();
-  for (const [k, v] of merged) out = out.add(k, adaptForGpu(v));
-  return out;
-}
-
-function adaptForGpu(v: aval<unknown>): aval<unknown> {
-  // No conversion — both the runtime UBO packer and the derived-uniforms
-  // compute pass recognise `Trafo3d` directly (forward/backward). The
-  // previous `Trafo3d → M44f` map lost the `.backward` half, which broke
-  // §7 derived uniforms (the compute pass packs both fwd + inv into df32
-  // slots). Kept as a hook for future per-value adapters.
-  return v;
+  return merged;
 }
 
 // Default sampler — linear/linear/mip-linear/repeat. Shared across
@@ -736,83 +802,80 @@ function splitTexturesFromUniforms(
   return { uniforms: outU, textures: outT, samplers: outS };
 }
 
-function autoInjectedUniforms(state: TraversalState): HashMap<string, aval<unknown>> {
-  // Mirrors Aardvark.Rendering's `tryGetDerivedUniform` table — see
-  // `src/Aardvark.Rendering/Uniforms/Uniforms.fs:97-110`. Ports
-  // every standard transform + inverse + composite + the normal
-  // matrix + camera location. Shaders that don't bind a given name
-  // pay nothing at compile time (DCE drops the uniform read).
+// The names the auto-inject provider can produce. Listed eagerly (so
+// `provider.names()` works for diagnostics) but NOT materialised — each
+// value's aval chain is built on first `tryGet`, so a leaf only ever
+// constructs the ~2-4 derived trafos its shader actually references.
+const AUTO_UNIFORM_NAMES: readonly string[] = [
+  "ModelTrafo", "ViewTrafo", "ProjTrafo",
+  "ModelViewTrafo", "ViewProjTrafo", "ModelViewProjTrafo",
+  "ModelTrafoInv", "ViewTrafoInv", "ProjTrafoInv",
+  "ModelViewTrafoInv", "ViewProjTrafoInv", "ModelViewProjTrafoInv",
+  "NormalMatrix", "CameraLocation", "LightLocation", "ViewportSize",
+];
+
+function autoInjectedUniforms(state: TraversalState): IUniformProvider {
+  // Mirrors Aardvark.Rendering's `tryGetDerivedUniform` table — the
+  // standard transforms + inverses + composites + the normal matrix +
+  // camera/light location + viewport. Lazy: only the ones a shader
+  // declares are ever built (the rest are pruned by DCE in the shader
+  // *and* never constructed here).
   //
   // Composition convention follows Aardvark's `Trafo3d` `<*>`:
-  //   `a <*> b` means "apply a first, then b" — the resulting
-  //   forward is `b.forward * a.forward` (column-vector math).
-  //   In wombat.base, `Trafo3d.mul(other)` matches this convention.
+  //   `a <*> b` = "apply a first, then b" — forward = `b.fw * a.fw`
+  //   (column-vector math); `Trafo3d.mul` matches this.
   const model = state.model;
   const view  = state.view;
   const proj  = state.proj;
-  // All combinators here use the `AVal.{zip, map}` namespace form so
-  // the adaptive memo plugin recognises them. With the method form
-  // (`t.map(fn)` where `t` is a function parameter), the plugin can't
-  // infer that the receiver is aval-kind — its lightweight scanner
-  // only tracks locals declared via `const x = ...`, not function
-  // parameters — so every leaf would build fresh derived avals
-  // instead of sharing across leaves with the same view / proj.
+  // `AVal.{zip,map}` namespace form so the adaptive-memo plugin
+  // recognises the combinators — two leaves sharing `view`/`proj`
+  // collapse to one `viewProj` aval; per-leaf `model` gets its own
+  // `modelView` (but only if read).
   const compose = (a: aval<Trafo3d>, b: aval<Trafo3d>): aval<Trafo3d> =>
     AVal.zip(a, b).map((aT, bT) => aT.mul(bT));
   const inv = (t: aval<Trafo3d>): aval<Trafo3d> =>
     AVal.map(t, (x: Trafo3d) => x.inverse());
+  const modelView     = (): aval<Trafo3d> => compose(model, view);
+  const viewProj      = (): aval<Trafo3d> => compose(view, proj);
+  const modelViewProj = (): aval<Trafo3d> => compose(model, viewProj());
 
-  const modelView    = compose(model, view);
-  const viewProj     = compose(view, proj);
-  const modelViewProj = compose(model, viewProj);
-
-  // NormalMatrix: ModelTrafo.Backward.Transposed (inverse-transpose,
-  // for non-uniform-scale-correct normal transformation). Aardvark
-  // exposes the upper-left M33; we expose the full M44 here. Shaders
-  // pad V3f normals to V4f(n.xyz, 0) before multiplying so the 4th
-  // column (translation) is ignored — mathematically equivalent.
-  const normalMatrix = AVal.map(model, (t: Trafo3d) => {
-    const invT = t.backward.transpose();
-    return Trafo3d.fromMatrices(invT, invT.transpose());
+  return UniformProvider.lazy(AUTO_UNIFORM_NAMES, (name): aval<unknown> | undefined => {
+    switch (name) {
+      // Roots — zero cost (just the traversal-state avals).
+      case "ModelTrafo": return model;
+      case "ViewTrafo":  return view;
+      case "ProjTrafo":  return proj;
+      // Composites.
+      case "ModelViewTrafo":     return modelView();
+      case "ViewProjTrafo":      return viewProj();
+      case "ModelViewProjTrafo": return modelViewProj();
+      // Inverses.
+      case "ModelTrafoInv":         return inv(model);
+      case "ViewTrafoInv":          return inv(view);
+      case "ProjTrafoInv":          return inv(proj);
+      case "ModelViewTrafoInv":     return inv(modelView());
+      case "ViewProjTrafoInv":      return inv(viewProj());
+      case "ModelViewProjTrafoInv": return inv(modelViewProj());
+      // NormalMatrix: ModelTrafo.Backward.Transposed (inverse-transpose
+      // — non-uniform-scale-correct normals). Full M44; shaders pad V3f
+      // normals to V4f(n.xyz, 0) so the translation column is ignored.
+      case "NormalMatrix":
+        return AVal.map(model, (t: Trafo3d) => {
+          const iT = t.backward.transpose();
+          return Trafo3d.fromMatrices(iT, iT.transpose());
+        });
+      // CameraLocation = ViewTrafoInv · origin (= view.backward's
+      // translation column). LightLocation defaults to it (headlight).
+      case "CameraLocation":
+      case "LightLocation":
+        return AVal.map(view, (v: Trafo3d) => {
+          const o = v.backward.transformPos(V3d.zero);
+          return new V3f(o.x, o.y, o.z);
+        });
+      case "ViewportSize": return state.viewport;
+      default: return undefined;
+    }
   });
-
-  // CameraLocation: position of the camera in world space =
-  // ViewTrafoInv applied to the origin. Same as the translation
-  // column of view.backward.
-  const cameraLocation = AVal.map(view, (v: Trafo3d) => {
-    const o = v.backward.transformPos(V3d.zero);
-    return new V3f(o.x, o.y, o.z);
-  });
-
-  // LightLocation: defaults to CameraLocation (a "headlight"
-  // following the eye), matching Aardvark's behaviour when no
-  // explicit `LightLocation` is bound. Users override via
-  // `<Sg Uniform={{ LightLocation: cval(...) }}>...</Sg>`.
-  const lightLocation = cameraLocation;
-
-  let map = HashMap.empty<string, aval<unknown>>();
-  // Roots
-  map = map.add("ModelTrafo",        model);
-  map = map.add("ViewTrafo",         view);
-  map = map.add("ProjTrafo",         proj);
-  // Composites
-  map = map.add("ModelViewTrafo",    modelView);
-  map = map.add("ViewProjTrafo",     viewProj);
-  map = map.add("ModelViewProjTrafo", modelViewProj);
-  // Inverses
-  map = map.add("ModelTrafoInv",     inv(model));
-  map = map.add("ViewTrafoInv",      inv(view));
-  map = map.add("ProjTrafoInv",      inv(proj));
-  map = map.add("ModelViewTrafoInv", inv(modelView));
-  map = map.add("ViewProjTrafoInv",  inv(viewProj));
-  map = map.add("ModelViewProjTrafoInv", inv(modelViewProj));
-  // Derived
-  map = map.add("NormalMatrix",      normalMatrix);
-  map = map.add("CameraLocation",    cameraLocation);
-  map = map.add("LightLocation",     lightLocation);
-  // Pipeline state
-  map = map.add("ViewportSize",      state.viewport);
-  return map;
 }
 
 // ---------------------------------------------------------------------------
@@ -1004,7 +1067,7 @@ function derivePipelineState(state: TraversalState, opts: CompileSceneOptions): 
 // Default geomHas — pick-chain dependency probe over leaf attributes
 // ---------------------------------------------------------------------------
 
-function defaultGeomHas(leaf: SgLeaf): (semantic: string) => boolean {
+function defaultGeomHas(leaf: SgLeaf): { has: (semantic: string) => boolean; key: string } {
   // Why: `BufferView` doesn't currently carry an explicit `semantic`
   // — wombat.dom binds vertex / instance attributes by their map
   // key directly to the shader's input by NAME (`Positions`,
@@ -1021,7 +1084,8 @@ function defaultGeomHas(leaf: SgLeaf): (semantic: string) => boolean {
   if (leaf.instanceAttributes !== undefined) {
     for (const [k] of leaf.instanceAttributes) set.add(k);
   }
-  return (sem) => set.has(sem);
+  const key = [...set].sort().join("|");
+  return { has: (sem) => set.has(sem), key };
 }
 
 // Avoid unused-import warning while ASet is reserved for the

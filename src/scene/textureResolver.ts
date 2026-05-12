@@ -94,13 +94,32 @@ function resolveUrl(spec: Extract<ITexture, { kind: "url" }>): aval<ITexture> {
  * resolve through a per-URL placeholder. Non-url values pass through
  * untouched.
  *
- * The wrap is cached per source aval — otherwise N leaves sharing one
- * `aval<ITexture>` would each get their own `AVal.custom` wrapper,
- * defeating the atlas pool's aval-identity dedup (every leaf would
- * acquire its own atlas sub-rect for the same texture).
+ * Crucially, the result must be *shared* across all leaves referencing
+ * the same texture, or the atlas pool — which keys on the resolved
+ * aval's identity/value — allocates one sub-rect per leaf. With 1000s
+ * of textured leaves cycling through ~12 URLs that exhausts the atlas
+ * (`ATLAS_MAX_PAGES_PER_FORMAT`). So:
+ *
+ *   - constant source, url value  → return `resolveUrl(t)` directly:
+ *     that's the *per-URL* shared `cval` (placeholder → loaded), keyed
+ *     by url string. N leaves → 1 atlas entry per url.
+ *   - constant source, non-url    → return `src` unchanged: the atlas
+ *     pool's content-keyed `entriesByAval` HashTable already collapses
+ *     two `AVal.constant(sameTexture)` to one entry.
+ *   - reactive source             → wrap in `AVal.custom` (the value
+ *     can flip url ↔ non-url), cached per source-aval identity.
  */
 const resolveCache = new WeakMap<aval<ITexture>, aval<ITexture>>();
 export function resolveTextureAval(src: aval<ITexture>): aval<ITexture> {
+  if (src.isConstant) {
+    // AVal.force OK: isConstant guard — constant avals are force-safe
+    // and never tick. Same category as splitTexturesFromUniforms.
+    const t = src.force();
+    if (isITexture(t)) {
+      return t.kind === "url" ? resolveUrl(t) : src;
+    }
+    return src;
+  }
   const cached = resolveCache.get(src);
   if (cached !== undefined) return cached;
   const wrapped = AVal.custom<ITexture>(token => {

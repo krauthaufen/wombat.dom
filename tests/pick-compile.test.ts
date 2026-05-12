@@ -101,7 +101,7 @@ describe("compileScene — picking integration", () => {
     expect(registry.size()).toBe(1);
 
     // the registered handlers contain our onClick
-    const id = AVal.force(lt.object.uniforms.tryFind("PickId")!) as number;
+    const id = AVal.force(lt.object.uniforms.tryGet("PickId")!) as number;
     const scope = registry.lookup(id);
     expect(scope).toBeDefined();
     expect(scope!.handlers.length).toBe(1);
@@ -137,8 +137,8 @@ describe("compileScene — picking integration", () => {
     const children = AVal.force(rt.children.content).toArray();
     expect(children).toHaveLength(2);
 
-    const id0 = AVal.force(getLeaf(children[0]!).object.uniforms.tryFind("PickId")!) as number;
-    const id1 = AVal.force(getLeaf(children[1]!).object.uniforms.tryFind("PickId")!) as number;
+    const id0 = AVal.force(getLeaf(children[0]!).object.uniforms.tryGet("PickId")!) as number;
+    const id1 = AVal.force(getLeaf(children[1]!).object.uniforms.tryGet("PickId")!) as number;
     expect(id0).not.toBe(id1);
     expect(registry.size()).toBe(2);
 
@@ -152,6 +152,6 @@ describe("compileScene — picking integration", () => {
     const cmds = compileScene(tree);
     const lt = getLeaf(singleRender(cmds));
     expect(lt.object.effect).toBe(userEff);
-    expect(lt.object.uniforms.tryFind("PickId")).toBeUndefined();
+    expect(lt.object.uniforms.tryGet("PickId")).toBeUndefined();
   });
 });

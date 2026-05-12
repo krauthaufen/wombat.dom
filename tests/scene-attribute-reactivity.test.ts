@@ -63,12 +63,12 @@ describe("Phase B — per-buffer reactive vertex attributes through compileScene
     const rt = leafOf(singleRender(cmds));
     const obj = rt.object;
 
-    const found1 = obj.vertexAttributes.tryFind("Positions");
+    const found1 = obj.vertexAttributes.tryGet("Positions");
     expect(found1).toBeDefined();
     expect((AVal.force(found1!.buffer) as { label?: string }).label).toBe("A");
 
     transact(() => { bufCval.value = ibB; });
-    const found2 = obj.vertexAttributes.tryFind("Positions");
+    const found2 = obj.vertexAttributes.tryGet("Positions");
     expect((AVal.force(found2!.buffer) as { label?: string }).label).toBe("B");
   });
 });

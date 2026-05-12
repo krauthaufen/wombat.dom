@@ -28,6 +28,17 @@ export default defineConfig({
   esbuild: {
     jsx: "automatic",
     jsxImportSource: "@aardworx/wombat.dom",
+    // Keep native class fields (`x = v`) instead of esbuild's
+    // `__publicField(this, "x", v)` → `Object.defineProperty` downlevel.
+    // The wombat packages ship dist with native ES2022 class fields;
+    // without this the dev-server transpile / dep-prebundle re-downlevels
+    // them and `__defNormalProp` shows up as ~10% of cold-boot CPU
+    // (thousands of aval/SgNode constructions, one defineProperty per
+    // field). All target browsers (and the headed Chromium we test in)
+    // have had native class fields for years.
+    target: "es2022",
   },
+  build: { target: "es2022" },
+  optimizeDeps: { esbuildOptions: { target: "es2022" } },
   define: { global: "globalThis" },
 });

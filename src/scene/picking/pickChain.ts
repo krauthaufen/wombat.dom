@@ -142,3 +142,38 @@ export function composePickChainWithChoice(
   void pickDepthBeforeEffect;
   return { effect: effect(...stages), choice };
 }
+
+/**
+ * Cached variant of {@link composePickChainWithChoice}. The
+ * `geomKey` argument is a structural fingerprint of the geometry's
+ * attribute set (e.g. the sorted attribute keys joined by `|`) — the
+ * caller commits to `geomHas` returning the same answer for any two
+ * leaves sharing this key. With one cval/effect per leaf in a naive
+ * scene-graph, this drops O(N) `effectDependencies` walks to one per
+ * unique (effect, geom-signature) pair.
+ *
+ * The cache is keyed on Effect identity (WeakMap) ⨯ geomKey (Map).
+ * `Effect` objects produced by `effect(...)` are stable across the
+ * same composition call, so identity-keyed caching is appropriate.
+ */
+const composeCache: WeakMap<
+  Effect,
+  Map<string, { effect: Effect; choice: PickChainChoice }>
+> = new WeakMap();
+
+export function composePickChainWithChoiceCached(
+  eff: Effect,
+  geomKey: string,
+  geomHas: (semantic: string) => boolean,
+): { effect: Effect; choice: PickChainChoice } {
+  let byKey = composeCache.get(eff);
+  if (byKey === undefined) {
+    byKey = new Map();
+    composeCache.set(eff, byKey);
+  }
+  const hit = byKey.get(geomKey);
+  if (hit !== undefined) return hit;
+  const miss = composePickChainWithChoice(eff, geomHas);
+  byKey.set(geomKey, miss);
+  return miss;
+}

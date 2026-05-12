@@ -124,14 +124,14 @@ describe("compileScene — auto-injected uniforms", () => {
     const cmds = compileScene(Sg.shader(fakeEffect, leaf()));
     const lt = getLeafObject(singleRender(cmds));
     for (const k of ["ModelTrafo", "ViewTrafo", "ProjTrafo", "ViewProjTrafo", "ViewportSize"]) {
-      expect(lt.object.uniforms.tryFind(k)).toBeDefined();
+      expect(lt.object.uniforms.tryGet(k)).toBeDefined();
     }
   });
 
   it("autoUniforms: false suppresses the injection", () => {
     const cmds = compileScene(Sg.shader(fakeEffect, leaf()), { autoUniforms: false });
     const lt = getLeafObject(singleRender(cmds));
-    expect(lt.object.uniforms.tryFind("ModelTrafo")).toBeUndefined();
+    expect(lt.object.uniforms.tryGet("ModelTrafo")).toBeUndefined();
   });
 
   it("user-provided uniform with the same name overrides the auto-injected one", () => {
@@ -143,7 +143,7 @@ describe("compileScene — auto-injected uniforms", () => {
       );
     const cmds = compileScene(tree);
     const lt = getLeafObject(singleRender(cmds));
-    const got = lt.object.uniforms.tryFind("ModelTrafo")!;
+    const got = lt.object.uniforms.tryGet("ModelTrafo")!;
     // Sg now passes Trafo3d through unchanged — the runtime UBO
     // packer and §7 derived compute pass both recognise it. The
     // forward row-major translation column is at M03 / M13 / M23.
@@ -162,7 +162,7 @@ describe("compileScene — auto-injected uniforms", () => {
       );
     const cmds = compileScene(tree);
     const lt = getLeafObject(singleRender(cmds));
-    const model = lt.object.uniforms.tryFind("ModelTrafo")!;
+    const model = lt.object.uniforms.tryGet("ModelTrafo")!;
     const t = AVal.force(model) as Trafo3d;
     const m = t.forward;
     // Outer trafo is translate(1,0,0) applied last; inner is scale(2).
@@ -254,8 +254,8 @@ describe("compileScene — View / Proj / Delay", () => {
     const p = AVal.constant(Trafo3d.scaling(0.5));
     const tree = Sg.shader(fakeEffect, Sg.view(v, Sg.proj(p, leaf())));
     const lt = getLeafObject(singleRender(compileScene(tree)));
-    const view = (AVal.force(lt.object.uniforms.tryFind("ViewTrafo")!) as Trafo3d).forward;
-    const proj = (AVal.force(lt.object.uniforms.tryFind("ProjTrafo")!) as Trafo3d).forward;
+    const view = (AVal.force(lt.object.uniforms.tryGet("ViewTrafo")!) as Trafo3d).forward;
+    const proj = (AVal.force(lt.object.uniforms.tryGet("ProjTrafo")!) as Trafo3d).forward;
     // Translate-z(-5): M23 = -5
     expect(view.M23).toBeCloseTo(-5, 6);
     // Uniform scale 0.5: M00 = 0.5
@@ -267,8 +267,8 @@ describe("compileScene — View / Proj / Delay", () => {
     const p = AVal.constant(Trafo3d.scaling(2));
     const tree = Sg.shader(fakeEffect, Sg.camera(v, p, leaf()));
     const lt = getLeafObject(singleRender(compileScene(tree)));
-    const view = (AVal.force(lt.object.uniforms.tryFind("ViewTrafo")!) as Trafo3d).forward;
-    const proj = (AVal.force(lt.object.uniforms.tryFind("ProjTrafo")!) as Trafo3d).forward;
+    const view = (AVal.force(lt.object.uniforms.tryGet("ViewTrafo")!) as Trafo3d).forward;
+    const proj = (AVal.force(lt.object.uniforms.tryGet("ProjTrafo")!) as Trafo3d).forward;
     expect(view.M03).toBeCloseTo(1, 6);   // tx
     expect(view.M13).toBeCloseTo(2, 6);   // ty
     expect(view.M23).toBeCloseTo(3, 6);   // tz

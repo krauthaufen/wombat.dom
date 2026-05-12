@@ -56,7 +56,7 @@ const ROCount = (() => {
 })();
 const instCount = (() => {
   const v = params.get("inst");
-  return v !== null ? Math.max(2, parseInt(v, 10) | 0) : 6;
+  return v !== null ? Math.max(2, parseInt(v, 10) | 0) : 2;
 })();
 const forcedFx = (() => {
   const v = params.get("fx");
