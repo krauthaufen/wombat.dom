@@ -49,7 +49,6 @@ export {
 } from "./visit.js";
 
 export { Sg, collectSgChildren, type SgScopeProps } from "./constructors.js";
-export { sgVNode, isSgVNode, extractSgNode, SG_NODE_KEY } from "./sgVNode.js";
 
 export {
   compileScene,
@@ -120,6 +119,7 @@ export {
 import { Sg as _SgForText } from "./constructors.js";
 import { SgText as _SgTextImpl } from "./text.js";
 (_SgForText as unknown as { Text: typeof _SgTextImpl }).Text = _SgTextImpl;
+(_SgTextImpl as { __isSg?: boolean }).__isSg = true;
 
 // Ambient context plumbing. The avals themselves live as static
 // members on `RenderControl` (`RenderControl.viewport`, `.view`,

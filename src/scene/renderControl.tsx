@@ -185,7 +185,7 @@ void _globalSubs; void _globalRaf;
 // Component
 // ---------------------------------------------------------------------------
 
-export function RenderControl(props: RenderControlProps): import("../vnode.js").VNode {
+export function RenderControl(props: RenderControlProps): import("../jsx-runtime.js").JsxResult {
   const scope = useScope();
 
   // Resolve the scene tree at component-call time. The `scene`

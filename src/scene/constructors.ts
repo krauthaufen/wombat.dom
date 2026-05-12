@@ -66,7 +66,7 @@ import {
 } from "./primitives/index.js";
 import { colorAval } from "./primitives/colorBuffer.js";
 import {
-  sgVNode, isSgVNode, extractSgNode, SG_KINDS,
+  SG_KINDS,
 } from "./sgVNode.js";
 
 // ---------------------------------------------------------------------------
@@ -593,20 +593,20 @@ function collectEventHandlers(props: SgScopeProps): EventHandlers | undefined {
   return out;
 }
 
-function SgScope(props: SgScopeProps): VNode {
+function SgScope(props: SgScopeProps): SgNode {
   const childNode = collectSgChildren(props.children);
-  return sgVNode(applyScopeAttrs(childNode, props));
+  return (applyScopeAttrs(childNode, props));
 }
 
-function SgUnordered(props: SgScopeProps): VNode {
+function SgUnordered(props: SgScopeProps): SgNode {
   const inner = collectSgChildren(props.children);
   const unorderedChildren: SgNode =
     inner.kind === "Empty" ? inner : unordered([inner]);
-  return sgVNode(applyScopeAttrs(unorderedChildren, props));
+  return (applyScopeAttrs(unorderedChildren, props));
 }
 
-function SgAdaptive(props: { value: aval<SgNode> }): VNode {
-  return sgVNode(adaptive(props.value));
+function SgAdaptive(props: { value: aval<SgNode> }): SgNode {
+  return (adaptive(props.value));
 }
 
 // Leaf JSX components accept the BoxOptions/QuadOptions shape AND
@@ -620,7 +620,7 @@ function SgAdaptive(props: { value: aval<SgNode> }): VNode {
 type SgBoxProps  = BoxOptions  & { Color?: V4f | aval<V4f>; box?: Box3d | aval<Box3d> } & SgScopeProps;
 type SgQuadProps = QuadOptions & { Color?: V4f | aval<V4f> } & SgScopeProps;
 
-function SgBox(props: SgBoxProps = {}): VNode {
+function SgBox(props: SgBoxProps = {}): SgNode {
   const { size, color: colorOpt, Color, box: boxArg, ...scope } = props;
   const colorFinal = (Color ?? colorOpt) as V4f | aval<V4f> | undefined;
   // If a Box3d is passed, scope-translate+scale a unit `[0,1]³` cube
@@ -642,7 +642,7 @@ function SgBox(props: SgBoxProps = {}): VNode {
     const halfSize = new V3d(0.5, 0.5, 0.5);
     const leaf = boxLeaf({ size: halfSize, ...(colorFinal !== undefined ? { color: colorFinal } : {}) });
     const recentre = AVal.constant(Trafo3d.translation(new V3d(0.5, 0.5, 0.5)));
-    return sgVNode(applyScopeAttrs(leaf, {
+    return (applyScopeAttrs(leaf, {
       ...(scope as SgScopeProps),
       Trafo: [recentre, trafoAval],
       Intersectable: inter,
@@ -659,10 +659,10 @@ function SgBox(props: SgBoxProps = {}): VNode {
     const b = Box3d.fromMinMax(new V3d(-s.x, -s.y, -s.z), new V3d(s.x, s.y, s.z));
     augmentedScope = { ...augmentedScope, Intersectable: Intersectable.box(b) };
   }
-  return sgVNode(applyScopeAttrs(leaf, augmentedScope));
+  return (applyScopeAttrs(leaf, augmentedScope));
 }
 
-function SgQuad(props: SgQuadProps = {}): VNode {
+function SgQuad(props: SgQuadProps = {}): SgNode {
   const { width, height, color: colorOpt, Color, ...scope } = props;
   const colorFinal = (Color ?? colorOpt) as V4f | aval<V4f> | undefined;
   const leaf = quadLeaf({
@@ -670,7 +670,7 @@ function SgQuad(props: SgQuadProps = {}): VNode {
     ...(height !== undefined ? { height } : {}),
     ...(colorFinal !== undefined ? { color: colorFinal } : {}),
   });
-  return sgVNode(applyScopeAttrs(leaf, scope as SgScopeProps));
+  return (applyScopeAttrs(leaf, scope as SgScopeProps));
 }
 
 // ---------------------------------------------------------------------------
@@ -711,38 +711,38 @@ const octaIntersectable = (): IIntersectable => {
   );
 };
 
-function SgTetrahedron(props: PrimitiveColorProps & SgScopeProps = {}): VNode {
+function SgTetrahedron(props: PrimitiveColorProps & SgScopeProps = {}): SgNode {
   const { Color, ...scope } = props;
   const leaf = leafFromHandle(getTetrahedronGeometry(), Color);
   let scopeProps = scope as SgScopeProps;
   if (scopeProps.Intersectable === undefined) scopeProps = { ...scopeProps, Intersectable: tetraIntersectable() };
-  return sgVNode(applyScopeAttrs(leaf, scopeProps));
+  return (applyScopeAttrs(leaf, scopeProps));
 }
-function SgWireTetrahedron(props: PrimitiveColorProps & SgScopeProps = {}): VNode {
+function SgWireTetrahedron(props: PrimitiveColorProps & SgScopeProps = {}): SgNode {
   const { Color, ...scope } = props;
   const leaf = leafFromHandle(getWireTetrahedronGeometry(), Color);
   let scopeProps = scope as SgScopeProps;
   if (scopeProps.Intersectable === undefined) scopeProps = { ...scopeProps, Intersectable: tetraIntersectable() };
-  return sgVNode(applyScopeAttrs(modeWrap(leaf, "line-list"), scopeProps));
+  return (applyScopeAttrs(modeWrap(leaf, "line-list"), scopeProps));
 }
-function SgOctahedron(props: PrimitiveColorProps & SgScopeProps = {}): VNode {
+function SgOctahedron(props: PrimitiveColorProps & SgScopeProps = {}): SgNode {
   const { Color, ...scope } = props;
   const leaf = leafFromHandle(getOctahedronGeometry(), Color);
   let scopeProps = scope as SgScopeProps;
   if (scopeProps.Intersectable === undefined) scopeProps = { ...scopeProps, Intersectable: octaIntersectable() };
-  return sgVNode(applyScopeAttrs(leaf, scopeProps));
+  return (applyScopeAttrs(leaf, scopeProps));
 }
-function SgWireOctahedron(props: PrimitiveColorProps & SgScopeProps = {}): VNode {
+function SgWireOctahedron(props: PrimitiveColorProps & SgScopeProps = {}): SgNode {
   const { Color, ...scope } = props;
   const leaf = leafFromHandle(getWireOctahedronGeometry(), Color);
   let scopeProps = scope as SgScopeProps;
   if (scopeProps.Intersectable === undefined) scopeProps = { ...scopeProps, Intersectable: octaIntersectable() };
-  return sgVNode(applyScopeAttrs(modeWrap(leaf, "line-list"), scopeProps));
+  return (applyScopeAttrs(modeWrap(leaf, "line-list"), scopeProps));
 }
 
 // ---- Wire Box ----
 
-function SgWireBox(props: { size?: V3d; box?: Box3d | aval<Box3d> } & PrimitiveColorProps & SgScopeProps = {}): VNode {
+function SgWireBox(props: { size?: V3d; box?: Box3d | aval<Box3d> } & PrimitiveColorProps & SgScopeProps = {}): SgNode {
   const { Color, size, box: boxArg, ...scope } = props;
   const handle = getWireBoxGeometry();
   // The shared wire-box geometry spans `[0,1]³`. Scale via Trafo to
@@ -774,7 +774,7 @@ function SgWireBox(props: { size?: V3d; box?: Box3d | aval<Box3d> } & PrimitiveC
   const leaf = leafFromHandle(handle, Color);
   let n: SgNode = modeWrap(leaf, "line-list");
   if (preTrafo !== undefined) n = trafo(preTrafo, n);
-  return sgVNode(applyScopeAttrs(n, scopeProps));
+  return (applyScopeAttrs(n, scopeProps));
 }
 
 // ---- Sphere ----
@@ -786,7 +786,7 @@ interface SphereSizeProps {
   tessellation?: number;
 }
 
-function SgSphere(props: SphereSizeProps & PrimitiveColorProps & SgScopeProps = {}): VNode {
+function SgSphere(props: SphereSizeProps & PrimitiveColorProps & SgScopeProps = {}): SgNode {
   const { Color, radius, center, sphere, tessellation, ...scope } = props;
   const tess = tessellation ?? 32;
   const handle = getSphereGeometry(tess);
@@ -817,10 +817,10 @@ function SgSphere(props: SphereSizeProps & PrimitiveColorProps & SgScopeProps = 
 
   let n: SgNode = leaf;
   if (preTrafo !== undefined) n = trafo(preTrafo, n);
-  return sgVNode(applyScopeAttrs(n, scopeProps));
+  return (applyScopeAttrs(n, scopeProps));
 }
 
-function SgWireSphere(props: SphereSizeProps & PrimitiveColorProps & SgScopeProps = {}): VNode {
+function SgWireSphere(props: SphereSizeProps & PrimitiveColorProps & SgScopeProps = {}): SgNode {
   const { Color, radius, center, sphere, tessellation, ...scope } = props;
   const tess = tessellation ?? 32;
   const handle = getWireSphereGeometry(tess);
@@ -847,7 +847,7 @@ function SgWireSphere(props: SphereSizeProps & PrimitiveColorProps & SgScopeProp
   }
   let n: SgNode = modeWrap(leaf, "line-list");
   if (preTrafo !== undefined) n = trafo(preTrafo, n);
-  return sgVNode(applyScopeAttrs(n, scopeProps));
+  return (applyScopeAttrs(n, scopeProps));
 }
 
 // ---- Cylinder / Cone ----
@@ -868,37 +868,37 @@ const unitCylinderIntersectable = (): IIntersectable =>
 const unitConeIntersectable = (): IIntersectable =>
   Intersectable.cone(new Cone3d(new V3d(0, 0, 0), new V3d(0, 0, 1), Math.atan2(1, 1)));
 
-function SgCylinder(props: TessProps & PrimitiveColorProps & SgScopeProps = {}): VNode {
+function SgCylinder(props: TessProps & PrimitiveColorProps & SgScopeProps = {}): SgNode {
   const { Color, tessellation, ...scope } = props;
   const handle = getCylinderGeometry(tessellation ?? 32);
   const leaf = leafFromHandle(handle, Color);
   let scopeProps = scope as SgScopeProps;
   if (scopeProps.Intersectable === undefined) scopeProps = { ...scopeProps, Intersectable: unitCylinderIntersectable() };
-  return sgVNode(applyScopeAttrs(leaf, scopeProps));
+  return (applyScopeAttrs(leaf, scopeProps));
 }
-function SgWireCylinder(props: TessProps & PrimitiveColorProps & SgScopeProps = {}): VNode {
+function SgWireCylinder(props: TessProps & PrimitiveColorProps & SgScopeProps = {}): SgNode {
   const { Color, tessellation, ...scope } = props;
   const handle = getWireCylinderGeometry(tessellation ?? 32);
   const leaf = leafFromHandle(handle, Color);
   let scopeProps = scope as SgScopeProps;
   if (scopeProps.Intersectable === undefined) scopeProps = { ...scopeProps, Intersectable: unitCylinderIntersectable() };
-  return sgVNode(applyScopeAttrs(modeWrap(leaf, "line-list"), scopeProps));
+  return (applyScopeAttrs(modeWrap(leaf, "line-list"), scopeProps));
 }
-function SgCone(props: TessProps & PrimitiveColorProps & SgScopeProps = {}): VNode {
+function SgCone(props: TessProps & PrimitiveColorProps & SgScopeProps = {}): SgNode {
   const { Color, tessellation, ...scope } = props;
   const handle = getConeGeometry(tessellation ?? 32);
   const leaf = leafFromHandle(handle, Color);
   let scopeProps = scope as SgScopeProps;
   if (scopeProps.Intersectable === undefined) scopeProps = { ...scopeProps, Intersectable: unitConeIntersectable() };
-  return sgVNode(applyScopeAttrs(leaf, scopeProps));
+  return (applyScopeAttrs(leaf, scopeProps));
 }
-function SgWireCone(props: TessProps & PrimitiveColorProps & SgScopeProps = {}): VNode {
+function SgWireCone(props: TessProps & PrimitiveColorProps & SgScopeProps = {}): SgNode {
   const { Color, tessellation, ...scope } = props;
   const handle = getWireConeGeometry(tessellation ?? 32);
   const leaf = leafFromHandle(handle, Color);
   let scopeProps = scope as SgScopeProps;
   if (scopeProps.Intersectable === undefined) scopeProps = { ...scopeProps, Intersectable: unitConeIntersectable() };
-  return sgVNode(applyScopeAttrs(modeWrap(leaf, "line-list"), scopeProps));
+  return (applyScopeAttrs(modeWrap(leaf, "line-list"), scopeProps));
 }
 
 // ---- Fullscreen / Screen quads ----
@@ -922,7 +922,7 @@ interface SgLeafJsxProps {
  *
  * `props.children` is ignored (a leaf has no scene-graph children).
  */
-function SgLeafComponent(props: SgLeafJsxProps & SgScopeProps): VNode {
+function SgLeafComponent(props: SgLeafJsxProps & SgScopeProps): SgNode {
   const { vertexAttributes, instanceAttributes, indices, drawCall, ...scope } = props;
   const node = leaf({
     vertexAttributes,
@@ -930,18 +930,18 @@ function SgLeafComponent(props: SgLeafJsxProps & SgScopeProps): VNode {
     ...(indices !== undefined ? { indices } : {}),
     drawCall,
   });
-  return sgVNode(applyScopeAttrs(node, scope as SgScopeProps));
+  return (applyScopeAttrs(node, scope as SgScopeProps));
 }
 
-function SgFullscreenQuad(props: PrimitiveColorProps & SgScopeProps = {}): VNode {
+function SgFullscreenQuad(props: PrimitiveColorProps & SgScopeProps = {}): SgNode {
   const { Color, ...scope } = props;
   const leaf = leafFromHandle(getFullscreenQuadGeometry(), Color);
-  return sgVNode(applyScopeAttrs(leaf, scope as SgScopeProps));
+  return (applyScopeAttrs(leaf, scope as SgScopeProps));
 }
-function SgScreenQuad(props: { z?: number } & PrimitiveColorProps & SgScopeProps = {}): VNode {
+function SgScreenQuad(props: { z?: number } & PrimitiveColorProps & SgScopeProps = {}): SgNode {
   const { Color, z, ...scope } = props;
   const leaf = leafFromHandle(getScreenQuadGeometry(z ?? 0), Color);
-  return sgVNode(applyScopeAttrs(leaf, scope as SgScopeProps));
+  return (applyScopeAttrs(leaf, scope as SgScopeProps));
 }
 
 function modeWrap(leaf: SgLeaf, m: "line-list" | "triangle-list"): SgNode {
@@ -984,7 +984,6 @@ function collectImpl(value: unknown): SgNode[] {
     return out;
   }
   if (isVNode(value)) {
-    if (isSgVNode(value)) return [extractSgNode(value)];
     const v: { _tag: string; type?: (p: unknown) => unknown; props: { children?: unknown } } = value as never;
     if (v._tag === "component") return collectImpl(v.type!(v.props));
     if (v._tag === "fragment")  return collectImpl(v.props.children);
@@ -1022,7 +1021,7 @@ function isRawSgNode(value: unknown): value is SgNode {
 
 export interface SgNamespace {
   // JSX call signature
-  (props: SgScopeProps): VNode;
+  (props: SgScopeProps): SgNode;
 
   // Sub-components (JSX)
   Unordered: typeof SgUnordered;
@@ -1186,6 +1185,21 @@ export const Sg: SgNamespace = (() => {
   fn.canFocus          = canFocus;
   fn.instanced         = instanced;
   fn.instancedTrafos   = instancedTrafos;
+  // Flag the JSX function-components so the jsx-runtime calls them
+  // eagerly and returns their `SgNode` directly (no carrier VNode).
+  // `fn` itself backs `<Sg ...>`; the rest back `<Sg.Box/>` etc.
+  // Lowercase imperative builders are never used as JSX types and
+  // stay unflagged.
+  for (const c of [
+    fn,
+    fn.Unordered, fn.Adaptive,
+    fn.Box, fn.Quad, fn.Tetrahedron, fn.WireTetrahedron,
+    fn.Octahedron, fn.WireOctahedron, fn.WireBox,
+    fn.Sphere, fn.WireSphere, fn.Cylinder, fn.WireCylinder,
+    fn.Cone, fn.WireCone, fn.Leaf, fn.FullscreenQuad, fn.ScreenQuad,
+  ]) {
+    (c as { __isSg?: boolean }).__isSg = true;
+  }
   return fn;
 })();
 

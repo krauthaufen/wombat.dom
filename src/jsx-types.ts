@@ -6,15 +6,21 @@
 
 import type { aval, alist, amap } from "@aardworx/wombat.adaptive";
 import type { VNode } from "./vnode.js";
+import type { SgNode } from "./scene/sg.js";
 
 // `aval`/`alist` here are `any`-parameterized intentionally: the JSX
 // position doesn't constrain the element type (the runtime dispatches
 // on the delta shape), and TS treats `alist<T>` invariantly through
 // its trace machinery — so anything narrower (e.g. `alist<VNode>`)
 // would fail to assign to `alist<unknown>`.
+//
+// `SgNode` is included: `<Sg.Box/>` and friends lower straight to an
+// `SgNode`, so a scene subtree IS a valid child of `<Sg ...>` /
+// `<RenderControl>`.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type ChildLike =
   | VNode
+  | SgNode
   | string
   | number
   | bigint
@@ -106,7 +112,12 @@ interface LabelAttrs extends CommonAttrs {
 }
 
 export namespace JSX {
-  export type Element = VNode;
+  // A JSX expression is either a DOM `VNode` (HTML elements / fragments
+  // / user components) or, for the scene constructors, an `SgNode`.
+  // TS uses one `Element` type for *every* JSX expression in scope, so
+  // `<div/>` / `<RenderControl/>` widen to this union too — consumers
+  // (`mount`, `collectSgChildren`) narrow at runtime.
+  export type Element = VNode | SgNode;
   export interface ElementChildrenAttribute {
     children: object;
   }

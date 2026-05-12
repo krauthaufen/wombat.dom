@@ -61,7 +61,7 @@ import type { f32, u32, Storage } from "@aardworx/wombat.shader/types";
 
 import type { VNode } from "../vnode.js";
 import { Sg } from "./constructors.js";
-import { sgVNode } from "./sgVNode.js";
+import type { SgNode } from "./sg.js";
 import type { SgScopeProps } from "./constructors.js";
 import { viewport as ambViewport } from "./ambient.js";
 
@@ -336,7 +336,7 @@ export interface SdfTextArgs {
   scope?: SgScopeProps;
 }
 
-export function buildSdfTextScene(args: SdfTextArgs): VNode {
+export function buildSdfTextScene(args: SdfTextArgs): SgNode {
   const { font, text, align, kerning, cache, color, aaWidth, scope } = args;
   const layout = layoutText(font, text, { kerning });
   const emScale = 1 / (font.unitsPerEm || 1);
@@ -389,7 +389,7 @@ export function buildSdfTextScene(args: SdfTextArgs): VNode {
 
   const colorAval: aval<V4f> = color;
 
-  const leafChildren: VNode[] = [];
+  const leafChildren: SgNode[] = [];
   // Whole SDF index buffer view shared across leaves; per-glyph slice
   // lives in the DrawCall's firstIndex / indexCount.
   const sharedIndexBV: BufferView = {
@@ -410,7 +410,7 @@ export function buildSdfTextScene(args: SdfTextArgs): VNode {
       baseVertex:    rec.baseVertex,
       firstInstance: 0,
     };
-    leafChildren.push(sgVNode(Sg.leaf({
+    leafChildren.push((Sg.leaf({
       vertexAttributes: vertexAttrs,
       instanceAttributes: instanceAttrs,
       indices: sharedIndexBV,

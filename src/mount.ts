@@ -14,6 +14,7 @@ import {
 } from "./vnode.js";
 import { bindAttr } from "./bindings/attr.js";
 import { bindChildren } from "./bindings/children.js";
+import type { JsxResult } from "./jsx-runtime.js";
 
 export interface MountResult {
   scope: Scope;
@@ -32,9 +33,19 @@ export interface MountOptions {
  */
 export function mount(
   root: Node,
-  vnode: VNode,
+  vnode: VNode | JsxResult,
   opts: MountOptions = {},
 ): MountResult {
+  // `vnode: VNode | JsxResult` — the union widens to include scene
+  // `SgNode`s only because `JSX.Element` does (one element type for
+  // every JSX expression). A scene tree isn't mountable on its own;
+  // reject it with a clear message rather than producing garbage.
+  if (!("_tag" in vnode)) {
+    throw new Error(
+      "mount: expected a JSX VNode (HTML), got a scene SgNode -- " +
+      "scene trees must be a child of <RenderControl>, not mounted directly",
+    );
+  }
   const scheduler = opts.scheduler ?? defaultScheduler;
   const scope = new Scope();
   mountInto(root, null, vnode, scope, scheduler);

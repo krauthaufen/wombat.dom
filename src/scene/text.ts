@@ -62,7 +62,7 @@ declare module "@aardworx/wombat.shader/uniforms" {
 
 import type { VNode } from "../vnode.js";
 import { Sg } from "./constructors.js";
-import { sgVNode } from "./sgVNode.js";
+import type { SgNode } from "./sg.js";
 import type { SgScopeProps, SgNamespace } from "./constructors.js";
 import { viewport as ambViewport } from "./ambient.js";
 import { buildSdfTextScene } from "./text-sdf.js";
@@ -324,7 +324,7 @@ export interface SgTextProps {
 /** Build a self-contained `<Sg.Text/>` JSX element. */
 export function SgText(
   props: SgTextProps & SgScopeProps,
-): VNode {
+): SgNode {
   const {
     font, text, align = "left", aa = "none", kerning = true, Color,
     aaWidthPx, wireframe = false,
@@ -420,7 +420,7 @@ export function SgText(
     ? AVal.constant(new V4f(1, 1, 1, 1))
     : (Color instanceof V4f ? AVal.constant(Color) : Color);
 
-  const leafChildren: VNode[] = [];
+  const leafChildren: SgNode[] = [];
   for (const [, { record, offsets }] of groups) {
     if (record.empty) continue;
     const instCount = offsets.length / 2;
@@ -437,7 +437,7 @@ export function SgText(
       firstInstance: 0,
     };
     leafChildren.push(
-      sgVNode(Sg.leaf({
+      (Sg.leaf({
         vertexAttributes: vertexAttrs,
         instanceAttributes: instAttrs,
         indices: indexBV,
