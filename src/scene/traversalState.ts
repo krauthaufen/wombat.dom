@@ -573,11 +573,15 @@ export class TraversalState implements IUniformProvider {
     return this.tryGetAutoUniform(name);
   }
 
+  // Deliberately does NOT enumerate the `<Sg.Uniform>` scope entries: a
+  // scope can hold arbitrarily many uniforms, almost none of which a
+  // given shader reads, and nothing should ever "bind everything `names()`
+  // returns" — the render backend pulls exactly what an effect's program
+  // interface declares, via `tryGet`. So `names()` here is just the
+  // (small, fixed) auto-injected set, for diagnostics. Scope uniforms
+  // remain resolvable on demand through `tryGet`.
   names(): Iterable<string> {
-    const out: string[] = [];
-    for (const [k] of this.uniforms) out.push(k);
-    for (const n of AUTO_UNIFORM_NAMES) out.push(n);
-    return out;
+    return AUTO_UNIFORM_NAMES;
   }
 
   /**
