@@ -647,19 +647,24 @@ function buildRenderObject(
   opts: CompileSceneOptions,
   pickId: number | undefined,
 ): RenderObject {
-  const userUniformMap = mergeUniforms(leaf, state, pickId);
-  const { uniforms: scalarUniforms, textures, samplers } = splitTexturesFromUniforms(userUniformMap);
-  // Compose the uniform provider: user-supplied uniforms (incl. PickId)
-  // first so they shadow the auto-injected defaults, then the lazy
-  // auto-inject — which materialises `ModelViewProjTrafo` / `NormalMatrix`
-  // / the inverses etc. only if some effect's interface actually reads
-  // the name. With one cval/leaf, 1000 leaves used to eagerly build
-  // ~15 derived avals each (each a `compose`/`inverse` + a memo-intern
-  // matrix hash); now a leaf builds only the ~2-4 its shader names.
+  // `<Sg Uniform={…}>` scope entries, split into scalars vs textures/
+  // samplers — memoised on the (shared) scope uniform map, so a whole
+  // subtree under one `<Sg.Uniform>` scope splits it once, not per leaf.
+  const { uniforms: scopeScalars, textures, samplers } = getSplitScopeUniforms(state.uniforms);
+  // The only genuinely per-leaf uniform is `PickId`; everything else
+  // (scope scalars + the auto-injected derived trafos) is resolved by
+  // `state` itself (it's an `IUniformProvider`). So the per-leaf cost is
+  // a single tiny overlay map + a `union` — no merge, no per-leaf
+  // texture split, no per-leaf lazy-provider closure/Map. The overlay
+  // wins on key conflict, matching "user uniform shadows the default".
+  let leafScalars = scopeScalars;
+  if (pickId !== undefined) leafScalars = leafScalars.add("PickId", AVal.constant(pickId));
   const uniforms: IUniformProvider =
     (opts.autoUniforms ?? true)
-      ? UniformProvider.union(UniformProvider.ofMap(scalarUniforms), autoInjectedUniforms(state))
-      : UniformProvider.ofMap(scalarUniforms);
+      ? (leafScalars.count === 0
+          ? state
+          : UniformProvider.union(UniformProvider.ofMap(leafScalars), state))
+      : UniformProvider.ofMap(leafScalars);
   // Use the `PipelineState` the traversal already derived for this
   // subtree (shared across all leaves under the same render-state
   // scopes); only fall back to deriving here when there isn't one
@@ -736,33 +741,6 @@ function mergeLeafGeometry(leaf: SgLeaf, state: TraversalState): SgLeaf {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Auto-injected uniforms — ModelTrafo / ViewTrafo / ProjTrafo / ViewProjTrafo.
-//
-// User-supplied uniforms (state.uniforms) win on key conflict. The
-// runtime's UBO packer ignores keys the shader's program interface
-// doesn't declare, so the over-broad auto-inject costs nothing for
-// shaders that don't reference these names.
-// ---------------------------------------------------------------------------
-
-// Build the user-supplied uniform map for a leaf: the `Sg.uniform({...})`
-// scope entries plus the per-leaf `PickId` (when picking is on). The
-// auto-injected derived trafos are NOT mixed in here — they go through
-// the lazy `autoInjectedUniforms` provider, composed under the user
-// map in `buildRenderObject` (user wins on key conflict).
-function mergeUniforms(
-  _leaf: SgLeaf,
-  state: TraversalState,
-  pickId: number | undefined,
-): HashMap<string, aval<unknown>> {
-  let merged = HashMap.empty<string, aval<unknown>>();
-  for (const [k, v] of state.uniforms) merged = merged.add(k, v);
-  // PickId is per-leaf — never an auto-uniform, never user-overridable
-  // at scope (the pick-chain shader binds it as the leaf's identity).
-  if (pickId !== undefined) merged = merged.add("PickId", AVal.constant(pickId));
-  return merged;
-}
-
 // Default sampler — linear/linear/mip-linear/repeat. Shared across
 // every Sg leaf that doesn't declare its own samplers. Cached so the
 // runtime's value-equality keyed sampler cache collapses to one
@@ -816,80 +794,17 @@ function splitTexturesFromUniforms(
   return { uniforms: outU, textures: outT, samplers: outS };
 }
 
-// The names the auto-inject provider can produce. Listed eagerly (so
-// `provider.names()` works for diagnostics) but NOT materialised — each
-// value's aval chain is built on first `tryGet`, so a leaf only ever
-// constructs the ~2-4 derived trafos its shader actually references.
-const AUTO_UNIFORM_NAMES: readonly string[] = [
-  "ModelTrafo", "ViewTrafo", "ProjTrafo",
-  "ModelViewTrafo", "ViewProjTrafo", "ModelViewProjTrafo",
-  "ModelTrafoInv", "ViewTrafoInv", "ProjTrafoInv",
-  "ModelViewTrafoInv", "ViewProjTrafoInv", "ModelViewProjTrafoInv",
-  "NormalMatrix", "CameraLocation", "LightLocation", "ViewportSize",
-];
-
-function autoInjectedUniforms(state: TraversalState): IUniformProvider {
-  // Mirrors Aardvark.Rendering's `tryGetDerivedUniform` table — the
-  // standard transforms + inverses + composites + the normal matrix +
-  // camera/light location + viewport. Lazy: only the ones a shader
-  // declares are ever built (the rest are pruned by DCE in the shader
-  // *and* never constructed here).
-  //
-  // Composition convention follows Aardvark's `Trafo3d` `<*>`:
-  //   `a <*> b` = "apply a first, then b" — forward = `b.fw * a.fw`
-  //   (column-vector math); `Trafo3d.mul` matches this.
-  const model = state.model;
-  const view  = state.view;
-  const proj  = state.proj;
-  // `AVal.{zip,map}` namespace form so the adaptive-memo plugin
-  // recognises the combinators — two leaves sharing `view`/`proj`
-  // collapse to one `viewProj` aval; per-leaf `model` gets its own
-  // `modelView` (but only if read).
-  const compose = (a: aval<Trafo3d>, b: aval<Trafo3d>): aval<Trafo3d> =>
-    AVal.zip(a, b).map((aT, bT) => aT.mul(bT));
-  const inv = (t: aval<Trafo3d>): aval<Trafo3d> =>
-    AVal.map(t, (x: Trafo3d) => x.inverse());
-  const modelView     = (): aval<Trafo3d> => compose(model, view);
-  const viewProj      = (): aval<Trafo3d> => compose(view, proj);
-  const modelViewProj = (): aval<Trafo3d> => compose(model, viewProj());
-
-  return UniformProvider.lazy(AUTO_UNIFORM_NAMES, (name): aval<unknown> | undefined => {
-    switch (name) {
-      // Roots — zero cost (just the traversal-state avals).
-      case "ModelTrafo": return model;
-      case "ViewTrafo":  return view;
-      case "ProjTrafo":  return proj;
-      // Composites.
-      case "ModelViewTrafo":     return modelView();
-      case "ViewProjTrafo":      return viewProj();
-      case "ModelViewProjTrafo": return modelViewProj();
-      // Inverses.
-      case "ModelTrafoInv":         return inv(model);
-      case "ViewTrafoInv":          return inv(view);
-      case "ProjTrafoInv":          return inv(proj);
-      case "ModelViewTrafoInv":     return inv(modelView());
-      case "ViewProjTrafoInv":      return inv(viewProj());
-      case "ModelViewProjTrafoInv": return inv(modelViewProj());
-      // NormalMatrix: ModelTrafo.Backward.Transposed (inverse-transpose
-      // — non-uniform-scale-correct normals). Full M44; shaders pad V3f
-      // normals to V4f(n.xyz, 0) so the translation column is ignored.
-      case "NormalMatrix":
-        return AVal.map(model, (t: Trafo3d) => {
-          const iT = t.backward.transpose();
-          return Trafo3d.fromMatrices(iT, iT.transpose());
-        });
-      // CameraLocation = ViewTrafoInv · origin (= view.backward's
-      // translation column). LightLocation defaults to it (headlight).
-      case "CameraLocation":
-      case "LightLocation":
-        return AVal.map(view, (v: Trafo3d) => {
-          const o = v.backward.transformPos(V3d.zero);
-          return new V3f(o.x, o.y, o.z);
-        });
-      case "ViewportSize": return state.viewport;
-      default: return undefined;
-    }
-  });
+// Memoise `splitTexturesFromUniforms` on the *scope uniform map*: every
+// leaf under one `<Sg.Uniform>` scope shares that HashMap object, so the
+// classification (which forces each entry) runs once per scope, not once
+// per leaf. (For a scene with no `<Sg.Uniform>` scope the map is the
+// shared `HashMap.empty()` carried by `TraversalState.empty` — one entry.)
+type SplitUniforms = ReturnType<typeof splitTexturesFromUniforms>;
+const _splitScopeUniformsCache = new WeakMap<HashMap<string, aval<unknown>>, SplitUniforms>();
+function getSplitScopeUniforms(scopeUniforms: HashMap<string, aval<unknown>>): SplitUniforms {
+  let r = _splitScopeUniformsCache.get(scopeUniforms);
+  if (r === undefined) { r = splitTexturesFromUniforms(scopeUniforms); _splitScopeUniformsCache.set(scopeUniforms, r); }
+  return r;
 }
 
 // ---------------------------------------------------------------------------

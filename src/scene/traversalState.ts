@@ -53,9 +53,9 @@ import {
   HashMap,
   type aval,
 } from "@aardworx/wombat.adaptive";
-import { Trafo3d, type IIntersectable } from "@aardworx/wombat.base";
+import { Trafo3d, V3d, V3f, type IIntersectable } from "@aardworx/wombat.base";
 import type { Effect } from "@aardworx/wombat.shader";
-import type { BlendState, BufferView, PipelineState } from "@aardworx/wombat.rendering/core";
+import type { BlendState, BufferView, PipelineState, IUniformProvider } from "@aardworx/wombat.rendering/core";
 import type {
   BlendConstantValue,
   ColorMaskValue,
@@ -124,10 +124,36 @@ export function composeModel(parent: aval<Trafo3d>, child: aval<Trafo3d>): aval<
 // ---------------------------------------------------------------------------
 
 /**
+ * Names the auto-injected uniform resolver can produce — the standard
+ * transforms + their composites + inverses + the normal matrix +
+ * camera/light location + viewport. Listed so `names()` works for
+ * diagnostics; each value's aval chain is built lazily on `tryGet`, so
+ * a leaf only ever materialises the ~2-4 a shader actually references.
+ * (Mirrors Aardvark.Rendering's `tryGetDerivedUniform` table.)
+ */
+export const AUTO_UNIFORM_NAMES: readonly string[] = [
+  "ModelTrafo", "ViewTrafo", "ProjTrafo",
+  "ModelViewTrafo", "ViewProjTrafo", "ModelViewProjTrafo",
+  "ModelTrafoInv", "ViewTrafoInv", "ProjTrafoInv",
+  "ModelViewTrafoInv", "ViewProjTrafoInv", "ModelViewProjTrafoInv",
+  "NormalMatrix", "CameraLocation", "LightLocation", "ViewportSize",
+];
+
+/**
  * Per-scope state accumulated while walking the scene graph. All
  * fields are readonly; mutators return new instances. Avals are
  * persistent values themselves — composing into the state never
  * disturbs unrelated graph dependencies.
+ *
+ * `TraversalState` is itself an {@link IUniformProvider}: `tryGet`
+ * resolves `<Sg Uniform={…}>` scope entries and the auto-injected
+ * derived trafos (computed on the fly from `model`/`view`/`proj` —
+ * `compose(view, proj)` etc. are memoised by the adaptive plugin on
+ * (a,b) identity, so recomputing per call is idempotent and no
+ * per-leaf cache is needed). `buildRenderObject` overlays only the
+ * leaf-local `PickId` on top — so the per-leaf uniform plumbing is a
+ * single small overlay map instead of a merge + texture-split + lazy-
+ * provider closure + Map allocated for every leaf.
  *
  * @remarks `view`, `proj`, and `viewport` are populated by the
  * `<Sg.RenderControl>` shell that owns the canvas (M4) and by an
@@ -136,7 +162,7 @@ export function composeModel(parent: aval<Trafo3d>, child: aval<Trafo3d>): aval<
  * accidentally evaluated outside a render control still gets a
  * sane (if useless) state to consume.
  */
-export class TraversalState {
+export class TraversalState implements IUniformProvider {
   /** Local-to-world model trafo. Starts at identity. */
   readonly model: aval<Trafo3d>;
   /** World-to-view trafo (camera). Starts at identity. */
@@ -528,6 +554,82 @@ export class TraversalState {
    *  descendants until the next render-state scope re-derives it. */
   withPipelineState(ps: PipelineState | undefined): TraversalState {
     return this.with({ pipelineState: ps });
+  }
+
+  // -------------------------------------------------------------------------
+  // IUniformProvider — `<Sg Uniform={…}>` scope entries + auto-injected
+  // derived trafos. The render backend `tryGet`s only names declared by an
+  // effect's program interface, so the over-broad auto set costs nothing
+  // for shaders that don't reference it. `<Sg.Uniform>` entries take
+  // precedence (user-wins). Texture-valued `<Sg.Uniform>` entries also
+  // appear here as raw avals, but the backend never `tryGet`s them via the
+  // uniform path (textures/samplers are separate interface bindings, split
+  // out into `RenderObject.textures`/`samplers` by `splitTexturesFromUniforms`).
+  // -------------------------------------------------------------------------
+
+  tryGet(name: string): aval<unknown> | undefined {
+    const u = this.uniforms.tryFind(name);
+    if (u !== undefined) return u;
+    return this.tryGetAutoUniform(name);
+  }
+
+  names(): Iterable<string> {
+    const out: string[] = [];
+    for (const [k] of this.uniforms) out.push(k);
+    for (const n of AUTO_UNIFORM_NAMES) out.push(n);
+    return out;
+  }
+
+  /**
+   * Resolve an auto-injected derived uniform. Composition follows
+   * Aardvark's `Trafo3d` `<*>`: `a <*> b` = "apply a first, then b"
+   * (forward = `b.fw · a.fw`, column-vector math; `Trafo3d.mul` matches).
+   * `AVal.{zip,map}` namespace form so the adaptive-memo plugin
+   * recognises the combinators — leaves sharing `view`/`proj` collapse
+   * to one `viewProj`; the per-leaf `model` gets its own `modelView`,
+   * but only if a shader reads it.
+   */
+  private tryGetAutoUniform(name: string): aval<unknown> | undefined {
+    const model = this.model, view = this.view, proj = this.proj;
+    const compose = (a: aval<Trafo3d>, b: aval<Trafo3d>): aval<Trafo3d> =>
+      AVal.zip(a, b).map((aT, bT) => aT.mul(bT));
+    const inv = (t: aval<Trafo3d>): aval<Trafo3d> =>
+      AVal.map(t, (x: Trafo3d) => x.inverse());
+    const modelView     = (): aval<Trafo3d> => compose(model, view);
+    const viewProj      = (): aval<Trafo3d> => compose(view, proj);
+    const modelViewProj = (): aval<Trafo3d> => compose(model, viewProj());
+    switch (name) {
+      case "ModelTrafo": return model;
+      case "ViewTrafo":  return view;
+      case "ProjTrafo":  return proj;
+      case "ModelViewTrafo":     return modelView();
+      case "ViewProjTrafo":      return viewProj();
+      case "ModelViewProjTrafo": return modelViewProj();
+      case "ModelTrafoInv":         return inv(model);
+      case "ViewTrafoInv":          return inv(view);
+      case "ProjTrafoInv":          return inv(proj);
+      case "ModelViewTrafoInv":     return inv(modelView());
+      case "ViewProjTrafoInv":      return inv(viewProj());
+      case "ModelViewProjTrafoInv": return inv(modelViewProj());
+      // NormalMatrix = ModelTrafo.Backward.Transposed (inverse-transpose;
+      // non-uniform-scale-correct normals). Full M44; shaders pad V3f
+      // normals to V4f(n, 0) so the translation column is ignored.
+      case "NormalMatrix":
+        return AVal.map(model, (t: Trafo3d) => {
+          const iT = t.backward.transpose();
+          return Trafo3d.fromMatrices(iT, iT.transpose());
+        });
+      // CameraLocation = ViewTrafoInv · origin (view.backward's
+      // translation). LightLocation defaults to it (headlight).
+      case "CameraLocation":
+      case "LightLocation":
+        return AVal.map(view, (v: Trafo3d) => {
+          const o = v.backward.transformPos(V3d.zero);
+          return new V3f(o.x, o.y, o.z);
+        });
+      case "ViewportSize": return this.viewport;
+      default: return undefined;
+    }
   }
 }
 
