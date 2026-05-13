@@ -237,12 +237,30 @@ function liftAval<T>(v: T | aval<T>): aval<T> {
   return isAValRuntime(v) ? (v as aval<T>) : AVal.constant(v as T);
 }
 
-function depthTest(mode: DepthCompare | aval<DepthCompare>): (child: SgNode) => SgNode {
-  const m = liftAval(mode);
+function isDerivedModeRuleAny(v: unknown): boolean {
+  return typeof v === "object" && v !== null
+      && (v as { __derivedModeRule?: unknown }).__derivedModeRule === true;
+}
+function depthTest(
+  mode:
+    | DepthCompare
+    | aval<DepthCompare>
+    | import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"depthCompare">,
+): (child: SgNode) => SgNode {
+  const m = isDerivedModeRuleAny(mode)
+    ? mode as import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"depthCompare">
+    : liftAval(mode as DepthCompare | aval<DepthCompare>);
   return (child: SgNode): SgNode => ({ kind: "DepthTest", mode: m, child });
 }
-function depthMask(write: boolean | aval<boolean>): (child: SgNode) => SgNode {
-  const w = liftAval(write);
+function depthMask(
+  write:
+    | boolean
+    | aval<boolean>
+    | import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"depthWrite">,
+): (child: SgNode) => SgNode {
+  const w = isDerivedModeRuleAny(write)
+    ? write as import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"depthWrite">
+    : liftAval(write as boolean | aval<boolean>);
   return (child: SgNode): SgNode => ({ kind: "DepthMask", write: w, child });
 }
 function depthBias(bias: DepthBiasValue | aval<DepthBiasValue>): (child: SgNode) => SgNode {
@@ -269,8 +287,15 @@ function cullMode(
     : liftAval(mode as CullValue | aval<CullValue>);
   return (child: SgNode): SgNode => ({ kind: "CullMode", mode: m, child });
 }
-function frontFace(mode: FrontFaceValue | aval<FrontFaceValue>): (child: SgNode) => SgNode {
-  const m = liftAval(mode);
+function frontFace(
+  mode:
+    | FrontFaceValue
+    | aval<FrontFaceValue>
+    | import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"frontFace">,
+): (child: SgNode) => SgNode {
+  const m = isDerivedModeRuleAny(mode)
+    ? mode as import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"frontFace">
+    : liftAval(mode as FrontFaceValue | aval<FrontFaceValue>);
   return (child: SgNode): SgNode => ({ kind: "FrontFace", mode: m, child });
 }
 function fillMode(mode: FillModeValue | aval<FillModeValue>): (child: SgNode) => SgNode {
@@ -362,8 +387,15 @@ function instancedTrafos(
 function index(idx: BufferView | undefined): (child: SgNode) => SgNode {
   return (child: SgNode): SgNode => ({ kind: "Index", index: idx, child });
 }
-function mode(m: ModeValue | aval<ModeValue>): (child: SgNode) => SgNode {
-  const v = liftAval(m);
+function mode(
+  m:
+    | ModeValue
+    | aval<ModeValue>
+    | import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"topology">,
+): (child: SgNode) => SgNode {
+  const v = isDerivedModeRuleAny(m)
+    ? m as import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"topology">
+    : liftAval(m as ModeValue | aval<ModeValue>);
   return (child: SgNode): SgNode => ({ kind: "Mode", mode: v, child });
 }
 
@@ -444,15 +476,24 @@ export interface SgScopeProps {
   Active?: aval<boolean>;
 
   // Phase 1 — render-state scopes (override semantics)
-  DepthTest?: DepthCompare | aval<DepthCompare>;
-  DepthMask?: boolean | aval<boolean>;
+  DepthTest?:
+    | DepthCompare
+    | aval<DepthCompare>
+    | import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"depthCompare">;
+  DepthMask?:
+    | boolean
+    | aval<boolean>
+    | import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"depthWrite">;
   DepthBias?: DepthBiasValue | aval<DepthBiasValue>;
   DepthClamp?: boolean | aval<boolean>;
   CullMode?:
     | CullValue
     | aval<CullValue>
     | import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"cull">;
-  FrontFace?: FrontFaceValue | aval<FrontFaceValue>;
+  FrontFace?:
+    | FrontFaceValue
+    | aval<FrontFaceValue>
+    | import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"frontFace">;
   FillMode?: FillModeValue | aval<FillModeValue>;
   BlendConstant?: BlendConstantValue | aval<BlendConstantValue>;
   ColorMask?:
@@ -466,7 +507,10 @@ export interface SgScopeProps {
   VertexAttributes?: HashMap<string, BufferView>;
   InstanceAttributes?: HashMap<string, BufferView>;
   Index?: BufferView | undefined | BufferView | undefined;
-  Mode?: ModeValue | aval<ModeValue>;
+  Mode?:
+    | ModeValue
+    | aval<ModeValue>
+    | import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"topology">;
 
   // Phase 3 — misc scopes
   NoEvents?: boolean | aval<boolean>;

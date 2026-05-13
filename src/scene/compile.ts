@@ -695,11 +695,24 @@ function buildRenderObject(
     ...(leaf.storageBuffers !== undefined ? { storageBuffers: leaf.storageBuffers } : {}),
     ...(leaf.indices !== undefined ? { indices: leaf.indices } : {}),
     drawCall: leaf.drawCall,
-    // Route any derived-mode rule the traversal accumulated onto
-    // the RO so the heap path picks it up. v1 supports cull; other
-    // axes (frontFace / blend / etc.) can follow the same pattern.
-    ...(state.cullModeRule !== undefined
-      ? { modeRules: { cull: state.cullModeRule } }
+    // Route any derived-mode rule the traversal accumulated onto the
+    // RO so the heap path picks it up. The heap runtime evaluates the
+    // rule's CPU closure (or runs the GPU kernel if the rule carries
+    // a `gpu` spec) per RO each frame the rule's inputs are dirty.
+    ...((state.cullModeRule !== undefined
+      || state.frontFaceRule !== undefined
+      || state.modeRule !== undefined
+      || state.depthTestRule !== undefined
+      || state.depthMaskRule !== undefined)
+      ? {
+          modeRules: {
+            ...(state.cullModeRule  !== undefined ? { cull:          state.cullModeRule  } : {}),
+            ...(state.frontFaceRule !== undefined ? { frontFace:     state.frontFaceRule } : {}),
+            ...(state.modeRule      !== undefined ? { topology:      state.modeRule      } : {}),
+            ...(state.depthTestRule !== undefined ? { depthCompare:  state.depthTestRule } : {}),
+            ...(state.depthMaskRule !== undefined ? { depthWrite:    state.depthMaskRule } : {}),
+          },
+        }
       : {}),
   };
   return obj;

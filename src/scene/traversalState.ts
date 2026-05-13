@@ -232,8 +232,14 @@ export class TraversalState implements IUniformProvider {
    * `<Sg CullMode={cval}>` clears it.
    */
   readonly cullModeRule: import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"cull"> | undefined;
+  /** Optional derived-mode rule for depthCompare. */
+  readonly depthTestRule: import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"depthCompare"> | undefined;
+  /** Optional derived-mode rule for depthWrite. */
+  readonly depthMaskRule: import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"depthWrite"> | undefined;
   /** Front-face winding (override). Defaults to `"ccw"`. */
   readonly frontFace: aval<FrontFaceValue>;
+  /** Optional derived-mode rule for frontFace. */
+  readonly frontFaceRule: import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"frontFace"> | undefined;
   /** Fill mode (override). Defaults to `"fill"`. */
   readonly fillMode: aval<FillModeValue>;
   /** Per-pass blend constant, or `undefined` if unset. */
@@ -251,6 +257,8 @@ export class TraversalState implements IUniformProvider {
   readonly instanceAttributes: HashMap<string, BufferView>;
   readonly index: BufferView | undefined;
   readonly mode: aval<ModeValue>;
+  /** Optional derived-mode rule for topology. */
+  readonly modeRule: import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"topology"> | undefined;
 
   // ---------------- Phase 3 — misc scopes ------------------------------
 
@@ -319,7 +327,10 @@ export class TraversalState implements IUniformProvider {
     this.depthClamp = spec.depthClamp;
     this.cullMode = spec.cullMode;
     this.cullModeRule = spec.cullModeRule;
+    this.depthTestRule = spec.depthTestRule;
+    this.depthMaskRule = spec.depthMaskRule;
     this.frontFace = spec.frontFace;
+    this.frontFaceRule = spec.frontFaceRule;
     this.fillMode = spec.fillMode;
     this.blendConstant = spec.blendConstant;
     this.colorMask = spec.colorMask;
@@ -329,6 +340,7 @@ export class TraversalState implements IUniformProvider {
     this.instanceAttributes = spec.instanceAttributes;
     this.index = spec.index;
     this.mode = spec.mode;
+    this.modeRule = spec.modeRule;
     this.noEvents = spec.noEvents;
     this.forcePixelPicking = spec.forcePixelPicking;
     this.canFocus = spec.canFocus;
@@ -359,7 +371,10 @@ export class TraversalState implements IUniformProvider {
     depthClamp: AVal.constant(false),
     cullMode: AVal.constant<CullValue>("none"),
     cullModeRule: undefined,
+    depthTestRule: undefined,
+    depthMaskRule: undefined,
     frontFace: AVal.constant<FrontFaceValue>("ccw"),
+    frontFaceRule: undefined,
     fillMode: AVal.constant<FillModeValue>("fill"),
     blendConstant: undefined,
     colorMask: AVal.constant(HashMap.empty<string, ColorMaskValue>()),
@@ -369,6 +384,7 @@ export class TraversalState implements IUniformProvider {
     instanceAttributes: HashMap.empty<string, BufferView>(),
     index: undefined,
     mode: AVal.constant<ModeValue>("triangle-list"),
+    modeRule: undefined,
     noEvents: AVal.constant(false),
     forcePixelPicking: AVal.constant(false),
     canFocus: AVal.constant(false),
@@ -463,8 +479,40 @@ export class TraversalState implements IUniformProvider {
   // non-render-state pushers (`pushTrafo`, `pushShader`, …) leave it
   // intact so a whole subtree without a render-state scope shares one.
 
-  pushDepthTest(mode: aval<DepthCompare>): TraversalState { return this.with({ depthTest: mode, pipelineState: undefined }); }
-  pushDepthMask(write: aval<boolean>): TraversalState { return this.with({ depthMask: write, pipelineState: undefined }); }
+  pushDepthTest(
+    mode: aval<DepthCompare> | import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"depthCompare">,
+  ): TraversalState {
+    const isRule = typeof mode === "object" && mode !== null
+                && (mode as { __derivedModeRule?: unknown }).__derivedModeRule === true;
+    if (isRule) {
+      return this.with({
+        depthTestRule: mode as import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"depthCompare">,
+        pipelineState: undefined,
+      });
+    }
+    return this.with({
+      depthTest: mode as aval<DepthCompare>,
+      depthTestRule: undefined,
+      pipelineState: undefined,
+    });
+  }
+  pushDepthMask(
+    write: aval<boolean> | import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"depthWrite">,
+  ): TraversalState {
+    const isRule = typeof write === "object" && write !== null
+                && (write as { __derivedModeRule?: unknown }).__derivedModeRule === true;
+    if (isRule) {
+      return this.with({
+        depthMaskRule: write as import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"depthWrite">,
+        pipelineState: undefined,
+      });
+    }
+    return this.with({
+      depthMask: write as aval<boolean>,
+      depthMaskRule: undefined,
+      pipelineState: undefined,
+    });
+  }
   pushDepthBias(bias: aval<DepthBiasValue>): TraversalState { return this.with({ depthBias: bias, pipelineState: undefined }); }
   pushDepthClamp(clamp: aval<boolean>): TraversalState { return this.with({ depthClamp: clamp, pipelineState: undefined }); }
   pushCullMode(
@@ -502,7 +550,23 @@ export class TraversalState implements IUniformProvider {
       pipelineState: undefined,
     });
   }
-  pushFrontFace(mode: aval<FrontFaceValue>): TraversalState { return this.with({ frontFace: mode, pipelineState: undefined }); }
+  pushFrontFace(
+    mode: aval<FrontFaceValue> | import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"frontFace">,
+  ): TraversalState {
+    const isRule = typeof mode === "object" && mode !== null
+                && (mode as { __derivedModeRule?: unknown }).__derivedModeRule === true;
+    if (isRule) {
+      return this.with({
+        frontFaceRule: mode as import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"frontFace">,
+        pipelineState: undefined,
+      });
+    }
+    return this.with({
+      frontFace: mode as aval<FrontFaceValue>,
+      frontFaceRule: undefined,
+      pipelineState: undefined,
+    });
+  }
   pushFillMode(mode: aval<FillModeValue>): TraversalState { return this.with({ fillMode: mode, pipelineState: undefined }); }
   pushBlendConstant(value: aval<BlendConstantValue>): TraversalState { return this.with({ blendConstant: value, pipelineState: undefined }); }
   pushColorMask(mask: aval<HashMap<string, ColorMaskValue>>): TraversalState { return this.with({ colorMask: mask, pipelineState: undefined }); }
@@ -526,7 +590,23 @@ export class TraversalState implements IUniformProvider {
 
   pushIndex(index: BufferView | undefined): TraversalState { return this.with({ index }); }
   /** Clears `pipelineState` — `mode` feeds the topology in `derivePipelineState`. */
-  pushMode(mode: aval<ModeValue>): TraversalState { return this.with({ mode, pipelineState: undefined }); }
+  pushMode(
+    mode: aval<ModeValue> | import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"topology">,
+  ): TraversalState {
+    const isRule = typeof mode === "object" && mode !== null
+                && (mode as { __derivedModeRule?: unknown }).__derivedModeRule === true;
+    if (isRule) {
+      return this.with({
+        modeRule: mode as import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"topology">,
+        pipelineState: undefined,
+      });
+    }
+    return this.with({
+      mode: mode as aval<ModeValue>,
+      modeRule: undefined,
+      pipelineState: undefined,
+    });
+  }
 
   // ---------------- Phase 3 — misc scope pushers -----------------------
 
@@ -577,7 +657,16 @@ export class TraversalState implements IUniformProvider {
       cullModeRule: patch.cullModeRule !== undefined
         ? patch.cullModeRule
         : (Object.prototype.hasOwnProperty.call(patch, "cullModeRule") ? undefined : this.cullModeRule),
+      depthTestRule: patch.depthTestRule !== undefined
+        ? patch.depthTestRule
+        : (Object.prototype.hasOwnProperty.call(patch, "depthTestRule") ? undefined : this.depthTestRule),
+      depthMaskRule: patch.depthMaskRule !== undefined
+        ? patch.depthMaskRule
+        : (Object.prototype.hasOwnProperty.call(patch, "depthMaskRule") ? undefined : this.depthMaskRule),
       frontFace: patch.frontFace ?? this.frontFace,
+      frontFaceRule: patch.frontFaceRule !== undefined
+        ? patch.frontFaceRule
+        : (Object.prototype.hasOwnProperty.call(patch, "frontFaceRule") ? undefined : this.frontFaceRule),
       fillMode: patch.fillMode ?? this.fillMode,
       blendConstant: "blendConstant" in patch ? patch.blendConstant : this.blendConstant,
       colorMask: patch.colorMask ?? this.colorMask,
@@ -587,6 +676,9 @@ export class TraversalState implements IUniformProvider {
       instanceAttributes: patch.instanceAttributes ?? this.instanceAttributes,
       index: patch.index ?? this.index,
       mode: patch.mode ?? this.mode,
+      modeRule: patch.modeRule !== undefined
+        ? patch.modeRule
+        : (Object.prototype.hasOwnProperty.call(patch, "modeRule") ? undefined : this.modeRule),
       noEvents: patch.noEvents ?? this.noEvents,
       forcePixelPicking: patch.forcePixelPicking ?? this.forcePixelPicking,
       canFocus: patch.canFocus ?? this.canFocus,
@@ -707,7 +799,10 @@ interface TraversalSpec {
   depthClamp: aval<boolean>;
   cullMode: aval<CullValue>;
   cullModeRule: import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"cull"> | undefined;
+  depthTestRule: import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"depthCompare"> | undefined;
+  depthMaskRule: import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"depthWrite"> | undefined;
   frontFace: aval<FrontFaceValue>;
+  frontFaceRule: import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"frontFace"> | undefined;
   fillMode: aval<FillModeValue>;
   blendConstant: aval<BlendConstantValue> | undefined;
   colorMask: aval<HashMap<string, ColorMaskValue>>;
@@ -717,6 +812,7 @@ interface TraversalSpec {
   instanceAttributes: HashMap<string, BufferView>;
   index: BufferView | undefined;
   mode: aval<ModeValue>;
+  modeRule: import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"topology"> | undefined;
   noEvents: aval<boolean>;
   forcePixelPicking: aval<boolean>;
   canFocus: aval<boolean>;

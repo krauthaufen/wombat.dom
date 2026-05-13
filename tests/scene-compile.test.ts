@@ -293,6 +293,68 @@ describe("compileScene — View / Proj / Delay", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Derived-mode rules — per-axis SG wiring (Phase 5c.3 follow-up)
+// ---------------------------------------------------------------------------
+
+describe("compileScene — derived-mode rules per axis", () => {
+  // Build a minimal rule per axis. CPU-only (no `gpu` spec) — the
+  // wiring path is what we exercise here, not the runtime evaluation.
+  const cullRule       = { __derivedModeRule: true, axis: "cull",          evaluate: (_u: unknown, d: "back" | "front" | "none") => d } as const;
+  const frontFaceRule  = { __derivedModeRule: true, axis: "frontFace",     evaluate: (_u: unknown, d: "ccw" | "cw")              => d } as const;
+  const topologyRule   = { __derivedModeRule: true, axis: "topology",      evaluate: (_u: unknown, d: string)                    => d } as const;
+  const depthCmpRule   = { __derivedModeRule: true, axis: "depthCompare",  evaluate: (_u: unknown, d: GPUCompareFunction)        => d } as const;
+  const depthWriteRule = { __derivedModeRule: true, axis: "depthWrite",    evaluate: (_u: unknown, d: boolean)                   => d } as const;
+
+  it("CullMode={rule} routes to RO.modeRules.cull", () => {
+    const tree = Sg.shader(fakeEffect, Sg.cullMode(cullRule as never)(leaf()));
+    const lt = getLeafObject(singleRender(compileScene(tree)));
+    expect(lt.object.modeRules?.cull).toBe(cullRule);
+    expect(lt.object.modeRules?.frontFace).toBeUndefined();
+  });
+
+  it("FrontFace={rule} routes to RO.modeRules.frontFace", () => {
+    const tree = Sg.shader(fakeEffect, Sg.frontFace(frontFaceRule as never)(leaf()));
+    const lt = getLeafObject(singleRender(compileScene(tree)));
+    expect(lt.object.modeRules?.frontFace).toBe(frontFaceRule);
+  });
+
+  it("Mode={rule} routes to RO.modeRules.topology", () => {
+    const tree = Sg.shader(fakeEffect, Sg.mode(topologyRule as never)(leaf()));
+    const lt = getLeafObject(singleRender(compileScene(tree)));
+    expect(lt.object.modeRules?.topology).toBe(topologyRule);
+  });
+
+  it("DepthTest={rule} routes to RO.modeRules.depthCompare", () => {
+    const tree = Sg.shader(fakeEffect, Sg.depthTest(depthCmpRule as never)(leaf()));
+    const lt = getLeafObject(singleRender(compileScene(tree)));
+    expect(lt.object.modeRules?.depthCompare).toBe(depthCmpRule);
+  });
+
+  it("DepthMask={rule} routes to RO.modeRules.depthWrite", () => {
+    const tree = Sg.shader(fakeEffect, Sg.depthMask(depthWriteRule as never)(leaf()));
+    const lt = getLeafObject(singleRender(compileScene(tree)));
+    expect(lt.object.modeRules?.depthWrite).toBe(depthWriteRule);
+  });
+
+  it("stacking multiple rule scopes lands all on modeRules", () => {
+    const inner = Sg.depthTest(depthCmpRule as never)(leaf());
+    const mid   = Sg.frontFace(frontFaceRule as never)(inner);
+    const outer = Sg.cullMode(cullRule as never)(mid);
+    const tree  = Sg.shader(fakeEffect, outer);
+    const lt = getLeafObject(singleRender(compileScene(tree)));
+    expect(lt.object.modeRules?.cull).toBe(cullRule);
+    expect(lt.object.modeRules?.frontFace).toBe(frontFaceRule);
+    expect(lt.object.modeRules?.depthCompare).toBe(depthCmpRule);
+  });
+
+  it("an aval value (no rule) leaves modeRules undefined for that axis", () => {
+    const tree = Sg.shader(fakeEffect, Sg.cullMode(AVal.constant<"back" | "front" | "none">("back"))(leaf()));
+    const lt = getLeafObject(singleRender(compileScene(tree)));
+    expect(lt.object.modeRules?.cull).toBeUndefined();
+  });
+});
+
 describe("compileScene — non-mutating", () => {
   it("supplied initialState is not mutated", () => {
     const before = TraversalState.empty;

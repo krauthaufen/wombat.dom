@@ -308,13 +308,21 @@ export type DepthCompare =
 
 export interface SgDepthTest {
   readonly kind: "DepthTest";
-  readonly mode: aval<DepthCompare>;
+  /** Either an aval of a fixed `DepthCompare`, or a derived-mode rule
+   *  evaluating depthCompare as a function of per-RO uniforms. */
+  readonly mode:
+    | aval<DepthCompare>
+    | import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"depthCompare">;
   readonly child: SgNode;
 }
 
 export interface SgDepthMask {
   readonly kind: "DepthMask";
-  readonly write: aval<boolean>;
+  /** Either an aval of a fixed boolean, or a derived-mode rule
+   *  evaluating depthWrite as a function of per-RO uniforms. */
+  readonly write:
+    | aval<boolean>
+    | import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"depthWrite">;
   readonly child: SgNode;
 }
 
@@ -356,7 +364,11 @@ export type FrontFaceValue = "ccw" | "cw";
 
 export interface SgFrontFace {
   readonly kind: "FrontFace";
-  readonly mode: aval<FrontFaceValue>;
+  /** Either an aval of a fixed `FrontFaceValue`, or a derived-mode rule
+   *  evaluating frontFace as a function of per-RO uniforms. */
+  readonly mode:
+    | aval<FrontFaceValue>
+    | import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"frontFace">;
   readonly child: SgNode;
 }
 
@@ -468,7 +480,11 @@ export type ModeValue =
 
 export interface SgMode {
   readonly kind: "Mode";
-  readonly mode: aval<ModeValue>;
+  /** Either an aval of a fixed `ModeValue` (topology), or a derived-mode
+   *  rule evaluating topology as a function of per-RO uniforms. */
+  readonly mode:
+    | aval<ModeValue>
+    | import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"topology">;
   readonly child: SgNode;
 }
 
