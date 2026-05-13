@@ -485,10 +485,12 @@ export class TraversalState implements IUniformProvider {
     const isRule = typeof mode === "object" && mode !== null
                 && (mode as { __derivedModeRule?: unknown }).__derivedModeRule === true;
     if (isRule) {
-      return this.with({
-        depthTestRule: mode as import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"depthCompare">,
-        pipelineState: undefined,
-      });
+      const rule = mode as import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"depthCompare">;
+      // Auto-fill `declared` from the parent SG-context value when
+      // the user omitted it. The rule body's `declared` ambient
+      // resolves to whatever the surrounding scope set for this axis.
+      const wrapped = rule.declared === undefined ? { ...rule, declared: this.depthTest } : rule;
+      return this.with({ depthTestRule: wrapped, pipelineState: undefined });
     }
     return this.with({
       depthTest: mode as aval<DepthCompare>,
@@ -502,10 +504,9 @@ export class TraversalState implements IUniformProvider {
     const isRule = typeof write === "object" && write !== null
                 && (write as { __derivedModeRule?: unknown }).__derivedModeRule === true;
     if (isRule) {
-      return this.with({
-        depthMaskRule: write as import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"depthWrite">,
-        pipelineState: undefined,
-      });
+      const rule = write as import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"depthWrite">;
+      const wrapped = rule.declared === undefined ? { ...rule, declared: this.depthMask } : rule;
+      return this.with({ depthMaskRule: wrapped, pipelineState: undefined });
     }
     return this.with({
       depthMask: write as aval<boolean>,
@@ -527,17 +528,20 @@ export class TraversalState implements IUniformProvider {
                 && (mode as { __derivedModeRule?: unknown }).__derivedModeRule === true;
     if (isRule) {
       const rule = mode as import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"cull">;
-      // The rule's `declared` is the SG-context value for this axis
-      // — string or aval. Lift to an aval so the downstream static-
-      // PS path sees a uniform shape; the heap runtime reads the
-      // same value separately when codegen'ing the partition kernel.
-      const declaredSpec = rule.declared;
+      // Auto-fill `declared` from the surrounding SG-context cullMode
+      // when the user omitted it. The rule body's `declared` ambient
+      // resolves to whatever the parent `<Sg CullMode={...}>` set.
+      const wrapped = rule.declared === undefined ? { ...rule, declared: this.cullMode } : rule;
+      // Static-PS path: keep cullMode pointing at the rule's
+      // declared so PipelineState reflects the fallback / bake-time
+      // value; the heap runtime reads rule.declared separately.
+      const declaredSpec = wrapped.declared;
       const cullModeAval: aval<CullValue> = typeof declaredSpec === "string"
         ? AVal.constant<CullValue>(declaredSpec as CullValue)
         : declaredSpec as aval<CullValue>;
       return this.with({
         cullMode: cullModeAval,
-        cullModeRule: rule,
+        cullModeRule: wrapped,
         pipelineState: undefined,
       });
     }
@@ -553,10 +557,9 @@ export class TraversalState implements IUniformProvider {
     const isRule = typeof mode === "object" && mode !== null
                 && (mode as { __derivedModeRule?: unknown }).__derivedModeRule === true;
     if (isRule) {
-      return this.with({
-        frontFaceRule: mode as import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"frontFace">,
-        pipelineState: undefined,
-      });
+      const rule = mode as import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"frontFace">;
+      const wrapped = rule.declared === undefined ? { ...rule, declared: this.frontFace } : rule;
+      return this.with({ frontFaceRule: wrapped, pipelineState: undefined });
     }
     return this.with({
       frontFace: mode as aval<FrontFaceValue>,
@@ -593,10 +596,9 @@ export class TraversalState implements IUniformProvider {
     const isRule = typeof mode === "object" && mode !== null
                 && (mode as { __derivedModeRule?: unknown }).__derivedModeRule === true;
     if (isRule) {
-      return this.with({
-        modeRule: mode as import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"topology">,
-        pipelineState: undefined,
-      });
+      const rule = mode as import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"topology">;
+      const wrapped = rule.declared === undefined ? { ...rule, declared: this.mode } : rule;
+      return this.with({ modeRule: wrapped, pipelineState: undefined });
     }
     return this.with({
       mode: mode as aval<ModeValue>,

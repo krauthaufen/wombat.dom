@@ -332,7 +332,7 @@ import { derivedMode } from "@aardworx/wombat.rendering/runtime";
 declare const declared: number;
 
 const cullExpr = rule(() => declared);
-const cullRule = derivedMode("cull", cullExpr, { declared: cullModeC });
+const cullRule = derivedMode("cull", cullExpr);  // SG fills in `declared` from cullModeC
 
 const enableGpuRule = params.get("gpurule") === "1";
 const cullModeOrRule = enableGpuRule ? cullRule : cullModeC;

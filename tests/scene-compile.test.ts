@@ -309,32 +309,32 @@ describe("compileScene — derived-mode rules per axis", () => {
   it("CullMode={rule} routes to RO.modeRules.cull", () => {
     const tree = Sg.shader(fakeEffect, Sg.cullMode(cullRule as never)(leaf()));
     const lt = getLeafObject(singleRender(compileScene(tree)));
-    expect(lt.object.modeRules?.cull).toBe(cullRule);
+    expect(lt.object.modeRules?.cull).toMatchObject(cullRule);
     expect(lt.object.modeRules?.frontFace).toBeUndefined();
   });
 
   it("FrontFace={rule} routes to RO.modeRules.frontFace", () => {
     const tree = Sg.shader(fakeEffect, Sg.frontFace(frontFaceRule as never)(leaf()));
     const lt = getLeafObject(singleRender(compileScene(tree)));
-    expect(lt.object.modeRules?.frontFace).toBe(frontFaceRule);
+    expect(lt.object.modeRules?.frontFace).toMatchObject(frontFaceRule);
   });
 
   it("Mode={rule} routes to RO.modeRules.topology", () => {
     const tree = Sg.shader(fakeEffect, Sg.mode(topologyRule as never)(leaf()));
     const lt = getLeafObject(singleRender(compileScene(tree)));
-    expect(lt.object.modeRules?.topology).toBe(topologyRule);
+    expect(lt.object.modeRules?.topology).toMatchObject(topologyRule);
   });
 
   it("DepthTest={rule} routes to RO.modeRules.depthCompare", () => {
     const tree = Sg.shader(fakeEffect, Sg.depthTest(depthCmpRule as never)(leaf()));
     const lt = getLeafObject(singleRender(compileScene(tree)));
-    expect(lt.object.modeRules?.depthCompare).toBe(depthCmpRule);
+    expect(lt.object.modeRules?.depthCompare).toMatchObject(depthCmpRule);
   });
 
   it("DepthMask={rule} routes to RO.modeRules.depthWrite", () => {
     const tree = Sg.shader(fakeEffect, Sg.depthMask(depthWriteRule as never)(leaf()));
     const lt = getLeafObject(singleRender(compileScene(tree)));
-    expect(lt.object.modeRules?.depthWrite).toBe(depthWriteRule);
+    expect(lt.object.modeRules?.depthWrite).toMatchObject(depthWriteRule);
   });
 
   it("stacking multiple rule scopes lands all on modeRules", () => {
@@ -343,9 +343,9 @@ describe("compileScene — derived-mode rules per axis", () => {
     const outer = Sg.cullMode(cullRule as never)(mid);
     const tree  = Sg.shader(fakeEffect, outer);
     const lt = getLeafObject(singleRender(compileScene(tree)));
-    expect(lt.object.modeRules?.cull).toBe(cullRule);
-    expect(lt.object.modeRules?.frontFace).toBe(frontFaceRule);
-    expect(lt.object.modeRules?.depthCompare).toBe(depthCmpRule);
+    expect(lt.object.modeRules?.cull).toMatchObject(cullRule);
+    expect(lt.object.modeRules?.frontFace).toMatchObject(frontFaceRule);
+    expect(lt.object.modeRules?.depthCompare).toMatchObject(depthCmpRule);
   });
 
   it("an aval value (no rule) leaves modeRules undefined for that axis", () => {
