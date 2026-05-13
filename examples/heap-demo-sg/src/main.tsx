@@ -275,6 +275,35 @@ toggleBtn.addEventListener("click", () => {
 });
 document.body.appendChild(toggleBtn);
 
+// ─── Reactive cullMode demo ────────────────────────────────────────────
+//
+// One cval shared across the whole scene drives the cullMode for every
+// RO via `<Sg CullMode={cullModeC}>`. Tapping the "cull" button cycles
+// "back" → "front" → "none". Pre-wombat.rendering@0.9.15 this was
+// silently broken: the bucket key hashed the cval BY IDENTITY, so the
+// value change never moved any RO into the right bucket and pixels
+// rendered with the OLD cull mode. As of 0.9.15 the key is value-
+// based AND a per-RO ModeKeyTracker triggers a rebucket on aval mark
+// — the next frame's pixels reflect the new cull mode.
+type CullVal = "none" | "front" | "back";
+const cullModes: readonly CullVal[] = ["back", "front", "none"];
+let cullIdx = 0;
+const cullModeC = cval<CullVal>(cullModes[cullIdx]!);
+const cullBtn = document.createElement("button");
+cullBtn.textContent = `cull: ${cullModes[cullIdx]}`;
+cullBtn.style.cssText =
+  "position:fixed;top:8px;right:120px;z-index:10;padding:8px 14px;" +
+  "font:14px system-ui,sans-serif;background:#222;color:#ddd;" +
+  "border:1px solid #555;border-radius:6px;cursor:pointer;" +
+  "-webkit-tap-highlight-color:transparent;";
+cullBtn.addEventListener("click", () => {
+  cullIdx = (cullIdx + 1) % cullModes.length;
+  const next = cullModes[cullIdx]!;
+  cullBtn.textContent = `cull: ${next}`;
+  transact(() => { cullModeC.value = next; });
+});
+document.body.appendChild(cullBtn);
+
 // ─── Mount ─────────────────────────────────────────────────────────────
 
 const clear: ClearValues = {
@@ -299,6 +328,7 @@ mount(root, (
         near: 0.1,
         far: 200,
       })}
+      CullMode={cullModeC}
       ForcePixelPicking={AVal.constant(true)}
       OnDoubleTap={(e: SceneEvent) => ctl.flyTo(e.worldPos)}
     >
