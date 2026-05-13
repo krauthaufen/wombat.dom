@@ -327,8 +327,10 @@ document.body.appendChild(cullBtn);
 import { gpuFlipCullByDeterminant } from "@aardworx/wombat.rendering/runtime";
 
 const enableGpuRule = params.get("gpurule") === "1";
+// Reactive declared: the rule reads its declared from cullModeC, so
+// the cull-button flip propagates through the GPU kernel each frame.
 const cullModeOrRule = enableGpuRule
-  ? gpuFlipCullByDeterminant("ModelTrafo", "back")
+  ? gpuFlipCullByDeterminant("ModelTrafo", cullModeC)
   : cullModeC;
 
 // ─── Mount ─────────────────────────────────────────────────────────────

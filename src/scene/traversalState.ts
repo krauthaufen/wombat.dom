@@ -479,9 +479,19 @@ export class TraversalState implements IUniformProvider {
                 && (mode as { __derivedModeRule?: unknown }).__derivedModeRule === true;
     if (isRule) {
       const rule = mode as import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"cull">;
-      const declared = rule.gpu?.declared ?? "back";
+      const declaredSpec = rule.gpu?.declared;
+      let cullModeAval: aval<CullValue>;
+      if (declaredSpec === undefined) {
+        cullModeAval = AVal.constant<CullValue>("back");
+      } else if (typeof declaredSpec === "string") {
+        cullModeAval = AVal.constant<CullValue>(declaredSpec);
+      } else {
+        // Already an aval — pass through. The static-PS path forces
+        // this each frame so PipelineState reflects current value.
+        cullModeAval = declaredSpec as aval<CullValue>;
+      }
       return this.with({
-        cullMode: AVal.constant<CullValue>(declared),
+        cullMode: cullModeAval,
         cullModeRule: rule,
         pipelineState: undefined,
       });
