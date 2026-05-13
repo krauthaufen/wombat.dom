@@ -349,8 +349,17 @@ const cullExprB = rule(() => 1);  // 1 = "front" in AXIS_ENUM_TABLE["cull"]
 const cullRuleA = derivedMode("cull", cullExprA);
 const cullRuleB = derivedMode("cull", cullExprB);
 
+// Multi-axis demo (`?multi=1`): mix rules on different axes inside the
+// SAME bucket. depthAlwaysRule disables depth testing (always pass);
+// combined with cullRuleA in one group, just cullRuleB in another,
+// and no rule at all in a third, the partition kernel cartesian-
+// products cull × depthCompare and emits one combo fn per RO group.
+const depthAlwaysExpr = rule(() => 7);  // 7 = "always" in AXIS_ENUM_TABLE["depthCompare"]
+const depthAlwaysRule = derivedMode("depthCompare", depthAlwaysExpr);
+
 const enableGpuRule = params.get("gpurule") === "1";
 const splitByRule   = params.get("split") === "1";
+const multiAxis     = params.get("multi") === "1";
 const cullModeOrRule = enableGpuRule ? cullRuleA : cullModeC;
 
 // ─── Mount ─────────────────────────────────────────────────────────────
@@ -382,7 +391,19 @@ mount(root, (
       OnDoubleTap={(e: SceneEvent) => ctl.flyTo(e.worldPos)}
     >
       {enableGpuRule
-        ? (splitByRule
+        ? (multiAxis
+            ? <>
+                {/* Combo A: cull rule + depthCompare rule (both axes
+                    driven by rules — depth disabled, cull follows user) */}
+                <Sg CullMode={cullRuleA} DepthCompare={depthAlwaysRule}>{liveLeaves}</Sg>
+                {/* Combo B: only a cull rule (different one) — depth
+                    falls back to baseDescriptor's value */}
+                <Sg CullMode={cullRuleB}>{liveLeaves}</Sg>
+                {/* Combo C: only a depthCompare rule — cull falls back
+                    to baseDescriptor's value (inherited cullModeC). */}
+                <Sg DepthCompare={depthAlwaysRule}>{liveLeaves}</Sg>
+              </>
+            : splitByRule
             ? <>
                 {/* First half follows the cullModeC inheritance via ruleA */}
                 <Sg CullMode={cullRuleA}>{liveLeaves}</Sg>
