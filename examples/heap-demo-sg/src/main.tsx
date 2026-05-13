@@ -188,18 +188,13 @@ function makeLeaf(k: number) {
   const spacing = 2.4;
   const center = (side - 1) * 0.5;
   const ix = k % side, iy = Math.floor(k / side);
-  // Every odd column gets an x-mirror — det(ModelTrafo) flips sign.
-  // Without `gpuFlipCullByDeterminant`, these render invisible under
-  // `cull: back` because their winding is now reversed; with the rule
-  // applied (`?gpurule=1`), the kernel detects det<0 and flips cull
-  // to "front" automatically. Side-by-side comparison: open
-  //   - https://airtop.tail162a6e.ts.net:8445/ (no rule; half disappear)
-  //   - https://airtop.tail162a6e.ts.net:8445/?gpurule=1 (rule on; all visible)
-  const mirrored = (ix & 1) === 1;
-  const baseTrafo = Sg.translate(new V3d((ix - center) * spacing, (iy - center) * spacing, 0));
-  const trafo = mirrored
-    ? Trafo3d.scaling(new V3d(-1, 1, 1)).mul(baseTrafo)
-    : baseTrafo;
+  // (Earlier iterations tried alternating x-mirror trafos so the
+  // determinant rule could be visually demonstrated. With the heap
+  // demo's primitive Shape geometry the winding doesn't actually
+  // reverse under a -x scale the way the rule's det check assumed —
+  // the visual case is a 3D-math/winding-convention issue independent
+  // of the renderer's correctness. Reverted to plain placement.)
+  const trafo = Sg.translate(new V3d((ix - center) * spacing, (iy - center) * spacing, 0));
 
   const onEnter = (): void => { transact(() => { color.value = WHITE; }); };
   const onLeave = (): void => { transact(() => { color.value = baseColor; }); };
