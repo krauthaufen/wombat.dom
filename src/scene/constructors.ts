@@ -253,8 +253,20 @@ function depthClamp(clamp: boolean | aval<boolean>): (child: SgNode) => SgNode {
   const c = liftAval(clamp);
   return (child: SgNode): SgNode => ({ kind: "DepthClamp", clamp: c, child });
 }
-function cullMode(mode: CullValue | aval<CullValue>): (child: SgNode) => SgNode {
-  const m = liftAval(mode);
+function cullMode(
+  mode:
+    | CullValue
+    | aval<CullValue>
+    | import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"cull">,
+): (child: SgNode) => SgNode {
+  // Pass DerivedModeRule through untouched; lift everything else to
+  // an aval. The traversal state (TraversalState.pushCullMode) does
+  // the rule-vs-aval routing.
+  const isRule = typeof mode === "object" && mode !== null
+              && (mode as { __derivedModeRule?: unknown }).__derivedModeRule === true;
+  const m = isRule
+    ? mode as import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"cull">
+    : liftAval(mode as CullValue | aval<CullValue>);
   return (child: SgNode): SgNode => ({ kind: "CullMode", mode: m, child });
 }
 function frontFace(mode: FrontFaceValue | aval<FrontFaceValue>): (child: SgNode) => SgNode {
@@ -436,7 +448,10 @@ export interface SgScopeProps {
   DepthMask?: boolean | aval<boolean>;
   DepthBias?: DepthBiasValue | aval<DepthBiasValue>;
   DepthClamp?: boolean | aval<boolean>;
-  CullMode?: CullValue | aval<CullValue>;
+  CullMode?:
+    | CullValue
+    | aval<CullValue>
+    | import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"cull">;
   FrontFace?: FrontFaceValue | aval<FrontFaceValue>;
   FillMode?: FillModeValue | aval<FillModeValue>;
   BlendConstant?: BlendConstantValue | aval<BlendConstantValue>;

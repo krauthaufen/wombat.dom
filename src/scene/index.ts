@@ -156,3 +156,9 @@ export {
   type SceneEventInit,
   type SceneEventDispatch,
 } from "./picking/index.js";
+
+export type {
+  CullValue, FrontFaceValue, FillModeValue,
+  BlendConstantValue, ColorMaskValue, StencilModeValue,
+  DepthBiasValue,
+} from "./sg.js";

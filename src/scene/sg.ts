@@ -340,7 +340,15 @@ export type CullValue = "none" | "front" | "back";
 
 export interface SgCullMode {
   readonly kind: "CullMode";
-  readonly mode: aval<CullValue>;
+  /**
+   * Either an aval of a fixed `CullValue` (the existing path) or a
+   * `DerivedModeRule<"cull">` that evaluates the cull mode as a
+   * function of per-RO uniforms (see `derivedMode(...)` and
+   * `gpuFlipCullByDeterminant(...)` in `@aardworx/wombat.rendering/runtime`).
+   * The rule overrides the PipelineState's `cullMode` at descriptor-
+   * snapshot time on a per-RO basis.
+   */
+  readonly mode: aval<CullValue> | import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"cull">;
   readonly child: SgNode;
 }
 

@@ -695,6 +695,12 @@ function buildRenderObject(
     ...(leaf.storageBuffers !== undefined ? { storageBuffers: leaf.storageBuffers } : {}),
     ...(leaf.indices !== undefined ? { indices: leaf.indices } : {}),
     drawCall: leaf.drawCall,
+    // Route any derived-mode rule the traversal accumulated onto
+    // the RO so the heap path picks it up. v1 supports cull; other
+    // axes (frontFace / blend / etc.) can follow the same pattern.
+    ...(state.cullModeRule !== undefined
+      ? { modeRules: { cull: state.cullModeRule } }
+      : {}),
   };
   return obj;
 }

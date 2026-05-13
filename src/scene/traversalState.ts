@@ -224,6 +224,14 @@ export class TraversalState implements IUniformProvider {
   readonly depthClamp: aval<boolean>;
   /** Cull mode (override). Defaults to `"none"`. */
   readonly cullMode: aval<CullValue>;
+  /**
+   * Optional derived-mode rule for cull. When non-undefined, the
+   * leaf's RO carries this rule on `RO.modeRules.cull` and it
+   * overrides the static `cullMode` value at descriptor-snapshot
+   * time. `<Sg CullMode={rule}>` populates this; an aval-shaped
+   * `<Sg CullMode={cval}>` clears it.
+   */
+  readonly cullModeRule: import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"cull"> | undefined;
   /** Front-face winding (override). Defaults to `"ccw"`. */
   readonly frontFace: aval<FrontFaceValue>;
   /** Fill mode (override). Defaults to `"fill"`. */
@@ -310,6 +318,7 @@ export class TraversalState implements IUniformProvider {
     this.depthBias = spec.depthBias;
     this.depthClamp = spec.depthClamp;
     this.cullMode = spec.cullMode;
+    this.cullModeRule = spec.cullModeRule;
     this.frontFace = spec.frontFace;
     this.fillMode = spec.fillMode;
     this.blendConstant = spec.blendConstant;
@@ -349,6 +358,7 @@ export class TraversalState implements IUniformProvider {
     depthBias: undefined,
     depthClamp: AVal.constant(false),
     cullMode: AVal.constant<CullValue>("none"),
+    cullModeRule: undefined,
     frontFace: AVal.constant<FrontFaceValue>("ccw"),
     fillMode: AVal.constant<FillModeValue>("fill"),
     blendConstant: undefined,
@@ -457,7 +467,31 @@ export class TraversalState implements IUniformProvider {
   pushDepthMask(write: aval<boolean>): TraversalState { return this.with({ depthMask: write, pipelineState: undefined }); }
   pushDepthBias(bias: aval<DepthBiasValue>): TraversalState { return this.with({ depthBias: bias, pipelineState: undefined }); }
   pushDepthClamp(clamp: aval<boolean>): TraversalState { return this.with({ depthClamp: clamp, pipelineState: undefined }); }
-  pushCullMode(mode: aval<CullValue>): TraversalState { return this.with({ cullMode: mode, pipelineState: undefined }); }
+  pushCullMode(
+    mode: aval<CullValue> | import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"cull">,
+  ): TraversalState {
+    // Distinguish rule vs aval: rules carry the brand check
+    // `__derivedModeRule === true`. A rule wraps an inner cullMode
+    // value (its `gpu.declared`); the static aval cullMode is set
+    // to that declared so PipelineState reflects the fallback /
+    // bake-time value.
+    const isRule = typeof mode === "object" && mode !== null
+                && (mode as { __derivedModeRule?: unknown }).__derivedModeRule === true;
+    if (isRule) {
+      const rule = mode as import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"cull">;
+      const declared = rule.gpu?.declared ?? "back";
+      return this.with({
+        cullMode: AVal.constant<CullValue>(declared),
+        cullModeRule: rule,
+        pipelineState: undefined,
+      });
+    }
+    return this.with({
+      cullMode: mode as aval<CullValue>,
+      cullModeRule: undefined,
+      pipelineState: undefined,
+    });
+  }
   pushFrontFace(mode: aval<FrontFaceValue>): TraversalState { return this.with({ frontFace: mode, pipelineState: undefined }); }
   pushFillMode(mode: aval<FillModeValue>): TraversalState { return this.with({ fillMode: mode, pipelineState: undefined }); }
   pushBlendConstant(value: aval<BlendConstantValue>): TraversalState { return this.with({ blendConstant: value, pipelineState: undefined }); }
@@ -530,6 +564,9 @@ export class TraversalState implements IUniformProvider {
       depthBias: "depthBias" in patch ? patch.depthBias : this.depthBias,
       depthClamp: patch.depthClamp ?? this.depthClamp,
       cullMode: patch.cullMode ?? this.cullMode,
+      cullModeRule: patch.cullModeRule !== undefined
+        ? patch.cullModeRule
+        : (Object.prototype.hasOwnProperty.call(patch, "cullModeRule") ? undefined : this.cullModeRule),
       frontFace: patch.frontFace ?? this.frontFace,
       fillMode: patch.fillMode ?? this.fillMode,
       blendConstant: "blendConstant" in patch ? patch.blendConstant : this.blendConstant,
@@ -659,6 +696,7 @@ interface TraversalSpec {
   depthBias: aval<DepthBiasValue> | undefined;
   depthClamp: aval<boolean>;
   cullMode: aval<CullValue>;
+  cullModeRule: import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"cull"> | undefined;
   frontFace: aval<FrontFaceValue>;
   fillMode: aval<FillModeValue>;
   blendConstant: aval<BlendConstantValue> | undefined;

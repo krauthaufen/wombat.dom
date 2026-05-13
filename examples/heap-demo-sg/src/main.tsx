@@ -19,10 +19,11 @@ import {
   Sg,
   aspectFromViewport,
   perspective,
+  type CullValue,
   type SceneEvent,
 } from "@aardworx/wombat.dom/scene";
 import { AVal, HashMap, cset, cval, transact } from "@aardworx/wombat.adaptive";
-import { V3d, V4f } from "@aardworx/wombat.base";
+import { V3d, V4f, Trafo3d } from "@aardworx/wombat.base";
 import { BufferView, ElementType, IBuffer, ITexture } from "@aardworx/wombat.rendering/core";
 import type { ClearValues } from "@aardworx/wombat.rendering/core";
 import {
@@ -187,7 +188,18 @@ function makeLeaf(k: number) {
   const spacing = 2.4;
   const center = (side - 1) * 0.5;
   const ix = k % side, iy = Math.floor(k / side);
-  const trafo = Sg.translate(new V3d((ix - center) * spacing, (iy - center) * spacing, 0));
+  // Every odd column gets an x-mirror — det(ModelTrafo) flips sign.
+  // Without `gpuFlipCullByDeterminant`, these render invisible under
+  // `cull: back` because their winding is now reversed; with the rule
+  // applied (`?gpurule=1`), the kernel detects det<0 and flips cull
+  // to "front" automatically. Side-by-side comparison: open
+  //   - https://airtop.tail162a6e.ts.net:8445/ (no rule; half disappear)
+  //   - https://airtop.tail162a6e.ts.net:8445/?gpurule=1 (rule on; all visible)
+  const mirrored = (ix & 1) === 1;
+  const baseTrafo = Sg.translate(new V3d((ix - center) * spacing, (iy - center) * spacing, 0));
+  const trafo = mirrored
+    ? Trafo3d.scaling(new V3d(-1, 1, 1)).mul(baseTrafo)
+    : baseTrafo;
 
   const onEnter = (): void => { transact(() => { color.value = WHITE; }); };
   const onLeave = (): void => { transact(() => { color.value = baseColor; }); };
@@ -285,10 +297,9 @@ document.body.appendChild(toggleBtn);
 // rendered with the OLD cull mode. As of 0.9.15 the key is value-
 // based AND a per-RO ModeKeyTracker triggers a rebucket on aval mark
 // — the next frame's pixels reflect the new cull mode.
-type CullVal = "none" | "front" | "back";
-const cullModes: readonly CullVal[] = ["back", "front", "none"];
+const cullModes: readonly CullValue[] = ["back", "front", "none"];
 let cullIdx = 0;
-const cullModeC = cval<CullVal>(cullModes[cullIdx]!);
+const cullModeC = cval<CullValue>(cullModes[cullIdx]!);
 const cullBtn = document.createElement("button");
 cullBtn.textContent = `cull: ${cullModes[cullIdx]}`;
 cullBtn.style.cssText =
@@ -303,6 +314,22 @@ cullBtn.addEventListener("click", () => {
   transact(() => { cullModeC.value = next; });
 });
 document.body.appendChild(cullBtn);
+
+// ─── GPU-eval derived-mode rule (Task 2 Phase 5) ───────────────────────
+//
+// A determinant-flip-cull rule reads each RO's ModelTrafo at GPU time
+// and emits a per-RO modeKey: mirrored geometry (negative-det trafo)
+// renders with flipped cullMode automatically. Drop it into the SG
+// via `<Sg CullMode={rule}>` — wombat.dom routes it onto each leaf's
+// RO.modeRules.cull, and the heap renderer evaluates it on the GPU.
+//
+// Toggle `?gpurule=1` in the URL to wrap the scene with the rule.
+import { gpuFlipCullByDeterminant } from "@aardworx/wombat.rendering/runtime";
+
+const enableGpuRule = params.get("gpurule") === "1";
+const cullModeOrRule = enableGpuRule
+  ? gpuFlipCullByDeterminant("ModelTrafo", "back")
+  : cullModeC;
 
 // ─── Mount ─────────────────────────────────────────────────────────────
 
@@ -328,7 +355,7 @@ mount(root, (
         near: 0.1,
         far: 200,
       })}
-      CullMode={cullModeC}
+      CullMode={cullModeOrRule}
       ForcePixelPicking={AVal.constant(true)}
       OnDoubleTap={(e: SceneEvent) => ctl.flyTo(e.worldPos)}
     >
