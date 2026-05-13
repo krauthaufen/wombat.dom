@@ -331,11 +331,27 @@ import { derivedMode } from "@aardworx/wombat.rendering/runtime";
 
 declare const declared: number;
 
-const cullExpr = rule(() => declared);
-const cullRule = derivedMode("cull", cullExpr);  // SG fills in `declared` from cullModeC
+// Two rules sharing the same effect bucket. Both are GPU-routed via
+// the partition kernel's per-record `switch(r.ruleId)`:
+//
+//   ruleA: pass-through (return declared) — leaves rendered with the
+//     SG-context cull mode.
+//   ruleB: force `cull = front` regardless of declared — the
+//     half-of-the-scene under this rule always renders backfaces.
+//
+// Both halves are children of the SAME `<Sg Shader>` scope, so they
+// share an effect + textureSet bucket. Pre-multi-rule, the second
+// rule would have been silently clobbered. Now each leaf carries its
+// own `ruleId` in the master pool and the partition kernel dispatches
+// per-record.
+const cullExprA = rule(() => declared);
+const cullExprB = rule(() => 1);  // 1 = "front" in AXIS_ENUM_TABLE["cull"]
+const cullRuleA = derivedMode("cull", cullExprA);
+const cullRuleB = derivedMode("cull", cullExprB);
 
 const enableGpuRule = params.get("gpurule") === "1";
-const cullModeOrRule = enableGpuRule ? cullRule : cullModeC;
+const splitByRule   = params.get("split") === "1";
+const cullModeOrRule = enableGpuRule ? cullRuleA : cullModeC;
 
 // ─── Mount ─────────────────────────────────────────────────────────────
 
@@ -361,11 +377,22 @@ mount(root, (
         near: 0.1,
         far: 200,
       })}
-      CullMode={cullModeOrRule}
+      CullMode={cullModeC}
       ForcePixelPicking={AVal.constant(true)}
       OnDoubleTap={(e: SceneEvent) => ctl.flyTo(e.worldPos)}
     >
-      {liveLeaves}
+      {enableGpuRule
+        ? (splitByRule
+            ? <>
+                {/* First half follows the cullModeC inheritance via ruleA */}
+                <Sg CullMode={cullRuleA}>{liveLeaves}</Sg>
+                {/* Second half forces cull=front via a *different* rule;
+                    same effect bucket, distinct ruleId — exercises the
+                    partition kernel's per-record switch dispatch. */}
+                <Sg CullMode={cullRuleB}>{liveLeaves}</Sg>
+              </>
+            : <Sg CullMode={cullRuleA}>{liveLeaves}</Sg>)
+        : liveLeaves}
     </Sg>
   </RenderControl>
 ));
