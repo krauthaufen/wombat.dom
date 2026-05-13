@@ -312,20 +312,30 @@ document.body.appendChild(cullBtn);
 
 // ─── GPU-eval derived-mode rule (Task 2 Phase 5) ───────────────────────
 //
-// In-flight: a GPU-routed determinant-flip-cull rule, authored via
-// the `rule(...)` marker from @aardworx/wombat.shader (which traces
-// natural JS into shader IR at build time). The wombat.rendering
-// runtime side is partially in place — `derivedMode` accepts the
-// RuleExpr, kernelCodegen consumes the IR, the symbolic-set analysis
-// + concrete evaluator + slot-count sizing live in wombat.shader.
-// What's pending is heapScene's reactive integration (declared-mark
-// → re-specialise + cache swap), so for now the demo doesn't attach
-// the rule. The `?gpurule=1` URL flag is a no-op until the next
-// release lands.
-const enableGpuRule = false;
-void enableGpuRule;
+// A derived-mode rule authored via the `rule(...)` marker from
+// @aardworx/wombat.shader. The marker lowers the closure body to
+// shader IR at build time; the wombat.rendering runtime extracts
+// the body, runs the symbolic output-set analysis + per-declared
+// concrete evaluator, sizes the bucket's pipeline slots, and
+// codegens the partition kernel WGSL.
+//
+// This rule body is the trivial pass-through (`return declared`) —
+// equivalent in routing to NO rule, but exercises the full GPU
+// routing pipeline end-to-end (rule extraction → analysis →
+// codegen → kernel → declared-mark reactivity). Richer rule bodies
+// (e.g. determinant-flip-cull) need the shader package's intrinsic
+// catalogue to grow `determinant` + matrix subscripting in rule
+// scope; that lands when the analysis catches up.
+import { rule } from "@aardworx/wombat.shader";
+import { derivedMode } from "@aardworx/wombat.rendering/runtime";
 
-const cullModeOrRule = cullModeC;
+declare const declared: number;
+
+const cullExpr = rule(() => declared);
+const cullRule = derivedMode("cull", cullExpr, { declared: cullModeC });
+
+const enableGpuRule = params.get("gpurule") === "1";
+const cullModeOrRule = enableGpuRule ? cullRule : cullModeC;
 
 // ─── Mount ─────────────────────────────────────────────────────────────
 
