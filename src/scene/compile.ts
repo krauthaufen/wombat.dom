@@ -40,6 +40,7 @@ import {
 } from "@aardworx/wombat.adaptive";
 import { M44f, Trafo3d, V3d, V3f } from "@aardworx/wombat.base";
 import { RenderTree, UniformProvider, AttributeProvider } from "@aardworx/wombat.rendering/core";
+import { isDerivedRule } from "@aardworx/wombat.rendering/runtime";
 import type {
   BlendState, BufferView,
   Command, ClearValues, DepthBiasState, DepthState,
@@ -781,6 +782,9 @@ function splitTexturesFromUniforms(
   let outT = HashMap.empty<string, aval<ITexture>>();
   let outS = HashMap.empty<string, aval<ISampler>>();
   for (const [k, v] of merged) {
+    // §7 derived-uniform rules pass straight through (they're not avals — no `.force()`);
+    // the heap renderer routes them to the compute pre-pass.
+    if (isDerivedRule(v)) { outU = outU.add(k, v as unknown as aval<unknown>); continue; }
     // Why force here: structural classification at compile-scene time.
     const current = v.force();
     if (isITexture(current)) {

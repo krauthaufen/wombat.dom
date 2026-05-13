@@ -30,6 +30,7 @@ import type { Effect } from "@aardworx/wombat.shader";
 import type {
   BlendState, BufferView, DrawCall, IBuffer,
 } from "@aardworx/wombat.rendering/core";
+import { isDerivedRule } from "@aardworx/wombat.rendering/runtime";
 
 import type { Child, VNode } from "../vnode.js";
 import { isVNode } from "../vnode.js";
@@ -139,7 +140,13 @@ function shader(effect: Effect, child: SgChild): SgNode {
 function uniformBag(entries: Record<string, unknown | aval<unknown>>): UniformBag {
   let map = HashMap.empty<string, aval<unknown>>();
   for (const [k, v] of Object.entries(entries)) {
-    map = map.add(k, isAValRuntime(v) ? v as aval<unknown> : AVal.constant(v));
+    // A uniform binding is either a value (an aval / constant) or a §7 rule (a
+    // `DerivedRule` from `derivedUniform(...)`). Rules pass through the uniform map
+    // raw — the heap renderer recognises them and routes them to the compute pre-pass.
+    const binding: aval<unknown> = isDerivedRule(v) || isAValRuntime(v)
+      ? (v as aval<unknown>)
+      : AVal.constant(v);
+    map = map.add(k, binding);
   }
   return { kind: "Static", entries: map };
 }
