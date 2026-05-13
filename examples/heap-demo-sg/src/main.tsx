@@ -312,39 +312,20 @@ document.body.appendChild(cullBtn);
 
 // ─── GPU-eval derived-mode rule (Task 2 Phase 5) ───────────────────────
 //
-// A determinant-flip-cull rule, traced via the IR builder API. The
-// body reads `u.ModelTrafo` (per-RO arena uniform) and `declared`
-// (per-dispatch kernel uniform), computes the sign of det(M[0:3,0:3]),
-// and picks the slot index: `declared` if det >= 0, else the flipped
-// CullMode. The heap runtime codegens the partition kernel WGSL from
-// this IR — no hand-rolled kernels anywhere.
-//
-// Toggle `?gpurule=1` in the URL to wrap the scene with the rule.
-import { derivedMode, pickEnum, DerivedExpr } from "@aardworx/wombat.rendering/runtime";
+// In-flight: a GPU-routed determinant-flip-cull rule, authored via
+// the `rule(...)` marker from @aardworx/wombat.shader (which traces
+// natural JS into shader IR at build time). The wombat.rendering
+// runtime side is partially in place — `derivedMode` accepts the
+// RuleExpr, kernelCodegen consumes the IR, the symbolic-set analysis
+// + concrete evaluator + slot-count sizing live in wombat.shader.
+// What's pending is heapScene's reactive integration (declared-mark
+// → re-specialise + cache swap), so for now the demo doesn't attach
+// the rule. The `?gpurule=1` URL flag is a no-op until the next
+// release lands.
+const enableGpuRule = false;
+void enableGpuRule;
 
-const enableGpuRule = params.get("gpurule") === "1";
-
-// Per-axis enum order MUST match the rule's `domain` field below.
-// Slot 0 corresponds to domain[0] ("none"), slot 1 → "front", slot 2 → "back".
-const cullRule = derivedMode("cull", (u, declared) => {
-  const det = u.ModelTrafo.upperLeft3x3().determinant();
-  // "Flip cull" lookup (none → none, front → back, back → front):
-  //   declared=0 (none)  → 0 (none)
-  //   declared=1 (front) → 2 (back)
-  //   declared=2 (back)  → 1 (front)
-  const flipped = pickEnum(declared,
-    DerivedExpr.u32(0),  // when declared == 0 (none)
-    DerivedExpr.u32(2),  // when declared == 1 (front)
-    DerivedExpr.u32(1),  // when declared == 2 (back)
-  );
-  // det >= 0 → declared; det < 0 (mirrored) → flipped.
-  return flipped.select(declared, det.lt(DerivedExpr.f32(0)));
-}, {
-  domain: ["none", "front", "back"],
-  declared: cullModeC,
-});
-
-const cullModeOrRule = enableGpuRule ? cullRule : cullModeC;
+const cullModeOrRule = cullModeC;
 
 // ─── Mount ─────────────────────────────────────────────────────────────
 

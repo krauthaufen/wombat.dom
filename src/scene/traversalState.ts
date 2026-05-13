@@ -527,17 +527,14 @@ export class TraversalState implements IUniformProvider {
                 && (mode as { __derivedModeRule?: unknown }).__derivedModeRule === true;
     if (isRule) {
       const rule = mode as import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"cull">;
-      const declaredSpec = rule.gpu?.declared;
-      let cullModeAval: aval<CullValue>;
-      if (declaredSpec === undefined) {
-        cullModeAval = AVal.constant<CullValue>("back");
-      } else if (typeof declaredSpec === "string") {
-        cullModeAval = AVal.constant<CullValue>(declaredSpec);
-      } else {
-        // Already an aval — pass through. The static-PS path forces
-        // this each frame so PipelineState reflects current value.
-        cullModeAval = declaredSpec as aval<CullValue>;
-      }
+      // The rule's `declared` is the SG-context value for this axis
+      // — string or aval. Lift to an aval so the downstream static-
+      // PS path sees a uniform shape; the heap runtime reads the
+      // same value separately when codegen'ing the partition kernel.
+      const declaredSpec = rule.declared;
+      const cullModeAval: aval<CullValue> = typeof declaredSpec === "string"
+        ? AVal.constant<CullValue>(declaredSpec as CullValue)
+        : declaredSpec as aval<CullValue>;
       return this.with({
         cullMode: cullModeAval,
         cullModeRule: rule,
