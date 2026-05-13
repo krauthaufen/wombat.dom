@@ -12,6 +12,7 @@
 // collapsed by the heap+family path.
 
 import { effect, vertex, fragment } from "@aardworx/wombat.shader";
+import { derivedUniform } from "@aardworx/wombat.rendering/runtime";
 import { abs, sin, type Sampler2D, texture } from "@aardworx/wombat.shader/types";
 import { uniform } from "@aardworx/wombat.shader/uniforms";
 import { V2f, V3f, V4f } from "@aardworx/wombat.base";
@@ -23,6 +24,8 @@ declare module "@aardworx/wombat.shader/uniforms" {
     // Declared as a uniform; `Sg.instanced(...)` rewrites this read into
     // a per-instance vertex-attribute fetch at effect-compile time.
     readonly InstanceOffset: V3f;
+    /** §7-derived (see `tintBGR`): Tint with its RGB channels swapped. */
+    readonly TintBGR: V3f;
   }
 }
 
@@ -141,9 +144,12 @@ const lambertFS = fragment((v: {
   };
 });
 
-// FS-side tint via a uniform.
+// FS-side tint — multiplies by the §7-derived `TintBGR` (= Tint's RGB channels swapped),
+// so tinted objects show a B↔R-swapped tint. `Tint`'s alpha rides the output alpha (ignored
+// by the opaque blend) — that keeps `Tint` a live uniform, which the `TintBGR` rule needs as
+// a leaf. `TintBGR = derivedUniform((u) => u.Tint.swizzle("zyx"))` — see below.
 const tintFS = fragment((v: { Colors: V4f }) => ({
-  Colors: new V4f(v.Colors.xyz.mul(uniform.Tint.xyz), v.Colors.w),
+  Colors: new V4f(v.Colors.xyz.mul(uniform.TintBGR), v.Colors.w.mul(uniform.Tint.w)),
 }));
 
 // FS-side time-driven pulse.
@@ -190,3 +196,11 @@ export const texturedSurface          = effect(modelVS, uvVS, texturedLitFS);
 export const texturedInstancedSurface = effect(
   modelVS, instanceOffsetVS, clipVS, uvVS, texturedLitFS,
 );
+
+// A user-defined §7 derived uniform, authored as a closure: TintBGR = Tint.zyx (RGB swapped).
+// The wombat-shader-vite `derivedUniform(...)` marker reads `u.Tint`'s type from the
+// `UniformScope` augmentation above (V4f) and types the leaf accordingly, so `.swizzle("zyx")`
+// is a vec4→vec3 swizzle. The result is a `DerivedRule` — bound into a `Sg Uniform={…}` like
+// any other uniform value (a binding is a value OR a rule); the heap renderer's compute
+// pre-pass computes it. (Derived-uniform rules read uniforms only — no textures/samplers/SSBOs.)
+export const tintBGR = derivedUniform((u) => u.Tint.swizzle("zyx"));

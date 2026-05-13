@@ -33,6 +33,7 @@ import {
   wobblingInstancedSurface,
   texturedSurface,
   texturedInstancedSurface,
+  tintBGR,
 } from "./effects.js";
 
 // ─── Page chrome ───────────────────────────────────────────────────────
@@ -40,6 +41,7 @@ import {
 const root = document.getElementById("app")!;
 const status = document.getElementById("status")!;
 status.textContent = "starting…";
+
 const setStatus = (m: string, err = false): void => {
   status.textContent = m;
   status.style.color = err ? "#ff7777" : "#888";
@@ -197,7 +199,7 @@ function makeLeaf(k: number) {
     case "surface":
       return <Sg Shader={surface}>{prim}</Sg>;
     case "tinted":
-      return <Sg Shader={tintedSurface} Uniform={{ Tint: AVal.constant(tint) }}>{prim}</Sg>;
+      return <Sg Shader={tintedSurface} Uniform={{ Tint: AVal.constant(tint), TintBGR: tintBGR }}>{prim}</Sg>;
     case "pulsing":
       return <Sg Shader={pulsingSurface} Uniform={{ Time: time }}>{prim}</Sg>;
     case "instanced": {
