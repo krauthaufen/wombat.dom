@@ -361,6 +361,7 @@ const enableGpuRule = params.get("gpurule") === "1";
 const splitByRule   = params.get("split") === "1";
 const multiAxis     = params.get("multi") === "1";
 const mixRuled      = params.get("mix") === "1";
+const mixRuledRev   = params.get("mix") === "2";
 const cullModeOrRule = enableGpuRule ? cullRuleA : cullModeC;
 
 // ─── Mount ─────────────────────────────────────────────────────────────
@@ -401,6 +402,16 @@ mount(root, (
                     back to baseDescriptor); they used to silently
                     alias comboId 0 (= whichever combo registered first). */}
                 <Sg>{liveLeaves}</Sg>
+              </>
+            : mixRuledRev
+            ? <>
+                {/* REVERSE order: unruled ROs land FIRST → bucket is
+                    initially CPU-routed. Then the ruled subscene
+                    promotes the bucket to GPU-routed, migrating the
+                    pre-existing CPU records into the master pool
+                    under the trivial combo. */}
+                <Sg>{liveLeaves}</Sg>
+                <Sg CullMode={cullRuleA}>{liveLeaves}</Sg>
               </>
             : multiAxis
             ? <>
