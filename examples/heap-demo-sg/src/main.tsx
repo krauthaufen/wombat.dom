@@ -360,6 +360,7 @@ const depthAlwaysRule = derivedMode("depthCompare", depthAlwaysExpr);
 const enableGpuRule = params.get("gpurule") === "1";
 const splitByRule   = params.get("split") === "1";
 const multiAxis     = params.get("multi") === "1";
+const mixRuled      = params.get("mix") === "1";
 const cullModeOrRule = enableGpuRule ? cullRuleA : cullModeC;
 
 // ─── Mount ─────────────────────────────────────────────────────────────
@@ -391,7 +392,17 @@ mount(root, (
       OnDoubleTap={(e: SceneEvent) => ctl.flyTo(e.worldPos)}
     >
       {enableGpuRule
-        ? (multiAxis
+        ? (mixRuled
+            ? <>
+                {/* Ruled subscene: cull driven by ruleA */}
+                <Sg CullMode={cullRuleA}>{liveLeaves}</Sg>
+                {/* UNRULED subscene sharing the same effect bucket —
+                    these ROs get the trivial combo (every axis falls
+                    back to baseDescriptor); they used to silently
+                    alias comboId 0 (= whichever combo registered first). */}
+                <Sg>{liveLeaves}</Sg>
+              </>
+            : multiAxis
             ? <>
                 {/* Combo A: cull rule + depthCompare rule (both axes
                     driven by rules — depth disabled, cull follows user) */}
