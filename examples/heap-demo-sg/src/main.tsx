@@ -360,8 +360,9 @@ const depthAlwaysRule = derivedMode("depthCompare", depthAlwaysExpr);
 const enableGpuRule = params.get("gpurule") === "1";
 const splitByRule   = params.get("split") === "1";
 const multiAxis     = params.get("multi") === "1";
-const mixRuled      = params.get("mix") === "1";
-const mixRuledRev   = params.get("mix") === "2";
+const mixRuled       = params.get("mix") === "1";
+const mixRuledRev    = params.get("mix") === "2";
+const mixRuledMixDesc = params.get("mix") === "3";
 const cullModeOrRule = enableGpuRule ? cullRuleA : cullModeC;
 
 // ─── Mount ─────────────────────────────────────────────────────────────
@@ -411,6 +412,18 @@ mount(root, (
                     pre-existing CPU records into the master pool
                     under the trivial combo. */}
                 <Sg>{liveLeaves}</Sg>
+                <Sg CullMode={cullRuleA}>{liveLeaves}</Sg>
+              </>
+            : mixRuledMixDesc
+            ? <>
+                {/* MIXED DESCRIPTORS: pre-existing CPU ROs hold a
+                    pipelineState that differs from the ruled RO's
+                    baseDescriptor on a non-ruled axis. cullMode here
+                    is "front" (a static aval) vs cullModeC's current
+                    value once the ruled subtree's bucket lands.
+                    Bucket promotion synthesises a const-source combo
+                    with `axisFixedValues = { cull: "front" }`. */}
+                <Sg CullMode={AVal.constant<CullValue>("front")}>{liveLeaves}</Sg>
                 <Sg CullMode={cullRuleA}>{liveLeaves}</Sg>
               </>
             : multiAxis
