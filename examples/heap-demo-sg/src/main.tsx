@@ -327,6 +327,7 @@ document.body.appendChild(cullBtn);
 // catalogue to grow `determinant` + matrix subscripting in rule
 // scope; that lands when the analysis catches up.
 import { rule } from "@aardworx/wombat.shader";
+import { uniform } from "@aardworx/wombat.shader/uniforms";
 import { derivedMode } from "@aardworx/wombat.rendering/runtime";
 
 declare const declared: number;
@@ -357,12 +358,28 @@ const cullRuleB = derivedMode("cull", cullExprB);
 const depthAlwaysExpr = rule(() => 7);  // 7 = "always" in AXIS_ENUM_TABLE["depthCompare"]
 const depthAlwaysRule = derivedMode("depthCompare", depthAlwaysExpr);
 
+// Determinant demo (`?det=1`): rule reads `uniform.ModelTrafo` from
+// the arena (mat4x4) and computes its determinant on-GPU. When the
+// model trafo includes a reflection (negative determinant), flip
+// the cull mode to "front" so the back faces stay visible after
+// the winding reverses. End-to-end exercise of:
+//   - rule body reading a real arena uniform (ModelTrafo)
+//   - matrix intrinsic (.determinant lowers to IR Determinant →
+//     WGSL determinant(...))
+//   - Conditional predicate driven by per-RO runtime data
+const detCullExpr = rule(() => {
+  const d = uniform.ModelTrafo.determinant();
+  return d < 0.0 ? 1 : declared;
+});
+const detCullRule = derivedMode("cull", detCullExpr);
+
 const enableGpuRule = params.get("gpurule") === "1";
 const splitByRule   = params.get("split") === "1";
 const multiAxis     = params.get("multi") === "1";
 const mixRuled       = params.get("mix") === "1";
 const mixRuledRev    = params.get("mix") === "2";
 const mixRuledMixDesc = params.get("mix") === "3";
+const detMode        = params.get("det") === "1";
 const cullModeOrRule = enableGpuRule ? cullRuleA : cullModeC;
 
 // ─── Mount ─────────────────────────────────────────────────────────────
@@ -394,7 +411,18 @@ mount(root, (
       OnDoubleTap={(e: SceneEvent) => ctl.flyTo(e.worldPos)}
     >
       {enableGpuRule
-        ? (mixRuled
+        ? (detMode
+            ? <Sg CullMode={detCullRule}>
+                {/* Half normal, half x-mirrored — the mirrored copies
+                    have a negative ModelTrafo determinant, so the
+                    rule routes them to cull="front" while the rest
+                    follow `declared` (inherited cullModeC). The
+                    rule body reads u.ModelTrafo from the arena and
+                    computes determinant on-GPU each frame. */}
+                {liveLeaves}
+                <Sg Trafo={Sg.scale(new V3d(-1, 1, 1))}>{liveLeaves}</Sg>
+              </Sg>
+            : mixRuled
             ? <>
                 {/* Ruled subscene: cull driven by ruleA */}
                 <Sg CullMode={cullRuleA}>{liveLeaves}</Sg>
