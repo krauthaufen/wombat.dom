@@ -380,6 +380,16 @@ const mixRuled       = params.get("mix") === "1";
 const mixRuledRev    = params.get("mix") === "2";
 const mixRuledMixDesc = params.get("mix") === "3";
 const detMode        = params.get("det") === "1";
+// §3: when `?chunk=N` is supplied, set the per-arena-chunk byte cap
+// to N megabytes. Default 4 MB exercises multi-chunk routing on
+// modest scenes. Pass `?chunk=0` to disable the cap entirely
+// (single-chunk, adapter-limited).
+const chunkMB = (() => {
+  const v = params.get("chunk");
+  if (v === null) return undefined;
+  const n = parseInt(v, 10) | 0;
+  return n > 0 ? n : undefined;
+})();
 const cullModeOrRule = enableGpuRule ? cullRuleA : cullModeC;
 
 // ─── Mount ─────────────────────────────────────────────────────────────
@@ -392,6 +402,7 @@ const clear: ClearValues = {
 mount(root, (
   <RenderControl
     clear={clear}
+    {...(chunkMB !== undefined ? { maxChunkBytes: chunkMB * 1024 * 1024 } : {})}
     onReady={({ canvas, time: rcTime }) => {
       ctl.attach(canvas, rcTime);
       const inst = fxTable.filter(f => f === "instanced" || f === "wobbling" || f === "texturedInstanced").length;

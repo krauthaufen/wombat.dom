@@ -115,6 +115,16 @@ export interface RenderControlProps {
    */
   readonly enableDerivedUniforms?: boolean;
 
+  /**
+   * §3 — per-arena-chunk byte cap for the heap path. Pass a small
+   * value (e.g. 4 MB) to exercise multi-chunk routing without
+   * needing massive workloads. Threaded through to Runtime →
+   * RuntimeContext → HybridScene → heapScene's arena setup.
+   * Default: adapter's `maxStorageBufferBindingSize` (capped at
+   * `DEFAULT_MAX_BUFFER_BYTES = 256 MB`).
+   */
+  readonly maxChunkBytes?: number;
+
   /** Forwarded to `attachCanvas` — see wombat.rendering. */
   readonly attach?: Omit<AttachCanvasOptions, "format" | "depthFormat" | "sampleCount">;
   readonly format?: GPUTextureFormat;
@@ -286,6 +296,7 @@ async function initialise(
   const runtime = props.runtime ?? new Runtime({
     device,
     ...(derivedUniforms ? { enableDerivedUniforms: true } : {}),
+    ...(props.maxChunkBytes !== undefined ? { maxChunkBytes: props.maxChunkBytes } : {}),
   });
   const ownsRuntime = props.runtime === undefined;
 
