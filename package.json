@@ -1,6 +1,6 @@
 {
   "name": "@aardworx/wombat.dom",
-  "version": "0.5.25",
+  "version": "0.6.0",
   "description": "Adaptive DOM + 3D scene-graph DSL for the Wombat TypeScript stack — direct-DOM JSX over @aardworx/wombat.adaptive, with optional WebGPU scene-graph extensions.",
   "license": "MIT",
   "author": "krauthaufen",
@@ -61,7 +61,7 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "clean": "rm -rf dist",
+    "clean": "rimraf dist",
     "build": "npm run clean && vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
@@ -71,9 +71,9 @@
   },
   "dependencies": {
     "@aardworx/wombat.base": "^0.4.3",
+    "@aardworx/wombat.rendering": "^0.9.33",
     "@aardworx/wombat.shader": "^0.5.7",
-    "@aardworx/wombat.shader-vite": "^0.3.1",
-    "@aardworx/wombat.rendering": "^0.9.33"
+    "@aardworx/wombat.shader-vite": "^0.3.1"
   },
   "peerDependencies": {
     "@aardworx/wombat.base": "^0.4.3",
@@ -100,6 +100,7 @@
     "@types/node": "^20.11.0",
     "@webgpu/types": "^0.1.69",
     "happy-dom": "^14.0.0",
+    "rimraf": "^5.0.5",
     "typescript": "^5.4.0",
     "vite": "^5.4.21",
     "vite-plugin-dts": "^4.5.4",

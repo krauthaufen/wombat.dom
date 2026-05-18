@@ -626,19 +626,27 @@ function lowerLeaf(
       stateForBuild = stateForBuild.pushUniforms(applied.uniformOverrides);
     }
   }
-  const obj: RenderObject = buildRenderObject(leafForBuild, stateForBuild, effect, opts, pickId);
-  const baseTree: RenderTree = RenderTree.leaf(obj);
-
   // Active gating: when state.active is structurally CONSTANT we can
-  // collapse to `baseTree` or `Empty` at compile time (this force is
-  // not on the live path — `isConstant` avals never re-fire). When
-  // state.active is dynamic, wrap in `RenderTree.adaptive` so the
-  // walker observes flips reactively without a force.
+  // collapse at compile time. `false` ⇒ skip the leaf entirely (no
+  // RO ever built). `true` ⇒ behave as if there was no Active scope.
+  // (This force is not on the live path — `isConstant` avals never
+  // re-fire.)
   if (state.active.isConstant) {
     // AVal.force OK: isConstant guard — value is by definition immutable.
-    return state.active.force() ? baseTree : RenderTree.empty;
+    if (!state.active.force()) return RenderTree.empty;
+    const obj: RenderObject = buildRenderObject(leafForBuild, stateForBuild, effect, opts, pickId);
+    return RenderTree.leaf(obj);
   }
-  return RenderTree.adaptive(state.active.map(a => (a ? baseTree : RenderTree.empty)));
+
+  // Reactive Active: attach the aval to the RO so the runtime gates
+  // it in place (heap path skips the draw, legacy path returns 0
+  // vertices) WITHOUT removing the RO from the scene. This avoids
+  // the pool-churn cycle the old `RenderTree.adaptive(empty/baseTree)`
+  // approach caused when a tile's visibility flipped many times per
+  // camera move.
+  const baseObj: RenderObject = buildRenderObject(leafForBuild, stateForBuild, effect, opts, pickId);
+  const obj: RenderObject = { ...baseObj, active: state.active };
+  return RenderTree.leaf(obj);
 }
 
 function buildRenderObject(
