@@ -1,9 +1,41 @@
-import { defineConfig } from "vite";
-import { readFileSync, existsSync } from "node:fs";
+import { defineConfig, type Plugin } from "vite";
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { boperators } from "@boperators/plugin-vite";
 import { wombatShader } from "@aardworx/wombat.shader-vite";
 import { adaptiveMemoPlugin } from "@aardworx/wombat.adaptive/plugin";
+
+// POST /__cam-save → writes body to /tmp/cam-paths/cam-<timestamp>.json
+// Used by the demo's "DUMP" button to persist a recorded camera path
+// without copy/paste round-trips through a chat client.
+const camSavePlugin = (): Plugin => ({
+  name: "cam-save",
+  configureServer(server) {
+    server.middlewares.use("/__cam-save", (req, res) => {
+      if (req.method !== "POST") {
+        res.statusCode = 405; res.end("POST only"); return;
+      }
+      const chunks: Buffer[] = [];
+      req.on("data", c => chunks.push(c));
+      req.on("end", () => {
+        try {
+          const body = Buffer.concat(chunks).toString("utf8");
+          const dir = "/tmp/cam-paths";
+          mkdirSync(dir, { recursive: true });
+          const file = join(dir, `cam-${Date.now()}.json`);
+          writeFileSync(file, body);
+          res.setHeader("content-type", "application/json");
+          res.end(JSON.stringify({ ok: true, file }));
+          console.log(`[cam-save] wrote ${file} (${body.length} bytes, ${(JSON.parse(body) as unknown[]).length} samples)`);
+        } catch (e) {
+          res.statusCode = 500;
+          res.end(String(e));
+        }
+      });
+    });
+  },
+});
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 
@@ -17,11 +49,16 @@ const httpsCfg = existsSync(certPath) && existsSync(keyPath)
   : undefined;
 
 export default defineConfig({
-  plugins: [adaptiveMemoPlugin(), boperators(), wombatShader({ rootDir: here })],
+  plugins: [camSavePlugin(), adaptiveMemoPlugin(), boperators(), wombatShader({ rootDir: here })],
   server: {
     host: "0.0.0.0",
-    port: 8445,
+    port: 8446,
     strictPort: true,
+    // Allow vite to serve files reached via `public/` symlinks that
+    // resolve outside the project root (e.g. the local Sonnenburghof
+    // dataset under ~/projects/TileRenderer/.../wwwroot/data,
+    // symlinked into public/sonnenburghof).
+    fs: { strict: false },
     ...(httpsCfg !== undefined ? { https: httpsCfg } : {}),
     allowedHosts: [".ts.net", ".loca.lt", "localhost"],
   },
