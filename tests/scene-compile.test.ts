@@ -189,15 +189,17 @@ describe("compileScene — Active gating", () => {
     expect(singleRender(compileScene(tree)).kind).toBe("Empty");
   });
 
-  it("dynamic active wraps as Adaptive(aval<Leaf|Empty>)", () => {
+  it("dynamic active attaches as `active` aval on the RenderObject (no Adaptive wrap)", () => {
     const a = cval(true);
     const tree = Sg.shader(fakeEffect, Sg.active(a, leaf()));
     const rt = singleRender(compileScene(tree));
-    expect(rt.kind).toBe("Adaptive");
-    if (rt.kind === "Adaptive") {
-      expect(AVal.force(rt.tree).kind).toBe("Leaf");
+    expect(rt.kind).toBe("Leaf");
+    if (rt.kind === "Leaf") {
+      const active = rt.object.active;
+      expect(active).toBeDefined();
+      expect(AVal.force(active!)).toBe(true);
       transact(() => { a.value = false; });
-      expect(AVal.force(rt.tree).kind).toBe("Empty");
+      expect(AVal.force(active!)).toBe(false);
     }
   });
 });

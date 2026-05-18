@@ -42,7 +42,7 @@ const ALLOWLIST: readonly string[] = [
   "const noEventsNow = constantNoEvents ? state.noEvents.force() : false;",
   // state.active.isConstant fast path — force on a constant aval has
   // no upstream dependency to lose; collapses RenderTree at compile.
-  "return state.active.force() ? baseTree : RenderTree.empty;",
+  "if (!state.active.force()) return RenderTree.empty;",
   // splitTexturesFromUniforms — structural classification at compile-
   // scene time. Reads each merged uniform's current value once to
   // decide texture vs scalar; runs only during leaf lowering.
