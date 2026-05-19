@@ -12,7 +12,7 @@
     "@aardworx/wombat.adaptive": "^0.2.5",
     "@aardworx/wombat.base": "^0.4.2",
     "@aardworx/wombat.dom": "^0.5.25",
-    "@aardworx/wombat.rendering": "^0.18.1",
+    "@aardworx/wombat.rendering": "^0.19.1",
     "@aardworx/wombat.shader": "^0.5.7",
     "@aardworx/wombat.shader-vite": "^0.3.2",
     "3d-tiles-renderer": "^0.4.24",
