@@ -105,6 +105,9 @@ let camStartMs = 0;
   start(): void { camPath.length = 0; camStartMs = performance.now(); camRecording = true; console.log('[cam] recording started'); },
   stop(): void { camRecording = false; console.log(`[cam] recording stopped (${camPath.length} samples, ${((performance.now()-camStartMs)/1000).toFixed(1)}s)`); },
   clear(): void { camPath.length = 0; console.log('[cam] cleared'); },
+  setPose(s: { phi: number; theta: number; radius: number; cx: number; cy: number; cz: number }): void {
+    ctl.set(new V3d(s.cx, s.cy, s.cz), s.radius, s.phi, s.theta);
+  },
   get path(): CamSample[] { return camPath.slice(); },
   dump(): void {
     const json = JSON.stringify(camPath);
@@ -472,15 +475,16 @@ const tiles = new TilesRenderer(TILESET_URL);
 tiles.setCamera(threeCam);
 tiles.setResolution(threeCam, new THREE.Vector2(800, 600));
 tiles.errorTarget = ERROR_TARGET;
-// Expand the LRU so the bug-triggering scenario can fill it: we want
-// many tiles resident before dispose pressure kicks in. Higher caps
-// → atlas + arena fills further → bug surfaces.
+// LRU sized to the atlas: every loaded tile pins an atlas slot until
+// it's disposed (active=false only gates draws, doesn't release the
+// pool ref). 8 pages × ~32 tiles/page ≈ 256 tile capacity, so cap
+// maxSize there. Bigger caps just make the atlas explode.
 const tilesAnyCache = (tiles as unknown as { lruCache?: { minBytesSize: number; maxBytesSize: number; minSize: number; maxSize: number } }).lruCache;
 if (tilesAnyCache !== undefined) {
-  tilesAnyCache.minBytesSize = 256 * 1024 * 1024;
-  tilesAnyCache.maxBytesSize = 512 * 1024 * 1024;
-  tilesAnyCache.minSize = 500;
-  tilesAnyCache.maxSize = 2000;
+  tilesAnyCache.minBytesSize = 128 * 1024 * 1024;
+  tilesAnyCache.maxBytesSize = 256 * 1024 * 1024;
+  tilesAnyCache.minSize = 64;
+  tilesAnyCache.maxSize = 256;
 }
 
 // 3D Tiles refinement strategy: a tile may be REPLACE'd by its
@@ -507,6 +511,7 @@ type TileEntry = {
   shown: boolean;
 };
 const loadedTilesByTile = new WeakMap<object, TileEntry>();
+(window as unknown as { __loadedTiles: typeof loadedTilesByTile }).__loadedTiles = loadedTilesByTile;
 
 let loadedTiles = 0;
 let visibleMeshes = 0;
@@ -554,12 +559,42 @@ tiles.addEventListener("load-model", ((ev: unknown) => {
   if (!refLocked) autoFrameFromCurrentTiles();
 }) as EventListener);
 
+// Walk the tile tree counting (parent-shown, any-descendant-also-shown)
+// pairs. A non-zero count under REPLACE refinement means the demo's
+// active gating is letting parents through alongside their children —
+// the cubist-shatter symptom. Surface it in the status bar so a touch-
+// only user can see whether the bug is live without typing commands.
+function countParentChildOverlaps(): number {
+  const root = (tiles as unknown as { rootTileSet?: { root?: TileNode } }).rootTileSet?.root;
+  if (root === undefined) return 0;
+  let n = 0;
+  const visit = (t: TileNode | undefined): void => {
+    if (t === undefined) return;
+    const e = loadedTilesByTile.get(t);
+    if (e !== undefined && e.active.value === true) {
+      const walk = (node: TileNode): void => {
+        for (const c of node.children ?? []) {
+          const ce = loadedTilesByTile.get(c);
+          if (ce !== undefined && ce.active.value === true) n++;
+          walk(c);
+        }
+      };
+      walk(t);
+    }
+    for (const c of t.children ?? []) visit(c);
+  };
+  visit(root);
+  return n;
+}
+type TileNode = { children?: TileNode[]; refine?: string };
+
 tiles.addEventListener("tile-visibility-change", ((ev: unknown) => {
   const e = ev as { tile: object; visible: boolean };
   const entry = loadedTilesByTile.get(e.tile);
   if (entry === undefined) return;  // pre-load; load-model will reconcile via visibleTiles.has
   if (e.visible) showTile(entry); else hideTile(entry);
-  setStatus(`loaded ${loadedTiles} tiles · ${visibleMeshes} visible`);
+  const overlaps = countParentChildOverlaps();
+  setStatus(`loaded ${loadedTiles} · ${visibleMeshes} visible · overlap:${overlaps}`);
 }) as EventListener);
 
 tiles.addEventListener("dispose-model", ((ev: unknown) => {
