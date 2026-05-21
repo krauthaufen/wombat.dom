@@ -111,29 +111,32 @@ DOM.
 
 ## Scene roadmap
 
-The `@aardworx/wombat.dom/scene` subpath ships in milestones. Tracked
-in [`TODO.md`](TODO.md) and [`CLAUDE.md`](CLAUDE.md).
+The `@aardworx/wombat.dom/scene` subpath shipped in milestones. Status
+is tracked in [`TODO.md`](TODO.md) and [`CLAUDE.md`](CLAUDE.md).
 
-| M | Goal |
-| --- | --- |
-| M1 | rename + scaffold (this release: 0.2.0) |
-| M2 | `Sg` core: tagged-union scene nodes, traversal state, attribute composition rules |
-| M3 | scene → `RenderObject` lowering (uses `wombat.rendering`) |
-| M4 | `<RenderControl>` JSX component |
-| M5 | camera + view/proj uniforms |
-| M6 | free-fly + orbit controllers |
-| M7 | pick framebuffer + pick effect (Mode A) |
-| M8 | pick read + `SceneEvent` capture/bubble |
-| M9 | default surfaces + primitives (`<Sg.Box/>`, …) |
-| M10 | BVH picking + fusion (optional) |
+| M | Goal | Status |
+| --- | --- | --- |
+| M1 | rename + scaffold | shipped |
+| M2 | `Sg` core: tagged-union scene nodes, traversal state, attribute composition rules | shipped |
+| M3 | scene → `RenderObject` lowering (uses `wombat.rendering`) | shipped |
+| M4 | `<RenderControl>` JSX component | shipped |
+| M5 | camera + view/proj uniforms | shipped |
+| M6 | free-fly + orbit controllers | shipped |
+| M7 | pick framebuffer + pick effect (Mode A) | shipped |
+| M8 | pick read + `SceneEvent` capture/bubble; default surfaces + primitives (`<Sg.Box/>`, `Quad`, `Sphere`, `Cylinder`, `Cone`) | shipped |
+| M10 | reactive BVH picking + pixel↔BVH fusion | shipped |
 
-After M8 the package can render a hello-cube demo with click-to-log
-on a real GPU.
+The package renders + picks on a real GPU today, with auto-instancing,
+FreeFly + Orbit controllers, SceneEvent capture/bubble plus focus/key
+routing, and symmetric SDF text AA. Remaining work (focus tab-navigation
+and focus-ring rendering, generic matrix-typed instancing attributes,
+zoom-aware text halo, bezier3/arc in the band builder) is listed in
+[`TODO.md`](TODO.md).
 
 ## Status
 
-Pre-1.0. Stable shape on the DOM side, expect breaking renames as
-the scene layer fills in. No SSR.
+Pre-1.0 (0.6.1). Stable shape on the DOM side; the scene layer renders
+and picks but may still see breaking renames. No SSR.
 
 ## License
 

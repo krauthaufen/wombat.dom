@@ -9,11 +9,11 @@ auto-instancing (phases 1–4, pixel-perfect parity); symmetric SDF text AA.
 Design doc kept: `docs/auto-instancing.md`. Architectural items live in
 `~/claude/wombat-todo.md`.
 
-## Open
+Note: M8 primitive Sg nodes (`<Sg.Box/>` / `Quad` / `Sphere` / `Cylinder` /
+`Cone` + DefaultSurfaces) and M10 (reactive BVH picking + pixel↔BVH fusion) are
+both **shipped** — they're no longer open.
 
-### Scene graph (M8+)
-- **M8 — default surfaces / primitives**: `<Sg.Box/>`, `<Sg.Sphere/>`, etc.
-- **M10 — BVH picking + fusion**.
+## Open
 
 ### Picking / focus (deferred)
 - HTML/JS focus integration (tab-nav into scene scopes) + focus-ring outline
@@ -24,14 +24,15 @@ Design doc kept: `docs/auto-instancing.md`. Architectural items live in
 
 ### Auto-instancing gaps
 - Generic matrix-typed plain attributes (only the `ModelTrafo` trafo convenience
-  is shipped).
-- Re-validation when an `SgAdaptiveGroup` inside an instanced subtree swaps in an
-  `instanceCount > 1` leaf mid-frame (validation is one-shot at compile today).
+  is shipped; generic `inst.attributes` matrices are passed through verbatim).
+  (Mid-frame re-validation on `SgAdaptiveGroup` swaps inside an instanced subtree
+  is already handled — per-swap `validateInstancingSubtree`.)
 
 ### Text rendering
-- **Body-side gap probe** — CPU test sampling points inside each glyph contour to
-  assert coverage by ≥1 fill/curve triangle (mirror of the band-watertightness
-  probe), so triangulator refactors can't silently regress fill.
+- **Coverage probes** — neither a body-side gap probe (sample points inside each
+  glyph contour, assert coverage by ≥1 fill/curve triangle) nor a band-
+  watertightness probe exists yet. Add both so triangulator refactors can't
+  silently regress fill. (Lives in wombat.base `tests/font/`.)
 - **Halo as a runtime / zoom-aware knob** — `BAND_HALO_EM` is a static 0.05;
   rebuild per zoom-bucket or store multiple halo widths so the AA ramp neither
   clips (zoom-in) nor over-draws (zoom-out).

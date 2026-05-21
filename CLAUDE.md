@@ -24,8 +24,9 @@ src/
                      (3D scene graph; uses wombat.rendering + wombat.shader)
 ```
 
-Scene-layer milestones are listed in `README.md §Scene roadmap` and
-mirrored in this file. Code lands in `src/scene/`.
+Scene-layer status is listed in `README.md §Scene roadmap` and
+`TODO.md`. Code lives in `src/scene/`. Cross-repo status:
+`~/claude/wombat-todo.md`.
 
 ## Tooling
 
@@ -67,7 +68,7 @@ JSX  ──►  jsx-runtime  ──►  VNode  ──►  mount  ──►  bind
   - `children.ts` — dispatch table for whatever ended up in the
     JSX `children` slot.
 
-Scene side (incoming, see roadmap):
+Scene side (shipped — see `TODO.md` for remaining gaps):
 
 ```
 SgNode tree  ──►  TraversalState walk  ──►  alist<Command>  ──►  wombat.rendering Runtime
@@ -77,7 +78,16 @@ SgNode tree  ──►  TraversalState walk  ──►  alist<Command>  ──�
   `wombat.rendering`'s `attachCanvas`, runs the rAF render loop.
 - The Sg DSL is JSX-native: `<Sg Trafo Shader Uniform OnClick>`
   with scoped attributes flowing down to children, plus leaf
-  components like `<Sg.Box/>`. See `README.md` for the surface.
+  components like `<Sg.Box/>`, `<Sg.Sphere/>`, `<Sg.Cylinder/>`,
+  `<Sg.Cone/>`, `<Sg.Quad/>` (with DefaultSurfaces). See `README.md`
+  for the surface.
+- Auto-instancing fuses by Effect with per-swap re-validation of
+  instanced subtrees (`docs/auto-instancing.md`).
+- Picking: pick-framebuffer pixel pick plus reactive BVH ray queries,
+  with pixel↔BVH fusion (`src/scene/picking/`). SceneEvent
+  capture/bubble plus focus/key routing.
+- FreeFly + Orbit controllers (`src/scene/controllers/`).
+- Symmetric SDF text AA (`src/scene/text-sdf.ts`).
 
 ## Design decisions (locked-in)
 
