@@ -77,6 +77,13 @@ declare module "@aardworx/wombat.shader/uniforms" {
 // per candidate curve, indexed by the candidate's tri-id from v_cands.
 declare const tris: Storage<V4f[], "read">;
 
+// Per-band-triangle candidate CSR. `bandCandOffsets[triId]` ..
+// `bandCandOffsets[triId+1]` is the slice of `bandCandIndices` holding
+// this band triangle's candidate curve-triangle SSBO indices. Replaces
+// the old per-vertex cand slots; the band FS loops the actual range.
+declare const bandCandOffsets: Storage<u32[], "read">;
+declare const bandCandIndices: Storage<u32[], "read">;
+
 // SSBO entry layout per candidate:
 //   tris[base + 0] = (a.xy, klm0.xy)
 //   tris[base + 1] = (b.xy, klm1.xy)   ← b == a marks line sentinel
@@ -195,8 +202,7 @@ function buildSdfTextEffect(): Effect {
   const vsMain = vertex((input: {
     a_pos:        V2f;
     a_klmKind:    V4f;
-    a_cands:      V4f;
-    a_cands2:     V2f;
+    a_lensCands:  V3f;
     a_instOffset: V2f;
   }) => {
     const pPlus  = uniform.ProjTrafo.mul(uniform.ViewTrafo.mul(uniform.ModelTrafo.mul(new V4f( 1.0, 0.0, 0.0, 1.0))));
@@ -210,8 +216,7 @@ function buildSdfTextEffect(): Effect {
       gl_Position: clip,
       v_kind:      input.a_klmKind.w,
       v_klm:       new V3f(input.a_klmKind.x, input.a_klmKind.y, input.a_klmKind.z),
-      v_cands:     input.a_cands,
-      v_cands2:    input.a_cands2,
+      v_lensCands: input.a_lensCands,
       v_inst:      input.a_instOffset,
       v_sx:        sx,
       v_pos:       input.a_pos,
@@ -219,13 +224,12 @@ function buildSdfTextEffect(): Effect {
   });
 
   const fsMain = fragment((input: {
-    v_kind:   f32;
-    v_klm:    V3f;
-    v_cands:  V4f;
-    v_cands2: V2f;
-    v_inst:   V2f;
-    v_sx:     f32;
-    v_pos:    V2f;
+    v_kind:      f32;
+    v_klm:       V3f;
+    v_lensCands: V3f;
+    v_inst:      V2f;
+    v_sx:        f32;
+    v_pos:       V2f;
   }) => {
     // Dispatch by kind:
     //   0      → body flat fill (alpha = 1).
@@ -247,8 +251,21 @@ function buildSdfTextEffect(): Effect {
       const f = isArc ? (k * k + l * l - 1.0) * m : (k * k - l) * m;
       if (f > 0.0) lensOutside = 1.0;
     }
-    const isBand = input.v_kind > 3.5;
-    if (isBand || lensOutside > 0.5) {
+    const isLens = input.v_kind > 0.5 && input.v_kind < 2.5;
+    const isBand = input.v_kind > 3.5 && input.v_kind < 4.5;
+    const isFill = input.v_kind > 4.5;
+    if (isBand || isFill || isLens) {
+      // Symmetric AA ramp centred on the outline:
+      //   α = clamp(0.5 + sign·distPx/aaW, 0, 1)
+      // sign = +1 INSIDE the outline, −1 OUTSIDE. The band is always
+      // outside; the interior shell (fill ramp) is always inside; a lens
+      // fragment is inside the curve when the Loop-Blinn implicit f ≤ 0
+      // (lensOutside == 0), outside when f > 0. At distPx = 0 (on the
+      // outline) every kind gives α = 0.5, so the perceived edge sits on
+      // the true boundary instead of ½·aaW outside it — no fattening.
+      let sign: f32 = 1.0;
+      if (isBand) { sign = -1.0; }
+      else if (isLens && lensOutside > 0.5) { sign = -1.0; }
       const aaW = max(uniform.AaWidthPx, 1.0e-3);
       const fragText = new V4f(
         (input.v_inst.x + input.v_pos.x) * sx,
@@ -260,14 +277,28 @@ function buildSdfTextEffect(): Effect {
       const fragPxY = (fragClip.y / fragClip.w + 1.0) * 0.5 * uniform.Viewport.y;
 
       let minDistPx2: f32 = 1.0e20;
-      minDistPx2 = min(minDistPx2, processCand(input.v_cands.x,  sx, fragPxX, fragPxY, input.v_inst.x, input.v_inst.y));
-      minDistPx2 = min(minDistPx2, processCand(input.v_cands.y,  sx, fragPxX, fragPxY, input.v_inst.x, input.v_inst.y));
-      minDistPx2 = min(minDistPx2, processCand(input.v_cands.z,  sx, fragPxX, fragPxY, input.v_inst.x, input.v_inst.y));
-      minDistPx2 = min(minDistPx2, processCand(input.v_cands.w,  sx, fragPxX, fragPxY, input.v_inst.x, input.v_inst.y));
-      minDistPx2 = min(minDistPx2, processCand(input.v_cands2.x, sx, fragPxX, fragPxY, input.v_inst.x, input.v_inst.y));
-      minDistPx2 = min(minDistPx2, processCand(input.v_cands2.y, sx, fragPxX, fragPxY, input.v_inst.x, input.v_inst.y));
+      if (isBand || isFill) {
+        // Band + interior shell: loop this triangle's candidate CSR
+        // range. triId lives in klm.x (slot 2); curve indices are global
+        // SSBO indices.
+        const ONE_U: u32 = 1 as u32;
+        const triId = (input.v_klm.x + 0.5) as u32;
+        const lo = bandCandOffsets[triId] as u32;
+        const hi = bandCandOffsets[triId + ONE_U] as u32;
+        for (let i: u32 = lo; i < hi; i = i + ONE_U) {
+          const ciU = bandCandIndices[i] as u32;
+          const ci: f32 = (ciU as number) as f32;
+          minDistPx2 = min(minDistPx2, processCand(ci, sx, fragPxX, fragPxY, input.v_inst.x, input.v_inst.y));
+        }
+      } else {
+        // Lens fragment (inside OR outside the curve): the 3 inline
+        // candidates (this curve + its prev/next neighbours) in slots 6..8.
+        minDistPx2 = min(minDistPx2, processCand(input.v_lensCands.x, sx, fragPxX, fragPxY, input.v_inst.x, input.v_inst.y));
+        minDistPx2 = min(minDistPx2, processCand(input.v_lensCands.y, sx, fragPxX, fragPxY, input.v_inst.x, input.v_inst.y));
+        minDistPx2 = min(minDistPx2, processCand(input.v_lensCands.z, sx, fragPxX, fragPxY, input.v_inst.x, input.v_inst.y));
+      }
       const minDistPx = sqrt(minDistPx2);
-      alpha = clamp(1.0 - minDistPx / aaW, 0.0, 1.0);
+      alpha = clamp(0.5 + sign * minDistPx / aaW, 0.0, 1.0);
       if (alpha <= 0.0 && !useDebug) discard();
     }
     // Real-mode color: PathColor with computed alpha.
@@ -286,10 +317,11 @@ function buildSdfTextEffect(): Effect {
     const bandG = 0.25 + 0.75 * fract(tid * 0.3819660113);
     const bandB = 0.25 + 0.75 * fract(tid * 0.7548776662);
 
-    const debugR = isBand ? bandR : realR;
-    const debugG = isBand ? bandG : realG;
-    const debugB = isBand ? bandB : realB;
-    const debugA = isBand ? 1.0   : realA;
+    const isRampDbg = isBand || isFill;
+    const debugR = isRampDbg ? bandR : realR;
+    const debugG = isRampDbg ? bandG : realG;
+    const debugB = isRampDbg ? bandB : realB;
+    const debugA = isRampDbg ? 1.0   : realA;
 
     const outR = useDebug ? debugR : realR;
     const outG = useDebug ? debugG : realG;
@@ -376,11 +408,14 @@ export function buildSdfTextScene(args: SdfTextArgs): SgNode {
   const vertexAttrs = HashMap.empty<string, BufferView>()
     .add("a_pos",     { buffer: vertBufAval, elementType: ElementType.V2f, offset: 0,  stride: STRIDE_BYTES })
     .add("a_klmKind", { buffer: vertBufAval, elementType: ElementType.V4f, offset: 8,  stride: STRIDE_BYTES })
-    .add("a_cands",   { buffer: vertBufAval, elementType: ElementType.V4f, offset: 24, stride: STRIDE_BYTES })
-    .add("a_cands2",  { buffer: vertBufAval, elementType: ElementType.V2f, offset: 40, stride: STRIDE_BYTES });
+    .add("a_lensCands", { buffer: vertBufAval, elementType: ElementType.V3f, offset: 24, stride: STRIDE_BYTES });
 
+  const candOffBuf = IBuffer.fromHost(cache.bandCandOffsetBuffer());
+  const candIdxBuf = IBuffer.fromHost(cache.bandCandIndexBuffer());
   const storageBuffers = HashMap.empty<string, aval<IBuffer>>()
-    .add("tris", AVal.constant<IBuffer>(triBuf));
+    .add("tris", AVal.constant<IBuffer>(triBuf))
+    .add("bandCandOffsets", AVal.constant<IBuffer>(candOffBuf))
+    .add("bandCandIndices", AVal.constant<IBuffer>(candIdxBuf));
 
   const effect = buildSdfTextEffect();
   const viewportV2: aval<V2f> = ambViewport.map(
