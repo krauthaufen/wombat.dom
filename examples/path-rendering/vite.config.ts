@@ -2,8 +2,6 @@ import { defineConfig } from "vite";
 import { wombatShader } from "@aardworx/wombat.shader-vite";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { boperators } from "@boperators/plugin-vite";
-
 const here = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
@@ -18,7 +16,6 @@ export default defineConfig({
     allowedHosts: [".ts.net", ".loca.lt", "localhost"],
   },
   plugins: [
-    boperators(),
     // Inlines `effect(vertex(...), fragment(...))` markers at
     // build time. Ambient `declare const` uniforms become real
     // Uniform ValueDefs in the compiled IR.

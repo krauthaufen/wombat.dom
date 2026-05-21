@@ -2,7 +2,6 @@ import { defineConfig, type Plugin } from "vite";
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import { boperators } from "@boperators/plugin-vite";
 import { wombatShader } from "@aardworx/wombat.shader-vite";
 import { adaptiveMemoPlugin } from "@aardworx/wombat.adaptive/plugin";
 
@@ -49,7 +48,7 @@ const httpsCfg = existsSync(certPath) && existsSync(keyPath)
   : undefined;
 
 export default defineConfig({
-  plugins: [camSavePlugin(), adaptiveMemoPlugin(), boperators(), wombatShader({ rootDir: here })],
+  plugins: [camSavePlugin(), adaptiveMemoPlugin(), wombatShader({ rootDir: here })],
   server: {
     host: "0.0.0.0",
     port: 8446,
