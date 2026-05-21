@@ -153,11 +153,21 @@ const rows = (aa: "none" | "alpha-blending") =>
 
 const aaIsNone = aaIsBlend.map((b) => !b);
 
+// Render the backing store at quarter resolution (½ per axis) and let
+// the browser upscale the canvas to its CSS size. Combined with
+// `image-rendering: pixelated` (nearest) in onReady, the AA ramp shows
+// up as crisp blocky pixels — handy for inspecting the symmetric edge
+// coverage. Set to 1 for native resolution.
+const RENDER_SCALE = 0.5;
+const baseDpr = typeof window !== "undefined" ? window.devicePixelRatio : 1;
+
 mount(root, (
   <RenderControl
     clear={clear}
-    attach={{ devicePixelRatio: typeof window !== "undefined" ? window.devicePixelRatio : 1 }}
+    attach={{ devicePixelRatio: baseDpr * RENDER_SCALE }}
     onReady={({ canvas, time }) => {
+      // Nearest-neighbour upscale of the low-res buffer (no bilinear blur).
+      canvas.style.imageRendering = "pixelated";
       ctl.attach(canvas, time);
       status.textContent = "ready — drag to rotate, wheel zoom, double-tap a glyph to fly to it";
     }}
