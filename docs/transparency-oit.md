@@ -25,10 +25,21 @@ transparent objects **once more** depth-tested into `PickData`+depth — aardvar
 system stays oblivious. Requires the write-mask-only color targets added in
 **wombat.rendering 0.19.6**. Validated: WBOIT `pick=A(2)`, depth ~0.1.
 
-Still TODO: pick for the **A-buffer** path (same re-render pass; A-buffer's color
-resolve still samples the opaque, so it keeps an intermediate today), **MSAA**
-variants, and auto-wiring into `RenderControl` (the wrapper is an opt-in
-standalone `IRenderTask`).
+**A-buffer picking (wombat.dom 0.10.0):** done. A-buffer's color resolve still
+samples the opaque from its intermediate, so the wrapper adds an opaque-pick pass
+(opaque rendered once more into `PickData`+depth) plus the shared transparent-pick
+pass; the resolve masks `PickData` write-mask-only. Both modes now pick.
+
+Still TODO:
+- **MSAA** variants — multisampled OIT framebuffers + resolve targets (per-sample
+  accum/reveal, shared MS depth). A genuine chunk of FBO/resolve plumbing.
+- **Auto-wiring into `RenderControl`** — the wrapper is an opt-in standalone
+  `IRenderTask` today. RenderControl's canvas pick framebuffer names its pick
+  attachment `pickId` (+ a `Depth` attachment) and is driven by the pick registry,
+  so wiring `transparencyTask` in means aligning the wrapper's pick-attachment
+  naming (it currently assumes `PickData`), threading the registry, and possibly
+  handling an MSAA canvas — a deliberate, blast-radius-aware change to the core
+  loop, best done on its own.
 
 `transparencyTask` relies on five additive `compileScene` hooks (`passFilter`,
 `composeEffect`, `pipelineOverride`, `injectStorage`, `injectUniforms`) — all
