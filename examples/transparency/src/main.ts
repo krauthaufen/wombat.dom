@@ -373,16 +373,19 @@ async function main() {
     // MSAA WBOIT (4×): internal multisampled passes, single-sample output.
     // Fully-covered center pixel keeps the same color as 1× (MSAA only affects edges).
     setOitMode("wboit");
-    const msSig = createFramebufferSignature({ colors: { Colors: "rgba32float" } });
+    const msSig = createFramebufferSignature({ colors: { Colors: "rgba16float", pickId: "rgba32float" } });
     const msFb = allocateFramebuffer(device, msSig, size, { extraUsage: TextureUsage.COPY_SRC });
     msFb.acquire();
     const msTask = transparencyTask(runtime, device, msSig, size, scene, { sampleCount: 4 });
     msTask.run(msFb.getValue(AdaptiveToken.top), AdaptiveToken.top);
     await device.queue.onSubmittedWorkDone();
-    const m = await readPixel0(device, msFb.getValue(AdaptiveToken.top).colorTextures!.tryFind("Colors")! as unknown as GPUTexture);
+    const msIfb = msFb.getValue(AdaptiveToken.top);
+    const m = await readPixel0H(device, msIfb.colorTextures!.tryFind("Colors")! as unknown as GPUTexture);
+    const mp = await readPixel0(device, msIfb.colorTextures!.tryFind("pickId")! as unknown as GPUTexture);
     msTask.dispose(); msFb.release();
-    log(`== Sg + transparencyTask mode=wboit MSAA 4x ==  color=${[...m].slice(0, 3).map((v) => v.toFixed(3)).join(",")}`);
-    check("Sg wboit MSAA 4x ~(0.25,0.375,0.375)", Math.abs(m[0]! - 0.25) < 0.05 && Math.abs(m[1]! - 0.375) < 0.05 && Math.abs(m[2]! - 0.375) < 0.05, `(${m[0]!.toFixed(3)},${m[1]!.toFixed(3)},${m[2]!.toFixed(3)})`);
+    log(`== Sg + transparencyTask mode=wboit MSAA 4x ==  color=${[...m].slice(0, 3).map((v) => v.toFixed(3)).join(",")}  pick=${mp[0]!.toFixed(2)},${mp[1]!.toFixed(2)}`);
+    check("Sg wboit MSAA 4x color ~(0.25,0.375,0.375)", Math.abs(m[0]! - 0.25) < 0.05 && Math.abs(m[1]! - 0.375) < 0.05 && Math.abs(m[2]! - 0.375) < 0.05, `(${m[0]!.toFixed(3)},${m[1]!.toFixed(3)},${m[2]!.toFixed(3)})`);
+    check("Sg wboit MSAA 4x pick=A(2) (majority vote)", Math.abs(mp[0]! - 2) < 0.5 && mp[1]! < 0.2, `pick=${mp[0]!.toFixed(2)} depth=${mp[1]!.toFixed(3)}`);
   }
 }
 main().catch((e) => { out.textContent += "\nERROR: " + (e?.stack || e); });
