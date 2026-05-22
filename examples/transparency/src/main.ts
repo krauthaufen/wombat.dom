@@ -169,6 +169,27 @@ async function readPixel0(device: GPUDevice, tex: GPUTexture): Promise<Float32Ar
   return f;
 }
 
+const halfToFloat = (h: number): number => {
+  const s = (h & 0x8000) ? -1 : 1; const e = (h >> 10) & 0x1f; const m = h & 0x3ff;
+  if (e === 0) return s * Math.pow(2, -14) * (m / 1024);
+  if (e === 31) return m ? NaN : s * Infinity;
+  return s * Math.pow(2, e - 15) * (1 + m / 1024);
+};
+// readback for rgba16float (blendable) attachments — decodes the four halves.
+async function readPixel0H(device: GPUDevice, tex: GPUTexture): Promise<Float32Array> {
+  const bpr = Math.ceil((tex.width * 8) / 256) * 256;
+  const buf = device.createBuffer({ size: bpr * tex.height, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  const enc = device.createCommandEncoder();
+  enc.copyTextureToBuffer({ texture: tex }, { buffer: buf, bytesPerRow: bpr, rowsPerImage: tex.height }, { width: tex.width, height: tex.height, depthOrArrayLayers: 1 });
+  device.queue.submit([enc.finish()]);
+  await buf.mapAsync(GPUMapMode.READ);
+  const u16 = new Uint16Array(buf.getMappedRange().slice(0, 8));
+  const out = new Float32Array(4);
+  for (let i = 0; i < 4; i++) out[i] = halfToFloat(u16[i]!);
+  buf.unmap(); buf.destroy();
+  return out;
+}
+
 async function main() {
   out.textContent = "init…";
   const adapter = await navigator.gpu.requestAdapter();
@@ -299,42 +320,51 @@ async function main() {
   {
     // A real scene-graph: opaque solid + 4 transparent quads, tagged with
     // Sg.opaque / Sg.transparent. transparencyTask lowers + multipasses it.
+    // The scene effect writes Colors + PickData (id, depth) — the wrapper
+    // preserves PickData through the composite and re-renders the transparent
+    // objects into it for the pick pass.
     const userEffect = effect(
       vertex((v: { a_pos: V2f }) => ({ gl_Position: new V4f(v.a_pos.x, v.a_pos.y, uniform.u_z.mul(0.5).add(0.5), 1.0) })),
-      fragment(() => ({ Colors: uniform.u_color })),
+      fragment((_in: {}, b: FragmentBuiltinIn) => ({ Colors: uniform.u_color, PickData: new V4f(uniform.u_pickId, b.fragCoord.z, 0.0, 0.0) })),
     );
     const quadGeom = Sg.leaf({
       vertexAttributes: HashMap.empty<string, BufferView>().add("a_pos", { buffer: quadBuf, offset: 0, stride: 8, elementType: ElementType.V2f }),
       drawCall: cval<DrawCall>({ kind: "non-indexed", vertexCount: 6, instanceCount: 1, firstVertex: 0, firstInstance: 0 }),
     });
-    const q = (z: number, color: V4f) => Sg.uniform({ u_z: z, u_color: color }, Sg.shader(userEffect, quadGeom));
+    const q = (z: number, color: V4f, id: number) => Sg.uniform({ u_z: z, u_color: color, u_pickId: id }, Sg.shader(userEffect, quadGeom));
     const scene = Sg.group([
-      Sg.opaque(q(S.z, S.c)),
-      Sg.transparent(Sg.group([q(A.z, A.c), q(Bq.z, Bq.c), q(Cq.z, Cq.c), q(Dq.z, Dq.c)])),
+      Sg.opaque(q(S.z, S.c, S.id)),
+      Sg.transparent(Sg.group([q(A.z, A.c, A.id), q(Bq.z, Bq.c, Bq.id), q(Cq.z, Cq.c, Cq.id), q(Dq.z, Dq.c, Dq.id)])),
     ]);
-
-    const outSig = createFramebufferSignature({ colors: { Colors: "rgba32float" } });
     const size = cval({ width: SIZE, height: SIZE });
 
-    // Run the SAME Sg scene through both OIT modes (set via the global toggle).
-    const runMode = async (mode: OitMode): Promise<Float32Array> => {
-      setOitMode(mode);
-      const outFbo = allocateFramebuffer(device, outSig, size, { extraUsage: TextureUsage.COPY_SRC });
-      outFbo.acquire();
-      const task = transparencyTask(runtime, device, outSig, size, scene);
-      task.run(outFbo.getValue(AdaptiveToken.top), AdaptiveToken.top);
-      await device.queue.onSubmittedWorkDone();
-      const px = await readPixel0(device, outFbo.getValue(AdaptiveToken.top).colorTextures!.tryFind("Colors")! as unknown as GPUTexture);
-      task.dispose(); outFbo.release();
-      return px;
-    };
+    // WBOIT with picking: output carries Colors + PickData + depth.
+    setOitMode("wboit");
+    const wbSig = createFramebufferSignature({ colors: { Colors: "rgba16float", PickData: "rgba32float" }, depthStencil: { format: "depth32float" } });
+    const wbFb = allocateFramebuffer(device, wbSig, size, { extraUsage: TextureUsage.COPY_SRC });
+    wbFb.acquire();
+    const wbTask = transparencyTask(runtime, device, wbSig, size, scene);
+    wbTask.run(wbFb.getValue(AdaptiveToken.top), AdaptiveToken.top);
+    await device.queue.onSubmittedWorkDone();
+    const wbIfb = wbFb.getValue(AdaptiveToken.top);
+    const w = await readPixel0H(device, wbIfb.colorTextures!.tryFind("Colors")! as unknown as GPUTexture);
+    const wp = await readPixel0(device, wbIfb.colorTextures!.tryFind("PickData")! as unknown as GPUTexture);
+    wbTask.dispose(); wbFb.release();
+    log(`\n== Sg + transparencyTask mode=wboit ==  color=${[...w].slice(0, 3).map((v) => v.toFixed(3)).join(",")}  pick=${wp[0]!.toFixed(2)},${wp[1]!.toFixed(2)}`);
+    check("Sg wboit color ~(0.25,0.375,0.375)", Math.abs(w[0]! - 0.25) < 0.05 && Math.abs(w[1]! - 0.375) < 0.05 && Math.abs(w[2]! - 0.375) < 0.05, `(${w[0]!.toFixed(3)},${w[1]!.toFixed(3)},${w[2]!.toFixed(3)})`);
+    check("Sg wboit pick=A(2) depth~0.1", Math.abs(wp[0]! - 2) < 0.5 && wp[1]! < 0.2, `pick=${wp[0]!.toFixed(2)} depth=${wp[1]!.toFixed(3)}`);
 
-    const w = await runMode("wboit");
-    log(`\n== Sg.transparent + transparencyTask, mode=wboit ==  color=${[...w].slice(0, 3).map((v) => v.toFixed(3)).join(",")}`);
-    check("Sg wboit ~(0.25,0.375,0.375)", Math.abs(w[0]! - 0.25) < 0.05 && Math.abs(w[1]! - 0.375) < 0.05 && Math.abs(w[2]! - 0.375) < 0.05, `(${w[0]!.toFixed(3)},${w[1]!.toFixed(3)},${w[2]!.toFixed(3)})`);
-
-    const a = await runMode("abuffer");
-    log(`== Sg.transparent + transparencyTask, mode=abuffer ==  color=${[...a].slice(0, 3).map((v) => v.toFixed(3)).join(",")}`);
+    // A-buffer (exact), color only.
+    setOitMode("abuffer");
+    const abSig = createFramebufferSignature({ colors: { Colors: "rgba32float" } });
+    const abFb = allocateFramebuffer(device, abSig, size, { extraUsage: TextureUsage.COPY_SRC });
+    abFb.acquire();
+    const abTask = transparencyTask(runtime, device, abSig, size, scene);
+    abTask.run(abFb.getValue(AdaptiveToken.top), AdaptiveToken.top);
+    await device.queue.onSubmittedWorkDone();
+    const a = await readPixel0(device, abFb.getValue(AdaptiveToken.top).colorTextures!.tryFind("Colors")! as unknown as GPUTexture);
+    abTask.dispose(); abFb.release();
+    log(`== Sg + transparencyTask mode=abuffer ==  color=${[...a].slice(0, 3).map((v) => v.toFixed(3)).join(",")}`);
     check("Sg abuffer exact ~(0.25,0.25,0.5)", Math.abs(a[0]! - 0.25) < 0.05 && Math.abs(a[1]! - 0.25) < 0.05 && Math.abs(a[2]! - 0.5) < 0.05, `(${a[0]!.toFixed(3)},${a[1]!.toFixed(3)},${a[2]!.toFixed(3)})`);
   }
 }

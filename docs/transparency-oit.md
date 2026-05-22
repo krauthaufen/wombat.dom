@@ -16,10 +16,19 @@ Status: **Shipped in wombat.dom 0.8.0 — both techniques, reactive.**
   exact `(0.25, 0.25, 0.5)`. Also validated as hand-built prototypes against
   aardvark's `zStackWithOccluder` (with correct pick=A(2) + depth ~0.1).
 
-Still TODO: fold the **pick pass** into `transparencyTask` (the wrapper does
-color only today; the prototypes prove the depth-tested pick pass — it belongs
-with the picking registry), **MSAA** variants, and auto-wiring into
-`RenderControl` (currently the wrapper is an opt-in standalone `IRenderTask`).
+**Picking (WBOIT, wombat.dom 0.9.0):** when the output framebuffer has a
+`PickData` attachment, the WBOIT path renders the opaque objects straight into
+the output (`Colors`+`PickData`+depth), composites the transparent result OVER it
+(with `PickData` masked write-mask-only so opaque pick survives), then renders the
+transparent objects **once more** depth-tested into `PickData`+depth — aardvark's
+`transformTransparentPick`. The normal pick readback then works; the picking
+system stays oblivious. Requires the write-mask-only color targets added in
+**wombat.rendering 0.19.6**. Validated: WBOIT `pick=A(2)`, depth ~0.1.
+
+Still TODO: pick for the **A-buffer** path (same re-render pass; A-buffer's color
+resolve still samples the opaque, so it keeps an intermediate today), **MSAA**
+variants, and auto-wiring into `RenderControl` (the wrapper is an opt-in
+standalone `IRenderTask`).
 
 `transparencyTask` relies on five additive `compileScene` hooks (`passFilter`,
 `composeEffect`, `pipelineOverride`, `injectStorage`, `injectUniforms`) — all
