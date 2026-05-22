@@ -15,6 +15,13 @@ both **shipped** — they're no longer open.
 
 ## Open
 
+### Transparency / OIT (designed, not built)
+- Order-independent transparency: `Sg.transparent`/`Sg.opaque` attribute + an
+  extra pass group after the opaque pass. Default **WBOIT** (port of aardvark),
+  opt-in exact **linked-list A-buffer** (WebGPU has no fragment interlock, so the
+  exact path is a lock-free atomic linked list, not aardvark's interlocked
+  k-buffer). Full design: `docs/transparency-oit.md`.
+
 ### Picking / focus (deferred)
 - HTML/JS focus integration (tab-nav into scene scopes) + focus-ring outline
   rendering.
