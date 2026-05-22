@@ -45,16 +45,18 @@ wrapper's pick attachment was renamed `PickData` → **`pickId`** to match
 RenderControl's canvas pick framebuffer, so picking integrates with no registry
 changes.
 
-**MSAA picking — per-pixel majority vote (wombat.dom 0.12.0):** `pickId` can't be
-hardware-resolved (ids aren't averageable), so the MSAA path renders `pickId`
-into a multisampled `rgba16float` texture (its hardware resolve is ignored) and
-resolves by **majority vote per pixel** — `texelFetch` every sample via
-`Sampler2DMS`, the id covering the most samples wins, output its `(id, depth)`.
-Needs multisampled texture bindings (**wombat.rendering 0.19.7**). Validated at
-4×: color `(0.25, 0.375, 0.375)` + `pick=A(2)`, depth ~0.1.
+**MSAA — driven by the output framebuffer (wombat.dom 0.13.0).** `transparencyTask`
+reads `signature.sampleCount` and renders every OIT pass at that count, leaving
+the output **multisampled**; the framebuffer's *owner* resolves. So:
+- A multisampled output → multisampled OIT (validated: composites to
+  `(0.25, 0.375, 0.375)`).
+- **`<RenderControl sampleCount={N} transparency>`** now works end to end: the MS
+  canvas drives MS OIT, the canvas resolves color, and RenderControl's existing
+  pick compute **majority-votes** the multisampled `pickId`s (ids can't be
+  averaged). No separate `sampleCount` option, no in-wrapper resolve.
 
-Remaining (minor): an **MSAA canvas** through RenderControl (the opt-in assumes a
-single-sample canvas today).
+(wombat.rendering 0.19.7 added multisampled texture bindings along the way; it's
+no longer needed by the wrapper but the capability remains.)
 
 `transparencyTask` relies on five additive `compileScene` hooks (`passFilter`,
 `composeEffect`, `pipelineOverride`, `injectStorage`, `injectUniforms`) — all
