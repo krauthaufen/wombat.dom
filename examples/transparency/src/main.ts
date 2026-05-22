@@ -19,6 +19,7 @@ import {
   clamp, max, texture, atomicAdd, atomicExchange,
   type Sampler2D, type Storage, type FragmentBuiltinIn, type f32, type u32,
 } from "@aardworx/wombat.shader/types";
+import { Sg, transparencyTask } from "@aardworx/wombat.dom/scene";
 
 declare module "@aardworx/wombat.shader/uniforms" {
   interface UniformScope { readonly u_z: f32; readonly u_color: V4f; readonly u_pickId: f32; }
@@ -292,6 +293,35 @@ async function main() {
     check("A-buffer pick=A(2)", Math.abs(pick[0]! - 2) < 0.5, `${pick[0]!.toFixed(2)}`);
     check("A-buffer depth~0.1", pick[1]! < 0.2, `${pick[1]!.toFixed(3)}`);
     check("A-buffer exact color ~(0.25,0.25,0.5)", Math.abs(fin[0]! - 0.25) < 0.05 && Math.abs(fin[1]! - 0.25) < 0.05 && Math.abs(fin[2]! - 0.5) < 0.05, `(${fin[0]!.toFixed(3)},${fin[1]!.toFixed(3)},${fin[2]!.toFixed(3)})`);
+  }
+
+  // ===================== Test 3: Sg.transparent via transparencyTask (library path) =====================
+  {
+    // A real scene-graph: opaque solid + 4 transparent quads, tagged with
+    // Sg.opaque / Sg.transparent. transparencyTask lowers + multipasses it.
+    const userEffect = effect(
+      vertex((v: { a_pos: V2f }) => ({ gl_Position: new V4f(v.a_pos.x, v.a_pos.y, uniform.u_z.mul(0.5).add(0.5), 1.0) })),
+      fragment(() => ({ Colors: uniform.u_color })),
+    );
+    const quadGeom = Sg.leaf({
+      vertexAttributes: HashMap.empty<string, BufferView>().add("a_pos", { buffer: quadBuf, offset: 0, stride: 8, elementType: ElementType.V2f }),
+      drawCall: cval<DrawCall>({ kind: "non-indexed", vertexCount: 6, instanceCount: 1, firstVertex: 0, firstInstance: 0 }),
+    });
+    const q = (z: number, color: V4f) => Sg.uniform({ u_z: z, u_color: color }, Sg.shader(userEffect, quadGeom));
+    const scene = Sg.group([
+      Sg.opaque(q(S.z, S.c)),
+      Sg.transparent(Sg.group([q(A.z, A.c), q(Bq.z, Bq.c), q(Cq.z, Cq.c), q(Dq.z, Dq.c)])),
+    ]);
+
+    const outSig = createFramebufferSignature({ colors: { Colors: "rgba32float" } });
+    const outFbo = allocateFramebuffer(device, outSig, cval({ width: SIZE, height: SIZE }), { extraUsage: TextureUsage.COPY_SRC });
+    outFbo.acquire();
+    const task = transparencyTask(runtime, device, outSig, { width: SIZE, height: SIZE }, scene);
+    task.run(outFbo.getValue(AdaptiveToken.top), AdaptiveToken.top);
+    await device.queue.onSubmittedWorkDone();
+    const fin = await readPixel0(device, outFbo.getValue(AdaptiveToken.top).colorTextures!.tryFind("Colors")! as unknown as GPUTexture);
+    log(`\n== Sg.transparent (transparencyTask, WBOIT) ==  color=${[...fin].slice(0, 3).map((v) => v.toFixed(3)).join(",")}`);
+    check("Sg WBOIT ~(0.25,0.375,0.375)", Math.abs(fin[0]! - 0.25) < 0.05 && Math.abs(fin[1]! - 0.375) < 0.05 && Math.abs(fin[2]! - 0.375) < 0.05, `(${fin[0]!.toFixed(3)},${fin[1]!.toFixed(3)},${fin[2]!.toFixed(3)})`);
   }
 }
 main().catch((e) => { out.textContent += "\nERROR: " + (e?.stack || e); });
