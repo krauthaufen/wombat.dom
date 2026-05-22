@@ -58,6 +58,13 @@ the output **multisampled**; the framebuffer's *owner* resolves. So:
 (wombat.rendering 0.19.7 added multisampled texture bindings along the way; it's
 no longer needed by the wrapper but the capability remains.)
 
+**FBO cache (wombat.dom 0.14.0).** The offscreen targets — WBOIT accum/reveal and
+the A-buffer intermediate — are a bounded **LRU(4)** keyed by size (sample count
+is fixed per task), mirroring aardvark's `TransparencyRenderTask` `fboCache` /
+`touchLru`. Alternating between a few sizes reuses bundles instead of
+destroy+recreate thrash; the least-recently-used is evicted past 4. The
+composite/resolve texture bindings map the `size` aval through the cache.
+
 `transparencyTask` relies on five additive `compileScene` hooks (`passFilter`,
 `composeEffect`, `pipelineOverride`, `injectStorage`, `injectUniforms`) — all
 default-off, so existing `compileScene` callers are unaffected. See
