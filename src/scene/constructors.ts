@@ -328,6 +328,18 @@ function pass(value: number, child: SgNode): SgNode {
   return { kind: "Pass", pass: value, child };
 }
 
+/** Marks a subtree as transparent (render-pass ordinal `RenderPass.transparent`).
+ *  The order-independent-transparency path routes these objects through the
+ *  WBOIT / A-buffer passes. Thin alias over `Sg.pass`. */
+function transparent(child: SgNode): SgNode {
+  return { kind: "Pass", pass: RenderPass.transparent, child };
+}
+
+/** Marks a subtree as opaque (the default, `RenderPass.main`). */
+function opaque(child: SgNode): SgNode {
+  return { kind: "Pass", pass: RenderPass.main, child };
+}
+
 // ---------------------------------------------------------------------------
 // Phase 2 — geometry-attribute scopes
 // ---------------------------------------------------------------------------
@@ -1160,6 +1172,8 @@ export interface SgNamespace {
   colorMask:    typeof colorMask;
   stencilMode:  typeof stencilMode;
   pass:         typeof pass;
+  transparent:  typeof transparent;
+  opaque:       typeof opaque;
   RenderPass:   typeof RenderPass;
 
   // Phase 2 builders
@@ -1241,6 +1255,8 @@ export const Sg: SgNamespace = (() => {
   fn.colorMask    = colorMask;
   fn.stencilMode  = stencilMode;
   fn.pass         = pass;
+  fn.transparent  = transparent;
+  fn.opaque       = opaque;
   fn.RenderPass   = RenderPass;
   fn.vertexAttributes   = vertexAttributes;
   fn.instanceAttributes = instanceAttributes;
