@@ -19,7 +19,7 @@ import {
   clamp, max, texture, atomicAdd, atomicExchange,
   type Sampler2D, type Storage, type FragmentBuiltinIn, type f32, type u32,
 } from "@aardworx/wombat.shader/types";
-import { Sg, transparencyTask } from "@aardworx/wombat.dom/scene";
+import { Sg, transparencyTask, setOitMode, type OitMode } from "@aardworx/wombat.dom/scene";
 
 declare module "@aardworx/wombat.shader/uniforms" {
   interface UniformScope { readonly u_z: f32; readonly u_color: V4f; readonly u_pickId: f32; }
@@ -314,14 +314,28 @@ async function main() {
     ]);
 
     const outSig = createFramebufferSignature({ colors: { Colors: "rgba32float" } });
-    const outFbo = allocateFramebuffer(device, outSig, cval({ width: SIZE, height: SIZE }), { extraUsage: TextureUsage.COPY_SRC });
-    outFbo.acquire();
-    const task = transparencyTask(runtime, device, outSig, { width: SIZE, height: SIZE }, scene);
-    task.run(outFbo.getValue(AdaptiveToken.top), AdaptiveToken.top);
-    await device.queue.onSubmittedWorkDone();
-    const fin = await readPixel0(device, outFbo.getValue(AdaptiveToken.top).colorTextures!.tryFind("Colors")! as unknown as GPUTexture);
-    log(`\n== Sg.transparent (transparencyTask, WBOIT) ==  color=${[...fin].slice(0, 3).map((v) => v.toFixed(3)).join(",")}`);
-    check("Sg WBOIT ~(0.25,0.375,0.375)", Math.abs(fin[0]! - 0.25) < 0.05 && Math.abs(fin[1]! - 0.375) < 0.05 && Math.abs(fin[2]! - 0.375) < 0.05, `(${fin[0]!.toFixed(3)},${fin[1]!.toFixed(3)},${fin[2]!.toFixed(3)})`);
+    const size = cval({ width: SIZE, height: SIZE });
+
+    // Run the SAME Sg scene through both OIT modes (set via the global toggle).
+    const runMode = async (mode: OitMode): Promise<Float32Array> => {
+      setOitMode(mode);
+      const outFbo = allocateFramebuffer(device, outSig, size, { extraUsage: TextureUsage.COPY_SRC });
+      outFbo.acquire();
+      const task = transparencyTask(runtime, device, outSig, size, scene);
+      task.run(outFbo.getValue(AdaptiveToken.top), AdaptiveToken.top);
+      await device.queue.onSubmittedWorkDone();
+      const px = await readPixel0(device, outFbo.getValue(AdaptiveToken.top).colorTextures!.tryFind("Colors")! as unknown as GPUTexture);
+      task.dispose(); outFbo.release();
+      return px;
+    };
+
+    const w = await runMode("wboit");
+    log(`\n== Sg.transparent + transparencyTask, mode=wboit ==  color=${[...w].slice(0, 3).map((v) => v.toFixed(3)).join(",")}`);
+    check("Sg wboit ~(0.25,0.375,0.375)", Math.abs(w[0]! - 0.25) < 0.05 && Math.abs(w[1]! - 0.375) < 0.05 && Math.abs(w[2]! - 0.375) < 0.05, `(${w[0]!.toFixed(3)},${w[1]!.toFixed(3)},${w[2]!.toFixed(3)})`);
+
+    const a = await runMode("abuffer");
+    log(`== Sg.transparent + transparencyTask, mode=abuffer ==  color=${[...a].slice(0, 3).map((v) => v.toFixed(3)).join(",")}`);
+    check("Sg abuffer exact ~(0.25,0.25,0.5)", Math.abs(a[0]! - 0.25) < 0.05 && Math.abs(a[1]! - 0.25) < 0.05 && Math.abs(a[2]! - 0.5) < 0.05, `(${a[0]!.toFixed(3)},${a[1]!.toFixed(3)},${a[2]!.toFixed(3)})`);
   }
 }
 main().catch((e) => { out.textContent += "\nERROR: " + (e?.stack || e); });

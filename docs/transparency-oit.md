@@ -1,21 +1,30 @@
 # Order-Independent Transparency (OIT) — design
 
-Status: **WBOIT shipped as a library feature; A-buffer proven as a prototype.**
+Status: **Shipped in wombat.dom 0.8.0 — both techniques, reactive.**
 - `Sg.transparent` / `Sg.opaque` + `transparencyTask` (the OIT render-task
-  wrapper, aardvark's `WrappedTask` analog) ship in **wombat.dom 0.7.0**. An
-  `Sg.transparent` z-stack composites to `(0.25, 0.375, 0.375)` on the real GPU
-  (`examples/transparency`, Test 3).
-- Both techniques are also validated as hand-built prototypes against aardvark's
-  `zStackWithOccluder`: WBOIT → `(0.25, 0.375, 0.375)`, exact A-buffer →
-  `(0.25, 0.25, 0.5)`, with correct pick (A=2) + depth (~0.1).
+  wrapper, aardvark's `WrappedTask` analog) with **two modes**:
+  - `"wboit"` — weighted-blended OIT (approximate, the default).
+  - `"abuffer"` — exact, lock-free per-pixel linked list (atomicAdd /
+    atomicExchange, sorted resolve, opaque-depth occlusion).
+- **Global toggle:** `setOitMode("wboit" | "abuffer")` / `getOitMode()` — apps
+  flip every `transparencyTask` at once; a per-task `mode` option overrides it.
+- **Reactive sizing:** `size` is an `aval`; resize re-allocates (two managed
+  framebuffers + a zip that shares the opaque depth into the OIT color targets;
+  the A-buffer head buffer re-allocs on resize, node pool + heads cleared/frame).
+- Validated on the real GPU through an `Sg.transparent` z-stack
+  (`examples/transparency`): `wboit` → `(0.25, 0.375, 0.375)`, `abuffer` →
+  exact `(0.25, 0.25, 0.5)`. Also validated as hand-built prototypes against
+  aardvark's `zStackWithOccluder` (with correct pick=A(2) + depth ~0.1).
 
 Still TODO: fold the **pick pass** into `transparencyTask` (the wrapper does
-color only today; the prototype proves the pick pass), wire the exact **A-buffer**
-mode into the wrapper, **MSAA** variants, and reactive (resize-driven) FBO sizing.
-Plan modelled on aardvark.rendering's `transparency-oit-v57`.
+color only today; the prototypes prove the depth-tested pick pass — it belongs
+with the picking registry), **MSAA** variants, and auto-wiring into
+`RenderControl` (currently the wrapper is an opt-in standalone `IRenderTask`).
 
-`transparencyTask` relies on three additive `compileScene` hooks (`passFilter`,
-`composeEffect`, `pipelineOverride`) — see `scene/compile.ts`.
+`transparencyTask` relies on five additive `compileScene` hooks (`passFilter`,
+`composeEffect`, `pipelineOverride`, `injectStorage`, `injectUniforms`) — all
+default-off, so existing `compileScene` callers are unaffected. See
+`scene/compile.ts` and `scene/transparency.ts`.
 
 ### WebGPU gotchas found while building the prototype (read before implementing)
 - **`maxColorAttachmentBytesPerSample` defaults to 32.** A 4-attachment FBO
