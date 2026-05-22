@@ -14,7 +14,7 @@
 //
 // Framebuffers are reactive (allocated against `size: aval`); resize re-allocates.
 import { AList, AVal, AdaptiveToken, HashMap, type aval } from "@aardworx/wombat.adaptive";
-import { V2f, V2i, V3f, V4f } from "@aardworx/wombat.base";
+import { V2f, V3f, V4f } from "@aardworx/wombat.base";
 import {
   IBuffer, ITexture, ISampler, RenderTree, ElementType, PipelineState, asAttributeProvider,
   type BufferView, type Command, type DrawCall, type RenderObject, type IFramebuffer,
@@ -25,14 +25,14 @@ import type { Runtime } from "@aardworx/wombat.rendering/runtime";
 import { effect, fragment, vertex, type Effect } from "@aardworx/wombat.shader";
 import { uniform } from "@aardworx/wombat.shader/uniforms";
 import {
-  clamp, max, texture, texelFetch, atomicAdd, atomicExchange,
-  type Sampler2D, type Sampler2DMS, type Storage, type FragmentBuiltinIn, type u32, type i32,
+  clamp, max, texture, atomicAdd, atomicExchange,
+  type Sampler2D, type Storage, type FragmentBuiltinIn, type u32,
 } from "@aardworx/wombat.shader/types";
 import { compileScene, type CompileSceneOptions } from "./compile.js";
 import { RenderPass, type SgNode } from "./sg.js";
 
 declare module "@aardworx/wombat.shader/uniforms" {
-  interface UniformScope { readonly u_invSize: V2f; readonly u_width: u32; readonly u_samples: i32; }
+  interface UniformScope { readonly u_invSize: V2f; readonly u_width: u32; }
 }
 
 const MAXN = 1 << 20;        // A-buffer node-pool capacity (~24 MB)
@@ -87,59 +87,6 @@ function wboitPipelineOverride(ps: PipelineState): PipelineState {
   );
   return { ...ps, depth: { write: AVal.constant(false), compare: AVal.constant<GPUCompareFunction>("less"), clamp: ps.depth?.clamp ?? AVal.constant(false) }, blends };
 }
-
-// MSAA path renders opaque + transparent into one multisampled FBO
-// {Colors, accum, reveal, depth}; opaque masks accum/reveal, transparent masks
-// Colors. The composite then samples the RESOLVED attachments. A dummy writer
-// gives the opaque pass the accum/reveal outputs the combined FBO requires.
-// Both MSAA writers pass Colors through (a stage that doesn't reference an
-// upstream output drops it from the composed effect).
-const msaaZeroWriter: Effect = effect(fragment((i: { Colors: V4f }) => ({ Colors: i.Colors, accum: new V4f(0.0, 0.0, 0.0, 0.0), reveal: 0.0 })));
-const wboitWriterMS: Effect = effect(fragment((i: { Colors: V4f }, b: FragmentBuiltinIn) => {
-  const c = i.Colors;
-  const alpha = c.w;
-  const a = alpha * 8.0 + 0.01;
-  const bz = b.fragCoord.z * -0.95 + 1.0;
-  const w = clamp(a * a * a * 1e8 * (bz * bz * bz), 1e-2, 3e2);
-  return { Colors: c, accum: new V4f(c.xyz.mul(alpha), alpha).mul(w), reveal: alpha };
-}));
-function msaaOpaqueOverride(ps: PipelineState): PipelineState {
-  const masked: BlendState = { writeMask: AVal.constant(0) };
-  const blends: aval<HashMap<string, BlendState>> = AVal.constant(HashMap.empty<string, BlendState>().add("accum", masked).add("reveal", masked));
-  return { ...ps, depth: { write: AVal.constant(true), compare: AVal.constant<GPUCompareFunction>("less"), clamp: ps.depth?.clamp ?? AVal.constant(false) }, blends };
-}
-// MSAA pick resolve: majority vote per pixel over the multisampled pick ids.
-// pickId can't be averaged (it's an id), so the id covering the most samples
-// wins; ties keep the first scanned. Outputs the winning sample's (id, depth).
-const pickMS: Sampler2DMS = null as unknown as Sampler2DMS;
-const majorityResolveEffect: Effect = effect(fsVS, fragment((_in: {}, b: FragmentBuiltinIn) => {
-  const coord = new V2i(b.fragCoord.x as i32, b.fragCoord.y as i32);
-  let best = texelFetch(pickMS, coord, 0);
-  let bestCount = 0;
-  for (let i = 0; i < uniform.u_samples; i = i + 1) {
-    const si = texelFetch(pickMS, coord, i);
-    let count = 0;
-    for (let j = 0; j < uniform.u_samples; j = j + 1) {
-      const sj = texelFetch(pickMS, coord, j);
-      if (sj.x === si.x) count = count + 1;
-    }
-    if (count > bestCount) { bestCount = count; best = si; }
-  }
-  return { pickId: best, Colors: new V4f(0.0, 0.0, 0.0, 0.0) };
-}));
-
-const tColorsS: Sampler2D = null as unknown as Sampler2D;
-const wboitCompositeSample: Effect = effect(fsVS, fragment((_in: {}, b: FragmentBuiltinIn) => {
-  const uv = b.fragCoord.xy.mul(uniform.u_invSize);
-  const opaque = texture(tColorsS, uv);
-  const accum = texture(tAccum, uv);
-  const reveal = texture(tReveal, uv).x;
-  const avg = accum.xyz.div(max(accum.w, 1e-5));
-  const ta = 1.0 - reveal;
-  // pickId emitted (dummy, masked) so the target count matches a {Colors, pickId}
-  // output; dropped when the output has no pickId.
-  return { Colors: new V4f(avg.mul(ta).add(opaque.xyz.mul(1.0 - ta)), 1.0), pickId: new V4f(0.0, 0.0, 0.0, 0.0) };
-}));
 
 // Transparent pick pass: depth-test + write ON (nearest transparent wins), color
 // masked (write-mask-only — leaves the composited Colors alone), pickId (and
@@ -280,92 +227,11 @@ export function transparencyTask(
   const widthU = AVal.map(size, (s) => s.width);
   const isOpaque = (p: number) => p < RenderPass.transparent;
   const isTransparent = (p: number) => p >= RenderPass.transparent;
-  const sampleCount = opts.sampleCount ?? 1;
-
-  // ----- MSAA WBOIT (color only): one multisampled FBO, composite samples resolve -----
-  if (mode === "wboit" && sampleCount > 1) {
-    const msSig = createFramebufferSignature({ colors: { Colors: "rgba16float", accum: "rgba16float", reveal: "r16float" }, depthStencil: { format: "depth32float" }, sampleCount });
-    const msRes = allocateFramebuffer(device, msSig, size, { extraUsage: TextureUsage.TEXTURE_BINDING });
-    msRes.acquire();
-    const opaqueTask = runtime.compile(msSig, compileScene(scene, {
-      ...base, passFilter: isOpaque, composeEffect: (e) => effect(e, msaaZeroWriter), pipelineOverride: msaaOpaqueOverride,
-      clear: { colors: HashMap.empty<string, V4f>().add("Colors", black).add("accum", new V4f(0, 0, 0, 0)).add("reveal", new V4f(1, 1, 1, 1)), depth: 1.0 },
-    }));
-    const transTask = runtime.compile(msSig, compileScene(scene, {
-      ...base, passFilter: isTransparent, composeEffect: (e) => effect(e, wboitWriterMS), pipelineOverride: wboitPipelineOverride,
-    }));
-    const msHasPick = signature.colorNames.includes("pickId");
-    const compRO: RenderObject = {
-      effect: wboitCompositeSample,
-      pipelineState: PipelineState.constant({ rasterizer: RAST, ...(msHasPick ? { blends: HashMap.empty<string, PlainBlendState>().add("pickId", { writeMask: 0 }) } : {}) }),
-      vertexAttributes: quadAttrs,
-      uniforms: provider(HashMap.empty<string, aval<unknown>>().add("u_invSize", invSize)) as RenderObject["uniforms"],
-      textures: provider(HashMap.empty<string, aval<ITexture>>()
-        .add("tColorsS_view", AVal.map(msRes, (fb) => ITexture.fromGPU(fb.colorTextures!.tryFind("Colors")!)))
-        .add("tAccum_view", AVal.map(msRes, (fb) => ITexture.fromGPU(fb.colorTextures!.tryFind("accum")!)))
-        .add("tReveal_view", AVal.map(msRes, (fb) => ITexture.fromGPU(fb.colorTextures!.tryFind("reveal")!)))) as RenderObject["textures"],
-      samplers: provider(HashMap.empty<string, aval<ISampler>>().add("tColorsS", nearestSampler()).add("tAccum", nearestSampler()).add("tReveal", nearestSampler())) as RenderObject["samplers"],
-      drawCall: quadDraw,
-    };
-    const compositeTask = runtime.compile(signature, AList.ofArray<Command>([{ kind: "Render", tree: RenderTree.leaf(compRO) }]));
-
-    // Multisampled pick: render pickId into an MS texture (no hardware resolve),
-    // then resolve by per-pixel majority vote (ids can't be averaged).
-    const pickMsSig = createFramebufferSignature({ colors: { pickId: "rgba16float" }, depthStencil: { format: "depth32float" }, sampleCount });
-    let pickIdTex: GPUTexture | undefined; let pickResolveTex: GPUTexture | undefined; let pickDepthTex: GPUTexture | undefined; let pickITex: ITexture | undefined; let pickW = 0; let pickH = 0;
-    const ensurePickMs = (w: number, h: number): void => {
-      if (pickIdTex === undefined || w !== pickW || h !== pickH) {
-        pickIdTex?.destroy(); pickResolveTex?.destroy(); pickDepthTex?.destroy();
-        pickIdTex = device.createTexture({ size: [w, h], sampleCount, format: "rgba16float", usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
-        // The runtime requires a resolve target per MS color attachment; we ignore
-        // this hardware resolve and sample the MS texture for the majority vote.
-        pickResolveTex = device.createTexture({ size: [w, h], format: "rgba16float", usage: GPUTextureUsage.RENDER_ATTACHMENT });
-        pickDepthTex = device.createTexture({ size: [w, h], sampleCount, format: "depth32float", usage: GPUTextureUsage.RENDER_ATTACHMENT });
-        pickITex = ITexture.fromGPU(pickIdTex); pickW = w; pickH = h;
-      }
-    };
-    const pickITexAval = AVal.map(size, (s) => { ensurePickMs(s.width, s.height); return pickITex!; });
-    const opaquePickTask = msHasPick ? runtime.compile(pickMsSig, compileScene(scene, { ...base, ...withPicking, passFilter: isOpaque, pipelineOverride: wboitPickOverride, clear: { colors: HashMap.empty<string, V4f>().add("pickId", new V4f(0, 0, 0, 0)), depth: 1.0 } })) : undefined;
-    const transPickTask = msHasPick ? runtime.compile(pickMsSig, compileScene(scene, { ...base, ...withPicking, passFilter: isTransparent, pipelineOverride: wboitPickOverride })) : undefined;
-    const majorityRO: RenderObject = {
-      effect: majorityResolveEffect,
-      pipelineState: PipelineState.constant({ rasterizer: RAST, blends: HashMap.empty<string, PlainBlendState>().add("Colors", { writeMask: 0 }) }),
-      vertexAttributes: quadAttrs,
-      uniforms: provider(HashMap.empty<string, aval<unknown>>().add("u_samples", AVal.constant(sampleCount))) as RenderObject["uniforms"],
-      textures: provider(HashMap.empty<string, aval<ITexture>>().add("pickMS", pickITexAval)) as RenderObject["textures"],
-      samplers: provider(HashMap.empty<string, aval<ISampler>>()) as RenderObject["samplers"],
-      drawCall: quadDraw,
-    };
-    const majorityTask = msHasPick ? runtime.compile(signature, AList.ofArray<Command>([{ kind: "Render", tree: RenderTree.leaf(majorityRO) }])) : undefined;
-
-    return {
-      signature,
-      run(userFb: IFramebuffer, token: AdaptiveToken): void {
-        opaqueTask.run(msRes.getValue(token), token);
-        transTask.run(msRes.getValue(token), token);
-        compositeTask.run(userFb, token);
-        if (opaquePickTask !== undefined && transPickTask !== undefined && majorityTask !== undefined) {
-          const s = size.getValue(token);
-          ensurePickMs(s.width, s.height);
-          const pickFb: IFramebuffer = {
-            signature: pickMsSig,
-            colors: HashMap.empty<string, GPUTextureView>().add("pickId", pickIdTex!.createView()),
-            resolveColors: HashMap.empty<string, GPUTextureView>().add("pickId", pickResolveTex!.createView()),
-            depthStencil: pickDepthTex!.createView(),
-            width: s.width, height: s.height,
-          };
-          opaquePickTask.run(pickFb, token);
-          transPickTask.run(pickFb, token);
-          majorityTask.run(userFb, token);
-        }
-      },
-      dispose(): void {
-        opaqueTask.dispose(); transTask.dispose(); compositeTask.dispose();
-        opaquePickTask?.dispose(); transPickTask?.dispose(); majorityTask?.dispose();
-        msRes.release(); pickIdTex?.destroy(); pickDepthTex?.destroy();
-      },
-    } as unknown as IRenderTask;
-  }
+  // The OIT passes inherit the sample count of the framebuffer handed to run():
+  // a multisampled output ⇒ multisampled OIT passes, and the *owner* of the
+  // framebuffer resolves (canvas resolves color, RenderControl's compute resolves
+  // the pick ids by majority vote).
+  const sampleCount = signature.sampleCount;
 
   if (mode === "wboit") {
     // Opaque renders straight into the output (so its pick + depth are there);
@@ -374,10 +240,12 @@ export function transparencyTask(
     // a pickId attachment we also re-render the transparent objects into it
     // (depth-tested) so the nearest transparent is pickable — aardvark's pattern.
     const hasPick = signature.colorNames.includes("pickId");
-    const oitColorSig = createFramebufferSignature({ colors: { accum: "rgba16float", reveal: "r16float" } });
+    // accum/reveal at the output's sample count; for MSAA they resolve to single
+    // sample (colorTextures) which the composite samples and blends per output sample.
+    const oitColorSig = createFramebufferSignature({ colors: { accum: "rgba16float", reveal: "r16float" }, sampleCount });
     const oitColorRes = allocateFramebuffer(device, oitColorSig, size, { extraUsage: TextureUsage.TEXTURE_BINDING });
     oitColorRes.acquire();
-    const oitSig = createFramebufferSignature({ colors: { accum: "rgba16float", reveal: "r16float" }, depthStencil: { format: "depth32float" } });
+    const oitSig = createFramebufferSignature({ colors: { accum: "rgba16float", reveal: "r16float" }, depthStencil: { format: "depth32float" }, sampleCount });
 
     let opaqueClear = HashMap.empty<string, V4f>().add("Colors", black);
     if (hasPick) opaqueClear = opaqueClear.add("pickId", new V4f(0, 0, 0, 0));
@@ -417,6 +285,7 @@ export function transparencyTask(
         const oc = oitColorRes.getValue(token);
         const oitFb: IFramebuffer = {
           signature: oitSig, colors: oc.colors,
+          ...(oc.resolveColors !== undefined ? { resolveColors: oc.resolveColors } : {}),
           ...(oc.colorTextures !== undefined ? { colorTextures: oc.colorTextures } : {}),
           ...(userFb.depthStencil !== undefined ? { depthStencil: userFb.depthStencil } : {}),
           ...(userFb.depthStencilTexture !== undefined ? { depthStencilTexture: userFb.depthStencilTexture } : {}),
