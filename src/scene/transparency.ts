@@ -18,7 +18,7 @@ import { V2f, V3f, V4f } from "@aardworx/wombat.base";
 import {
   IBuffer, ITexture, ISampler, RenderTree, ElementType, PipelineState, asAttributeProvider,
   type BufferView, type Command, type DrawCall, type RenderObject, type IFramebuffer,
-  type IRenderTask, type FramebufferSignature, type BlendState, type BlendComponentState,
+  type IRenderTask, type FramebufferSignature, type BlendState, type BlendComponentState, type PlainBlendState,
 } from "@aardworx/wombat.rendering/core";
 import { allocateFramebuffer, createFramebufferSignature, TextureUsage } from "@aardworx/wombat.rendering/resources";
 import type { Runtime } from "@aardworx/wombat.rendering/runtime";
@@ -53,17 +53,26 @@ const wboitWriter: Effect = effect(fragment((i: { Colors: V4f }, b: FragmentBuil
   return { accum: new V4f(c.xyz.mul(alpha), alpha).mul(w), reveal: alpha };
 }));
 
-const tColors: Sampler2D = null as unknown as Sampler2D;
 const tAccum: Sampler2D = null as unknown as Sampler2D;
 const tReveal: Sampler2D = null as unknown as Sampler2D;
-const wboitCompositeEffect: Effect = effect(fsVS, fragment((_in: {}, b: FragmentBuiltinIn) => {
+// Over-blend composite: emits premultiplied transparent color (avg) with the
+// transparent coverage (ta) as alpha; the pipeline blends it OVER the opaque
+// already in the target (src-alpha / one-minus-src-alpha), so no opaque sampling.
+// Two variants: plain, and one that also emits a (masked) PickData so the
+// pipeline's color-target count matches a {Colors, PickData} output.
+const wboitCompositeColor: Effect = effect(fsVS, fragment((_in: {}, b: FragmentBuiltinIn) => {
   const uv = b.fragCoord.xy.mul(uniform.u_invSize);
-  const opaque = texture(tColors, uv);
   const accum = texture(tAccum, uv);
   const reveal = texture(tReveal, uv).x;
   const avg = accum.xyz.div(max(accum.w, 1e-5));
-  const ta = 1.0 - reveal;
-  return { Colors: new V4f(avg.mul(ta).add(opaque.xyz.mul(1.0 - ta)), 1.0) };
+  return { Colors: new V4f(avg, 1.0 - reveal) };
+}));
+const wboitCompositePick: Effect = effect(fsVS, fragment((_in: {}, b: FragmentBuiltinIn) => {
+  const uv = b.fragCoord.xy.mul(uniform.u_invSize);
+  const accum = texture(tAccum, uv);
+  const reveal = texture(tReveal, uv).x;
+  const avg = accum.xyz.div(max(accum.w, 1e-5));
+  return { Colors: new V4f(avg, 1.0 - reveal), PickData: new V4f(0.0, 0.0, 0.0, 0.0) };
 }));
 
 function wboitPipelineOverride(ps: PipelineState): PipelineState {
@@ -76,6 +85,16 @@ function wboitPipelineOverride(ps: PipelineState): PipelineState {
       .add("reveal", { color: bc("zero", "one-minus-src"), alpha: bc("zero", "one-minus-src"), writeMask: AVal.constant(0xf) }),
   );
   return { ...ps, depth: { write: AVal.constant(false), compare: AVal.constant<GPUCompareFunction>("less"), clamp: ps.depth?.clamp ?? AVal.constant(false) }, blends };
+}
+
+// Transparent pick pass: depth-test + write ON (nearest transparent wins), color
+// masked (write-mask-only — leaves the composited Colors alone), PickData (and
+// depth) written. Mirrors aardvark's transformTransparentPick.
+function wboitPickOverride(ps: PipelineState): PipelineState {
+  const blends: aval<HashMap<string, BlendState>> = AVal.constant(
+    HashMap.empty<string, BlendState>().add("Colors", { writeMask: AVal.constant(0) }),
+  );
+  return { ...ps, depth: { write: AVal.constant(true), compare: AVal.constant<GPUCompareFunction>("less"), clamp: ps.depth?.clamp ?? AVal.constant(false) }, blends };
 }
 
 // ------------------------------------------------------------- A-buffer shaders
@@ -197,49 +216,67 @@ export function transparencyTask(
   const isTransparent = (p: number) => p >= RenderPass.transparent;
 
   if (mode === "wboit") {
-    const interSig = createFramebufferSignature({ colors: { Colors: "rgba16float" }, depthStencil: { format: "depth32float" } });
-    const interRes = allocateFramebuffer(device, interSig, size, { extraUsage: TextureUsage.TEXTURE_BINDING });
-    interRes.acquire();
+    // Opaque renders straight into the output (so its pick + depth are there);
+    // the transparent pass is the only offscreen part. The composite blends OVER
+    // the opaque already in the output (no opaque sampling). When the output has
+    // a PickData attachment we also re-render the transparent objects into it
+    // (depth-tested) so the nearest transparent is pickable — aardvark's pattern.
+    const hasPick = signature.colorNames.includes("PickData");
     const oitColorSig = createFramebufferSignature({ colors: { accum: "rgba16float", reveal: "r16float" } });
     const oitColorRes = allocateFramebuffer(device, oitColorSig, size, { extraUsage: TextureUsage.TEXTURE_BINDING });
     oitColorRes.acquire();
     const oitSig = createFramebufferSignature({ colors: { accum: "rgba16float", reveal: "r16float" }, depthStencil: { format: "depth32float" } });
-    // OIT framebuffer = accum/reveal color targets + the opaque pass's depth.
-    const oitFb = AVal.zip(interRes, oitColorRes).map((inter, oit) => ({
-      signature: oitSig, colors: oit.colors, colorTextures: oit.colorTextures,
-      depthStencil: inter.depthStencil, depthStencilTexture: inter.depthStencilTexture,
-      width: inter.width, height: inter.height,
-    } as IFramebuffer));
 
-    const opaqueTask = runtime.compile(interSig, compileScene(scene, {
-      ...base, passFilter: isOpaque, clear: { colors: HashMap.empty<string, V4f>().add("Colors", black), depth: 1.0 },
+    let opaqueClear = HashMap.empty<string, V4f>().add("Colors", black);
+    if (hasPick) opaqueClear = opaqueClear.add("PickData", new V4f(0, 0, 0, 0));
+    const opaqueTask = runtime.compile(signature, compileScene(scene, {
+      ...base, passFilter: isOpaque, clear: { colors: opaqueClear, depth: 1.0 },
     }));
     const wboitTask = runtime.compile(oitSig, compileScene(scene, {
       ...base, passFilter: isTransparent, composeEffect: (e) => effect(e, wboitWriter), pipelineOverride: wboitPipelineOverride,
       clear: { colors: HashMap.empty<string, V4f>().add("accum", new V4f(0, 0, 0, 0)).add("reveal", new V4f(1, 1, 1, 1)) },
     }));
+
+    let compBlends = HashMap.empty<string, PlainBlendState>().add("Colors", {
+      color: { operation: "add", srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" },
+      alpha: { operation: "add", srcFactor: "zero", dstFactor: "one" }, writeMask: 0xf,
+    });
+    if (hasPick) compBlends = compBlends.add("PickData", { writeMask: 0 }); // write-mask-only: leave opaque pick intact
     const compRO: RenderObject = {
-      effect: wboitCompositeEffect, pipelineState: PipelineState.constant({ rasterizer: RAST }), vertexAttributes: quadAttrs,
+      effect: hasPick ? wboitCompositePick : wboitCompositeColor,
+      pipelineState: PipelineState.constant({ rasterizer: RAST, depth: { write: false, compare: "always" }, blends: compBlends }),
+      vertexAttributes: quadAttrs,
       uniforms: provider(HashMap.empty<string, aval<unknown>>().add("u_invSize", invSize)) as RenderObject["uniforms"],
       textures: provider(HashMap.empty<string, aval<ITexture>>()
-        .add("tColors_view", AVal.map(interRes, (fb) => ITexture.fromGPU(fb.colorTextures!.tryFind("Colors")!)))
         .add("tAccum_view", AVal.map(oitColorRes, (fb) => ITexture.fromGPU(fb.colorTextures!.tryFind("accum")!)))
         .add("tReveal_view", AVal.map(oitColorRes, (fb) => ITexture.fromGPU(fb.colorTextures!.tryFind("reveal")!)))) as RenderObject["textures"],
-      samplers: provider(HashMap.empty<string, aval<ISampler>>().add("tColors", nearestSampler()).add("tAccum", nearestSampler()).add("tReveal", nearestSampler())) as RenderObject["samplers"],
+      samplers: provider(HashMap.empty<string, aval<ISampler>>().add("tAccum", nearestSampler()).add("tReveal", nearestSampler())) as RenderObject["samplers"],
       drawCall: quadDraw,
     };
     const compositeTask = runtime.compile(signature, AList.ofArray<Command>([{ kind: "Render", tree: RenderTree.leaf(compRO) }]));
+    const pickTask = hasPick
+      ? runtime.compile(signature, compileScene(scene, { ...base, passFilter: isTransparent, pipelineOverride: wboitPickOverride }))
+      : undefined;
 
     return {
       signature,
       run(userFb: IFramebuffer, token: AdaptiveToken): void {
-        opaqueTask.run(interRes.getValue(token), token);
-        wboitTask.run(oitFb.getValue(token), token);
+        opaqueTask.run(userFb, token);
+        const oc = oitColorRes.getValue(token);
+        const oitFb: IFramebuffer = {
+          signature: oitSig, colors: oc.colors,
+          ...(oc.colorTextures !== undefined ? { colorTextures: oc.colorTextures } : {}),
+          ...(userFb.depthStencil !== undefined ? { depthStencil: userFb.depthStencil } : {}),
+          ...(userFb.depthStencilTexture !== undefined ? { depthStencilTexture: userFb.depthStencilTexture } : {}),
+          width: userFb.width, height: userFb.height,
+        };
+        wboitTask.run(oitFb, token);
         compositeTask.run(userFb, token);
+        if (pickTask !== undefined) pickTask.run(userFb, token);
       },
       dispose(): void {
-        opaqueTask.dispose(); wboitTask.dispose(); compositeTask.dispose();
-        interRes.release(); oitColorRes.release();
+        opaqueTask.dispose(); wboitTask.dispose(); compositeTask.dispose(); pickTask?.dispose();
+        oitColorRes.release();
       },
     } as unknown as IRenderTask;
   }

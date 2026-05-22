@@ -961,7 +961,11 @@ function maskBits(mask: ColorMaskValue): number {
 
 function blendStateWithMask(b: BlendState, mask: ColorMaskValue | undefined): BlendState {
   if (mask === undefined) return b;
-  return { color: b.color, alpha: b.alpha, writeMask: AVal.constant(maskBits(mask)) };
+  return {
+    ...(b.color !== undefined ? { color: b.color } : {}),
+    ...(b.alpha !== undefined ? { alpha: b.alpha } : {}),
+    writeMask: AVal.constant(maskBits(mask)),
+  };
 }
 
 function defaultBlendForMask(mask: ColorMaskValue): BlendState {
