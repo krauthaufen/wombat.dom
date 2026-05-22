@@ -104,6 +104,13 @@ export interface CompileSceneOptions {
    * (mirrors aardvark's `composeSurface`). Absent ⇒ effect unchanged.
    */
   readonly composeEffect?: (effect: Effect) => Effect;
+  /**
+   * Optional transform applied to each kept leaf's derived
+   * `PipelineState`. The OIT path uses this to force depth-write-off +
+   * the accum/reveal blend modes on the transparent (WBOIT) pass without
+   * the scene objects having to declare them. Absent ⇒ unchanged.
+   */
+  readonly pipelineOverride?: (ps: PipelineState, renderPass: number) => PipelineState;
 }
 
 export interface PickingOptions {
@@ -706,7 +713,10 @@ function buildRenderObject(
   // (e.g. `TraversalState.empty` used directly, or a render-state
   // scope cleared it — descendants of such a scope re-derive once
   // each, same as before).
-  const pipelineState = state.pipelineState ?? derivePipelineState(state, opts);
+  let pipelineState = state.pipelineState ?? derivePipelineState(state, opts);
+  if (opts.pipelineOverride !== undefined) {
+    pipelineState = opts.pipelineOverride(pipelineState, state.renderPass);
+  }
 
   // RenderObject.indices is `aval<BufferView>` (no undefined). The
   // leaf carries `aval<BufferView | undefined>`; lift to a

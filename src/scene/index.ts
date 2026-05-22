@@ -56,6 +56,11 @@ export {
 } from "./compile.js";
 
 export {
+  transparencyTask,
+  type TransparencyTaskOptions,
+} from "./transparency.js";
+
+export {
   RenderControl,
   type RenderControlProps,
   type RenderControlReadyInfo,
