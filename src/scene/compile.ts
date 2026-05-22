@@ -44,7 +44,7 @@ import { isDerivedRule } from "@aardworx/wombat.rendering/runtime";
 import type {
   BlendState, BufferView,
   Command, ClearValues, DepthBiasState, DepthState,
-  IFramebuffer, ISampler, ITexture, IUniformProvider,
+  IBuffer, IFramebuffer, ISampler, ITexture, IUniformProvider,
   PipelineState, PlainRasterizerState, RasterizerState, RenderObject,
   StencilState, Topology,
 } from "@aardworx/wombat.rendering/core";
@@ -111,6 +111,19 @@ export interface CompileSceneOptions {
    * the scene objects having to declare them. Absent ⇒ unchanged.
    */
   readonly pipelineOverride?: (ps: PipelineState, renderPass: number) => PipelineState;
+  /**
+   * Optional storage buffers merged into every kept leaf's
+   * `storageBuffers` (leaf entries win on key conflict). The A-buffer
+   * OIT path uses this to bind its node-pool / head / counter buffers
+   * onto the transparent build pass without the scene declaring them.
+   */
+  readonly injectStorage?: HashMap<string, aval<IBuffer>>;
+  /**
+   * Optional uniforms merged into every kept leaf's uniform set (leaf
+   * entries win on key conflict). The A-buffer path uses this to bind
+   * the framebuffer width onto the transparent build pass.
+   */
+  readonly injectUniforms?: HashMap<string, aval<unknown>>;
 }
 
 export interface PickingOptions {
@@ -682,6 +695,17 @@ function lowerLeaf(
   return RenderTree.leaf(obj);
 }
 
+// Merge injected storage buffers (the OIT node pool) with a leaf's own;
+// the leaf wins on key conflict.
+function mergeStorageBuffers(
+  inject: HashMap<string, aval<IBuffer>> | undefined,
+  leaf: HashMap<string, aval<IBuffer>> | undefined,
+): HashMap<string, aval<IBuffer>> {
+  let m = inject ?? HashMap.empty<string, aval<IBuffer>>();
+  if (leaf !== undefined) for (const [k, v] of leaf) m = m.add(k, v);
+  return m;
+}
+
 function buildRenderObject(
   leaf: SgLeaf,
   state: TraversalState,
@@ -701,6 +725,11 @@ function buildRenderObject(
   // wins on key conflict, matching "user uniform shadows the default".
   let leafScalars = scopeScalars;
   if (pickId !== undefined) leafScalars = leafScalars.add("PickId", AVal.constant(pickId));
+  if (opts.injectUniforms !== undefined) {
+    for (const [k, v] of opts.injectUniforms) {
+      if (leafScalars.tryFind(k) === undefined) leafScalars = leafScalars.add(k, v);
+    }
+  }
   const uniforms: IUniformProvider =
     (opts.autoUniforms ?? true)
       ? (leafScalars.count === 0
@@ -736,7 +765,9 @@ function buildRenderObject(
     uniforms,
     textures,
     samplers,
-    ...(leaf.storageBuffers !== undefined ? { storageBuffers: leaf.storageBuffers } : {}),
+    ...((leaf.storageBuffers !== undefined || opts.injectStorage !== undefined)
+      ? { storageBuffers: mergeStorageBuffers(opts.injectStorage, leaf.storageBuffers) }
+      : {}),
     ...(leaf.indices !== undefined ? { indices: leaf.indices } : {}),
     drawCall: leaf.drawCall,
     // Route any derived-mode rule the traversal accumulated onto the

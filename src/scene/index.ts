@@ -57,7 +57,10 @@ export {
 
 export {
   transparencyTask,
+  setOitMode,
+  getOitMode,
   type TransparencyTaskOptions,
+  type OitMode,
 } from "./transparency.js";
 
 export {
