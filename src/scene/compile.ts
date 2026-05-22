@@ -89,6 +89,21 @@ export interface CompileSceneOptions {
    * Absent ⇒ zero pick overhead, identical output to before.
    */
   readonly picking?: PickingOptions;
+  /**
+   * Optional per-leaf filter by render-pass ordinal (`state.renderPass`,
+   * set by `Sg.pass` / `Sg.transparent` / `Sg.opaque`). When it returns
+   * false the leaf is dropped (`RenderTree.empty`). Used by the OIT
+   * `transparencyTask` to lower the same scene into separate opaque and
+   * transparent sub-trees. Absent ⇒ all leaves kept (unchanged).
+   */
+  readonly passFilter?: (renderPass: number) => boolean;
+  /**
+   * Optional transform applied to each kept leaf's final effect (after
+   * any pick-chain composition). Used by the OIT path to append the
+   * weighted-blend / A-buffer fragment writer onto transparent leaves
+   * (mirrors aardvark's `composeSurface`). Absent ⇒ effect unchanged.
+   */
+  readonly composeEffect?: (effect: Effect) => Effect;
 }
 
 export interface PickingOptions {
@@ -535,6 +550,11 @@ function lowerLeaf(
     return RenderTree.empty;
   }
 
+  // OIT pass split: drop leaves not selected by the pass filter.
+  if (opts.passFilter !== undefined && !opts.passFilter(state.renderPass)) {
+    return RenderTree.empty;
+  }
+
   // Merge geometry-attribute scopes into the leaf — leaf-supplied
   // values win on per-key conflict. This is the Phase-2 contract:
   // VertexAttributes/InstanceAttributes/Index/Mode scope nodes flow
@@ -603,6 +623,12 @@ function lowerLeaf(
     }, mode);
     pickId = pid;
     if (opts.picking.onAcquire !== undefined) opts.picking.onAcquire(pid);
+  }
+
+  // OIT: append the weighted-blend / A-buffer fragment writer onto the
+  // (transparent) leaf's effect. Mirrors aardvark's composeSurface.
+  if (opts.composeEffect !== undefined) {
+    effect = opts.composeEffect(effect);
   }
 
   // If an `Sg.Instanced` scope is in effect, rewrite the effect via
