@@ -50,7 +50,7 @@ const wboitFS = fragment((_in: {}, b: FragmentBuiltinIn) => {
   const w = clamp(a.mul(a).mul(a).mul(1e8).mul(bz).mul(bz).mul(bz), 1e-2, 3e2);
   return {
     Colors: c,
-    PickData: new V4f(uniform.u_pickId, b.fragCoord.z, 0.0, 0.0),
+    pickId: new V4f(uniform.u_pickId, b.fragCoord.z, 0.0, 0.0),
     accum: new V4f(c.xyz.mul(alpha), alpha).mul(w),
     reveal: alpha,
   };
@@ -88,7 +88,7 @@ const abBuildFS = fragment((_in: {}, b: FragmentBuiltinIn) => {
     nodeColor[n] = uniform.u_color;
     nodeNext[n] = atomicExchange(headBuf[px], n);
   }
-  return { Colors: uniform.u_color, PickData: new V4f(uniform.u_pickId, b.fragCoord.z, 0.0, 0.0), odepth: b.fragCoord.z };
+  return { Colors: uniform.u_color, pickId: new V4f(uniform.u_pickId, b.fragCoord.z, 0.0, 0.0), odepth: b.fragCoord.z };
 });
 const abBuildEffect = effect(mainVS, abBuildFS);
 
@@ -136,7 +136,7 @@ const abResolveEffect = effect(fsVS, abResolveFS);
 // ---------- pick effect (depth-test selects nearest transparent) ----------
 const pickFS = fragment((_in: {}, b: FragmentBuiltinIn) => ({
   Colors: uniform.u_color,
-  PickData: new V4f(uniform.u_pickId, b.fragCoord.z, 0.0, 0.0),
+  pickId: new V4f(uniform.u_pickId, b.fragCoord.z, 0.0, 0.0),
   odepth: b.fragCoord.z,
 }));
 const pickEffect = effect(mainVS, pickFS);
@@ -220,11 +220,11 @@ async function main() {
 
   // ===================== Test 1: WBOIT =====================
   {
-    const sigA = createFramebufferSignature({ colors: { Colors: "rgba16float", PickData: "rgba32float", accum: "rgba16float", reveal: "r16float" }, depthStencil: { format: "depth32float" } });
+    const sigA = createFramebufferSignature({ colors: { Colors: "rgba16float", pickId: "rgba32float", accum: "rgba16float", reveal: "r16float" }, depthStencil: { format: "depth32float" } });
     const fboA = allocateFramebuffer(device, sigA, cval({ width: SIZE, height: SIZE }), { extraUsage: TextureUsage.COPY_SRC });
     fboA.acquire();
     const taskA = runtime.compile(sigA, AList.ofArray<Command>([
-      { kind: "Clear", values: { colors: HashMap.empty<string, V4f>().add("Colors", new V4f(0, 0, 0, 1)).add("PickData", new V4f(0, 0, 0, 0)).add("accum", new V4f(0, 0, 0, 0)).add("reveal", new V4f(1, 1, 1, 1)), depth: 1.0 } },
+      { kind: "Clear", values: { colors: HashMap.empty<string, V4f>().add("Colors", new V4f(0, 0, 0, 1)).add("pickId", new V4f(0, 0, 0, 0)).add("accum", new V4f(0, 0, 0, 0)).add("reveal", new V4f(1, 1, 1, 1)), depth: 1.0 } },
       { kind: "Render", tree: RenderTree.leaf(ro(wboitEffect, S, opaqueBlends, true)) },
       { kind: "Render", tree: RenderTree.ordered(...[A, Bq, Cq, Dq].map((q) => RenderTree.leaf(ro(wboitEffect, q, wboitBlends, false)))) },
       { kind: "Render", tree: RenderTree.ordered(...[A, Bq, Cq, Dq].map((q) => RenderTree.leaf(ro(wboitEffect, q, wboitPickBlends, true)))) },
@@ -248,7 +248,7 @@ async function main() {
     ])).run(fboB.getValue(AdaptiveToken.top), AdaptiveToken.top);
     await device.queue.onSubmittedWorkDone();
 
-    const pick = await readPixel0(device, gpu("PickData"));
+    const pick = await readPixel0(device, gpu("pickId"));
     const fin = await readPixel0(device, fboB.getValue(AdaptiveToken.top).colorTextures!.tryFind("finalColor")! as unknown as GPUTexture);
     log(`\n== WBOIT ==  pick=${[...pick].slice(0, 2).map((v) => v.toFixed(2)).join(",")}  color=${[...fin].slice(0, 3).map((v) => v.toFixed(3)).join(",")}`);
     check("WBOIT pick=A(2)", Math.abs(pick[0]! - 2) < 0.5, `${pick[0]!.toFixed(2)}`);
@@ -274,15 +274,15 @@ async function main() {
       .add("headBuf", AVal.constant(head)).add("counterBuf", AVal.constant(counter))
       .add("nodeDepth", AVal.constant(nDepth)).add("nodeColor", AVal.constant(nColor)).add("nodeNext", AVal.constant(nNext)) as unknown as RenderObject["storageBuffers"];
 
-    const sigA = createFramebufferSignature({ colors: { Colors: "rgba16float", PickData: "rgba32float", odepth: "r16float" }, depthStencil: { format: "depth32float" } });
+    const sigA = createFramebufferSignature({ colors: { Colors: "rgba16float", pickId: "rgba32float", odepth: "r16float" }, depthStencil: { format: "depth32float" } });
     const fboA = allocateFramebuffer(device, sigA, cval({ width: SIZE, height: SIZE }), { extraUsage: TextureUsage.COPY_SRC });
     fboA.acquire();
     const buildBlends = HashMap.empty<string, ReturnType<typeof blend>>().add("Colors", masked).add("odepth", masked);
     const abPick2 = HashMap.empty<string, ReturnType<typeof blend>>().add("Colors", masked).add("odepth", masked);
     const buildRO = (q: { z: number; c: V4f; id: number }) => ro(abBuildEffect, q, buildBlends, false, { storageBuffers: buildStorage });
     const taskA = runtime.compile(sigA, AList.ofArray<Command>([
-      { kind: "Clear", values: { colors: HashMap.empty<string, V4f>().add("Colors", new V4f(0, 0, 0, 1)).add("PickData", new V4f(0, 0, 0, 0)).add("odepth", new V4f(1, 1, 1, 1)), depth: 1.0 } },
-      { kind: "Render", tree: RenderTree.leaf(ro(pickEffect, S, HashMap.empty<string, ReturnType<typeof blend>>(), true)) }, // opaque solid (Colors+PickData+odepth+depth)
+      { kind: "Clear", values: { colors: HashMap.empty<string, V4f>().add("Colors", new V4f(0, 0, 0, 1)).add("pickId", new V4f(0, 0, 0, 0)).add("odepth", new V4f(1, 1, 1, 1)), depth: 1.0 } },
+      { kind: "Render", tree: RenderTree.leaf(ro(pickEffect, S, HashMap.empty<string, ReturnType<typeof blend>>(), true)) }, // opaque solid (Colors+pickId+odepth+depth)
       { kind: "Render", tree: RenderTree.ordered(...[A, Bq, Cq, Dq].map((q) => RenderTree.leaf(buildRO(q)))) },              // A-buffer build (storage)
       { kind: "Render", tree: RenderTree.ordered(...[A, Bq, Cq, Dq].map((q) => RenderTree.leaf(ro(pickEffect, q, abPick2, true)))) }, // pick pass
     ]));
@@ -308,7 +308,7 @@ async function main() {
     ])).run(fboB.getValue(AdaptiveToken.top), AdaptiveToken.top);
     await device.queue.onSubmittedWorkDone();
 
-    const pick = await readPixel0(device, gpu("PickData"));
+    const pick = await readPixel0(device, gpu("pickId"));
     const fin = await readPixel0(device, fboB.getValue(AdaptiveToken.top).colorTextures!.tryFind("finalColor")! as unknown as GPUTexture);
     log(`\n== A-buffer (exact) ==  pick=${[...pick].slice(0, 2).map((v) => v.toFixed(2)).join(",")}  color=${[...fin].slice(0, 3).map((v) => v.toFixed(3)).join(",")}`);
     check("A-buffer pick=A(2)", Math.abs(pick[0]! - 2) < 0.5, `${pick[0]!.toFixed(2)}`);
@@ -320,12 +320,12 @@ async function main() {
   {
     // A real scene-graph: opaque solid + 4 transparent quads, tagged with
     // Sg.opaque / Sg.transparent. transparencyTask lowers + multipasses it.
-    // The scene effect writes Colors + PickData (id, depth) — the wrapper
-    // preserves PickData through the composite and re-renders the transparent
+    // The scene effect writes Colors + pickId (id, depth) — the wrapper
+    // preserves pickId through the composite and re-renders the transparent
     // objects into it for the pick pass.
     const userEffect = effect(
       vertex((v: { a_pos: V2f }) => ({ gl_Position: new V4f(v.a_pos.x, v.a_pos.y, uniform.u_z.mul(0.5).add(0.5), 1.0) })),
-      fragment((_in: {}, b: FragmentBuiltinIn) => ({ Colors: uniform.u_color, PickData: new V4f(uniform.u_pickId, b.fragCoord.z, 0.0, 0.0) })),
+      fragment((_in: {}, b: FragmentBuiltinIn) => ({ Colors: uniform.u_color, pickId: new V4f(uniform.u_pickId, b.fragCoord.z, 0.0, 0.0) })),
     );
     const quadGeom = Sg.leaf({
       vertexAttributes: HashMap.empty<string, BufferView>().add("a_pos", { buffer: quadBuf, offset: 0, stride: 8, elementType: ElementType.V2f }),
@@ -338,9 +338,9 @@ async function main() {
     ]);
     const size = cval({ width: SIZE, height: SIZE });
 
-    // WBOIT with picking: output carries Colors + PickData + depth.
+    // WBOIT with picking: output carries Colors + pickId + depth.
     setOitMode("wboit");
-    const wbSig = createFramebufferSignature({ colors: { Colors: "rgba16float", PickData: "rgba32float" }, depthStencil: { format: "depth32float" } });
+    const wbSig = createFramebufferSignature({ colors: { Colors: "rgba16float", pickId: "rgba32float" }, depthStencil: { format: "depth32float" } });
     const wbFb = allocateFramebuffer(device, wbSig, size, { extraUsage: TextureUsage.COPY_SRC });
     wbFb.acquire();
     const wbTask = transparencyTask(runtime, device, wbSig, size, scene);
@@ -348,15 +348,15 @@ async function main() {
     await device.queue.onSubmittedWorkDone();
     const wbIfb = wbFb.getValue(AdaptiveToken.top);
     const w = await readPixel0H(device, wbIfb.colorTextures!.tryFind("Colors")! as unknown as GPUTexture);
-    const wp = await readPixel0(device, wbIfb.colorTextures!.tryFind("PickData")! as unknown as GPUTexture);
+    const wp = await readPixel0(device, wbIfb.colorTextures!.tryFind("pickId")! as unknown as GPUTexture);
     wbTask.dispose(); wbFb.release();
     log(`\n== Sg + transparencyTask mode=wboit ==  color=${[...w].slice(0, 3).map((v) => v.toFixed(3)).join(",")}  pick=${wp[0]!.toFixed(2)},${wp[1]!.toFixed(2)}`);
     check("Sg wboit color ~(0.25,0.375,0.375)", Math.abs(w[0]! - 0.25) < 0.05 && Math.abs(w[1]! - 0.375) < 0.05 && Math.abs(w[2]! - 0.375) < 0.05, `(${w[0]!.toFixed(3)},${w[1]!.toFixed(3)},${w[2]!.toFixed(3)})`);
     check("Sg wboit pick=A(2) depth~0.1", Math.abs(wp[0]! - 2) < 0.5 && wp[1]! < 0.2, `pick=${wp[0]!.toFixed(2)} depth=${wp[1]!.toFixed(3)}`);
 
-    // A-buffer (exact) with picking: output carries Colors + PickData + depth.
+    // A-buffer (exact) with picking: output carries Colors + pickId + depth.
     setOitMode("abuffer");
-    const abSig = createFramebufferSignature({ colors: { Colors: "rgba32float", PickData: "rgba32float" }, depthStencil: { format: "depth32float" } });
+    const abSig = createFramebufferSignature({ colors: { Colors: "rgba32float", pickId: "rgba32float" }, depthStencil: { format: "depth32float" } });
     const abFb = allocateFramebuffer(device, abSig, size, { extraUsage: TextureUsage.COPY_SRC });
     abFb.acquire();
     const abTask = transparencyTask(runtime, device, abSig, size, scene);
@@ -364,11 +364,25 @@ async function main() {
     await device.queue.onSubmittedWorkDone();
     const abIfb = abFb.getValue(AdaptiveToken.top);
     const a = await readPixel0(device, abIfb.colorTextures!.tryFind("Colors")! as unknown as GPUTexture);
-    const ap = await readPixel0(device, abIfb.colorTextures!.tryFind("PickData")! as unknown as GPUTexture);
+    const ap = await readPixel0(device, abIfb.colorTextures!.tryFind("pickId")! as unknown as GPUTexture);
     abTask.dispose(); abFb.release();
     log(`== Sg + transparencyTask mode=abuffer ==  color=${[...a].slice(0, 3).map((v) => v.toFixed(3)).join(",")}  pick=${ap[0]!.toFixed(2)},${ap[1]!.toFixed(2)}`);
     check("Sg abuffer color exact ~(0.25,0.25,0.5)", Math.abs(a[0]! - 0.25) < 0.05 && Math.abs(a[1]! - 0.25) < 0.05 && Math.abs(a[2]! - 0.5) < 0.05, `(${a[0]!.toFixed(3)},${a[1]!.toFixed(3)},${a[2]!.toFixed(3)})`);
     check("Sg abuffer pick=A(2) depth~0.1", Math.abs(ap[0]! - 2) < 0.5 && ap[1]! < 0.2, `pick=${ap[0]!.toFixed(2)} depth=${ap[1]!.toFixed(3)}`);
+
+    // MSAA WBOIT (4×): internal multisampled passes, single-sample output.
+    // Fully-covered center pixel keeps the same color as 1× (MSAA only affects edges).
+    setOitMode("wboit");
+    const msSig = createFramebufferSignature({ colors: { Colors: "rgba32float" } });
+    const msFb = allocateFramebuffer(device, msSig, size, { extraUsage: TextureUsage.COPY_SRC });
+    msFb.acquire();
+    const msTask = transparencyTask(runtime, device, msSig, size, scene, { sampleCount: 4 });
+    msTask.run(msFb.getValue(AdaptiveToken.top), AdaptiveToken.top);
+    await device.queue.onSubmittedWorkDone();
+    const m = await readPixel0(device, msFb.getValue(AdaptiveToken.top).colorTextures!.tryFind("Colors")! as unknown as GPUTexture);
+    msTask.dispose(); msFb.release();
+    log(`== Sg + transparencyTask mode=wboit MSAA 4x ==  color=${[...m].slice(0, 3).map((v) => v.toFixed(3)).join(",")}`);
+    check("Sg wboit MSAA 4x ~(0.25,0.375,0.375)", Math.abs(m[0]! - 0.25) < 0.05 && Math.abs(m[1]! - 0.375) < 0.05 && Math.abs(m[2]! - 0.375) < 0.05, `(${m[0]!.toFixed(3)},${m[1]!.toFixed(3)},${m[2]!.toFixed(3)})`);
   }
 }
 main().catch((e) => { out.textContent += "\nERROR: " + (e?.stack || e); });

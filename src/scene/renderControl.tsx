@@ -39,6 +39,7 @@ import type { Child } from "../vnode.js";
 import { useScope } from "../scope.js";
 import { Sg, collectSgChildren } from "./constructors.js";
 import { compileScene } from "./compile.js";
+import { transparencyTask, type OitMode } from "./transparency.js";
 import type { SgNode } from "./sg.js";
 import { TraversalState } from "./traversalState.js";
 import { PickRegistry } from "./picking/registry.js";
@@ -69,6 +70,15 @@ export interface RenderControlProps {
    */
   readonly scene?: SgNode;
   readonly children?: Child | Child[] | SgNode | ReadonlyArray<Child | SgNode>;
+
+  /**
+   * Opt into order-independent transparency for `Sg.transparent` subtrees.
+   * `true` uses the default mode (WBOIT); a string picks the mode explicitly.
+   * The scene is rendered through `transparencyTask` (opaque → OIT → composite →
+   * transparent-pick), so transparent objects blend order-independently and stay
+   * pickable. Default off (single forward pass, unchanged behaviour).
+   */
+  readonly transparency?: boolean | OitMode;
 
   /**
    * View trafo (world → view). When unset, the scene's outermost
@@ -380,14 +390,25 @@ async function initialise(
     colors: colorsWithDefaults.add(PICK_NAME, new V4f(0, 0, 0, 0)),
     depth: userClear?.depth ?? 1.0,
   };
-  // Lower the scene; compile into the runtime; drive the loop.
-  const commands = compileScene(sceneTree, {
-    initialState: initial,
-    ...(props.defaultEffect !== undefined ? { defaultEffect: props.defaultEffect } : {}),
-    clear: clearWithPick,
-    picking: { registry },
-  });
-  const task = runtime.compile(pickFb.signature, commands);
+  // Lower the scene; compile into the runtime; drive the loop. When transparency
+  // is enabled, route through transparencyTask (it lowers the scene itself via
+  // compileScene's pass hooks and threads the same pick registry).
+  const task = props.transparency
+    ? transparencyTask(runtime, device, pickFb.signature, attachment.size, sceneTree, {
+        ...(typeof props.transparency === "string" ? { mode: props.transparency } : {}),
+        compile: {
+          initialState: initial,
+          autoUniforms: true,
+          ...(props.defaultEffect !== undefined ? { defaultEffect: props.defaultEffect } : {}),
+          picking: { registry },
+        },
+      })
+    : runtime.compile(pickFb.signature, compileScene(sceneTree, {
+        initialState: initial,
+        ...(props.defaultEffect !== undefined ? { defaultEffect: props.defaultEffect } : {}),
+        clear: clearWithPick,
+        picking: { registry },
+      }));
   scope.onDispose(() => task.dispose());
 
   const dispatcher = new PickDispatcher(

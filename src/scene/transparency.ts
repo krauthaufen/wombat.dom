@@ -58,8 +58,8 @@ const tReveal: Sampler2D = null as unknown as Sampler2D;
 // Over-blend composite: emits premultiplied transparent color (avg) with the
 // transparent coverage (ta) as alpha; the pipeline blends it OVER the opaque
 // already in the target (src-alpha / one-minus-src-alpha), so no opaque sampling.
-// Two variants: plain, and one that also emits a (masked) PickData so the
-// pipeline's color-target count matches a {Colors, PickData} output.
+// Two variants: plain, and one that also emits a (masked) pickId so the
+// pipeline's color-target count matches a {Colors, pickId} output.
 const wboitCompositeColor: Effect = effect(fsVS, fragment((_in: {}, b: FragmentBuiltinIn) => {
   const uv = b.fragCoord.xy.mul(uniform.u_invSize);
   const accum = texture(tAccum, uv);
@@ -72,7 +72,7 @@ const wboitCompositePick: Effect = effect(fsVS, fragment((_in: {}, b: FragmentBu
   const accum = texture(tAccum, uv);
   const reveal = texture(tReveal, uv).x;
   const avg = accum.xyz.div(max(accum.w, 1e-5));
-  return { Colors: new V4f(avg, 1.0 - reveal), PickData: new V4f(0.0, 0.0, 0.0, 0.0) };
+  return { Colors: new V4f(avg, 1.0 - reveal), pickId: new V4f(0.0, 0.0, 0.0, 0.0) };
 }));
 
 function wboitPipelineOverride(ps: PipelineState): PipelineState {
@@ -81,14 +81,46 @@ function wboitPipelineOverride(ps: PipelineState): PipelineState {
   });
   const blends: aval<HashMap<string, BlendState>> = AVal.constant(
     HashMap.empty<string, BlendState>()
+      .add("Colors", { writeMask: AVal.constant(0) }) // ignored when no Colors attachment (non-MSAA); masks it in the combined MSAA FBO
       .add("accum", { color: bc("one", "one"), alpha: bc("one", "one"), writeMask: AVal.constant(0xf) })
       .add("reveal", { color: bc("zero", "one-minus-src"), alpha: bc("zero", "one-minus-src"), writeMask: AVal.constant(0xf) }),
   );
   return { ...ps, depth: { write: AVal.constant(false), compare: AVal.constant<GPUCompareFunction>("less"), clamp: ps.depth?.clamp ?? AVal.constant(false) }, blends };
 }
 
+// MSAA path renders opaque + transparent into one multisampled FBO
+// {Colors, accum, reveal, depth}; opaque masks accum/reveal, transparent masks
+// Colors. The composite then samples the RESOLVED attachments. A dummy writer
+// gives the opaque pass the accum/reveal outputs the combined FBO requires.
+// Both MSAA writers pass Colors through (a stage that doesn't reference an
+// upstream output drops it from the composed effect).
+const msaaZeroWriter: Effect = effect(fragment((i: { Colors: V4f }) => ({ Colors: i.Colors, accum: new V4f(0.0, 0.0, 0.0, 0.0), reveal: 0.0 })));
+const wboitWriterMS: Effect = effect(fragment((i: { Colors: V4f }, b: FragmentBuiltinIn) => {
+  const c = i.Colors;
+  const alpha = c.w;
+  const a = alpha * 8.0 + 0.01;
+  const bz = b.fragCoord.z * -0.95 + 1.0;
+  const w = clamp(a * a * a * 1e8 * (bz * bz * bz), 1e-2, 3e2);
+  return { Colors: c, accum: new V4f(c.xyz.mul(alpha), alpha).mul(w), reveal: alpha };
+}));
+function msaaOpaqueOverride(ps: PipelineState): PipelineState {
+  const masked: BlendState = { writeMask: AVal.constant(0) };
+  const blends: aval<HashMap<string, BlendState>> = AVal.constant(HashMap.empty<string, BlendState>().add("accum", masked).add("reveal", masked));
+  return { ...ps, depth: { write: AVal.constant(true), compare: AVal.constant<GPUCompareFunction>("less"), clamp: ps.depth?.clamp ?? AVal.constant(false) }, blends };
+}
+const tColorsS: Sampler2D = null as unknown as Sampler2D;
+const wboitCompositeSample: Effect = effect(fsVS, fragment((_in: {}, b: FragmentBuiltinIn) => {
+  const uv = b.fragCoord.xy.mul(uniform.u_invSize);
+  const opaque = texture(tColorsS, uv);
+  const accum = texture(tAccum, uv);
+  const reveal = texture(tReveal, uv).x;
+  const avg = accum.xyz.div(max(accum.w, 1e-5));
+  const ta = 1.0 - reveal;
+  return { Colors: new V4f(avg.mul(ta).add(opaque.xyz.mul(1.0 - ta)), 1.0) };
+}));
+
 // Transparent pick pass: depth-test + write ON (nearest transparent wins), color
-// masked (write-mask-only — leaves the composited Colors alone), PickData (and
+// masked (write-mask-only — leaves the composited Colors alone), pickId (and
 // depth) written. Mirrors aardvark's transformTransparentPick.
 function wboitPickOverride(ps: PipelineState): PipelineState {
   const blends: aval<HashMap<string, BlendState>> = AVal.constant(
@@ -153,9 +185,9 @@ const abResolveEffect: Effect = effect(fsVS, fragment((_in: {}, b: FragmentBuilt
       lastD = bestD;
     }
   }
-  // PickData is emitted (dummy) so the pipeline matches a {Colors, PickData}
+  // pickId is emitted (dummy) so the pipeline matches a {Colors, pickId}
   // output; it's masked write-mask-only when present, and dropped otherwise.
-  return { Colors: new V4f(outRGB.add(opaque.xyz.mul(T)), 1.0), PickData: new V4f(0.0, 0.0, 0.0, 0.0) };
+  return { Colors: new V4f(outRGB.add(opaque.xyz.mul(T)), 1.0), pickId: new V4f(0.0, 0.0, 0.0, 0.0) };
 }));
 
 function abBuildPipelineOverride(ps: PipelineState): PipelineState {
@@ -168,7 +200,7 @@ function abBuildPipelineOverride(ps: PipelineState): PipelineState {
 }
 
 // ---------------------------------------------------------------- shared bits
-type CompileBase = Pick<CompileSceneOptions, "defaultEffect" | "rasterizer" | "autoUniforms">;
+type CompileBase = Pick<CompileSceneOptions, "defaultEffect" | "rasterizer" | "autoUniforms" | "picking" | "initialState">;
 const provider = <T>(m: HashMap<string, T>): unknown => m;
 const nearestSampler = () => AVal.constant(ISampler.fromDescriptor({ magFilter: "nearest", minFilter: "nearest", addressModeU: "clamp-to-edge", addressModeV: "clamp-to-edge" }));
 
@@ -192,6 +224,11 @@ export interface TransparencyTaskOptions {
   readonly compile?: CompileBase;
   /** Clear color for the opaque pass. Default opaque black. */
   readonly clearColor?: V4f;
+  /** MSAA sample count for the internal OIT passes (1 = off). When > 1, opaque +
+   *  transparent render multisampled into one resolved FBO and the composite
+   *  samples the resolve; the output framebuffer stays single-sample. (WBOIT
+   *  only; picking is not produced in the MSAA path.) */
+  readonly sampleCount?: number;
 }
 
 /**
@@ -207,7 +244,12 @@ export function transparencyTask(
   opts: TransparencyTaskOptions = {},
 ): IRenderTask {
   const mode = opts.mode ?? defaultOitMode;
-  const base: CompileSceneOptions = { autoUniforms: false, ...opts.compile };
+  // `picking` (the pick registry / chain) is threaded only to the opaque + pick
+  // passes — NOT the WBOIT/build pass (which composes its own writer). `base`
+  // therefore excludes it; opaque/pick passes spread `withPicking` back in.
+  const { picking, ...compileRest } = opts.compile ?? {};
+  const base: CompileSceneOptions = { autoUniforms: false, ...compileRest };
+  const withPicking = picking !== undefined ? { picking } : {};
   const black = opts.clearColor ?? new V4f(0, 0, 0, 1);
   const quadBuf = AVal.constant(IBuffer.fromHost(FS_QUAD));
   const quadAttrs = asAttributeProvider(HashMap.empty<string, BufferView>().add("a_pos", { buffer: quadBuf, offset: 0, stride: 8, elementType: ElementType.V2f }));
@@ -216,23 +258,58 @@ export function transparencyTask(
   const widthU = AVal.map(size, (s) => s.width);
   const isOpaque = (p: number) => p < RenderPass.transparent;
   const isTransparent = (p: number) => p >= RenderPass.transparent;
+  const sampleCount = opts.sampleCount ?? 1;
+
+  // ----- MSAA WBOIT (color only): one multisampled FBO, composite samples resolve -----
+  if (mode === "wboit" && sampleCount > 1) {
+    const msSig = createFramebufferSignature({ colors: { Colors: "rgba16float", accum: "rgba16float", reveal: "r16float" }, depthStencil: { format: "depth32float" }, sampleCount });
+    const msRes = allocateFramebuffer(device, msSig, size, { extraUsage: TextureUsage.TEXTURE_BINDING });
+    msRes.acquire();
+    const opaqueTask = runtime.compile(msSig, compileScene(scene, {
+      ...base, passFilter: isOpaque, composeEffect: (e) => effect(e, msaaZeroWriter), pipelineOverride: msaaOpaqueOverride,
+      clear: { colors: HashMap.empty<string, V4f>().add("Colors", black).add("accum", new V4f(0, 0, 0, 0)).add("reveal", new V4f(1, 1, 1, 1)), depth: 1.0 },
+    }));
+    const transTask = runtime.compile(msSig, compileScene(scene, {
+      ...base, passFilter: isTransparent, composeEffect: (e) => effect(e, wboitWriterMS), pipelineOverride: wboitPipelineOverride,
+    }));
+    const compRO: RenderObject = {
+      effect: wboitCompositeSample, pipelineState: PipelineState.constant({ rasterizer: RAST }), vertexAttributes: quadAttrs,
+      uniforms: provider(HashMap.empty<string, aval<unknown>>().add("u_invSize", invSize)) as RenderObject["uniforms"],
+      textures: provider(HashMap.empty<string, aval<ITexture>>()
+        .add("tColorsS_view", AVal.map(msRes, (fb) => ITexture.fromGPU(fb.colorTextures!.tryFind("Colors")!)))
+        .add("tAccum_view", AVal.map(msRes, (fb) => ITexture.fromGPU(fb.colorTextures!.tryFind("accum")!)))
+        .add("tReveal_view", AVal.map(msRes, (fb) => ITexture.fromGPU(fb.colorTextures!.tryFind("reveal")!)))) as RenderObject["textures"],
+      samplers: provider(HashMap.empty<string, aval<ISampler>>().add("tColorsS", nearestSampler()).add("tAccum", nearestSampler()).add("tReveal", nearestSampler())) as RenderObject["samplers"],
+      drawCall: quadDraw,
+    };
+    const compositeTask = runtime.compile(signature, AList.ofArray<Command>([{ kind: "Render", tree: RenderTree.leaf(compRO) }]));
+    return {
+      signature,
+      run(userFb: IFramebuffer, token: AdaptiveToken): void {
+        opaqueTask.run(msRes.getValue(token), token);
+        transTask.run(msRes.getValue(token), token);
+        compositeTask.run(userFb, token);
+      },
+      dispose(): void { opaqueTask.dispose(); transTask.dispose(); compositeTask.dispose(); msRes.release(); },
+    } as unknown as IRenderTask;
+  }
 
   if (mode === "wboit") {
     // Opaque renders straight into the output (so its pick + depth are there);
     // the transparent pass is the only offscreen part. The composite blends OVER
     // the opaque already in the output (no opaque sampling). When the output has
-    // a PickData attachment we also re-render the transparent objects into it
+    // a pickId attachment we also re-render the transparent objects into it
     // (depth-tested) so the nearest transparent is pickable — aardvark's pattern.
-    const hasPick = signature.colorNames.includes("PickData");
+    const hasPick = signature.colorNames.includes("pickId");
     const oitColorSig = createFramebufferSignature({ colors: { accum: "rgba16float", reveal: "r16float" } });
     const oitColorRes = allocateFramebuffer(device, oitColorSig, size, { extraUsage: TextureUsage.TEXTURE_BINDING });
     oitColorRes.acquire();
     const oitSig = createFramebufferSignature({ colors: { accum: "rgba16float", reveal: "r16float" }, depthStencil: { format: "depth32float" } });
 
     let opaqueClear = HashMap.empty<string, V4f>().add("Colors", black);
-    if (hasPick) opaqueClear = opaqueClear.add("PickData", new V4f(0, 0, 0, 0));
+    if (hasPick) opaqueClear = opaqueClear.add("pickId", new V4f(0, 0, 0, 0));
     const opaqueTask = runtime.compile(signature, compileScene(scene, {
-      ...base, passFilter: isOpaque, clear: { colors: opaqueClear, depth: 1.0 },
+      ...base, ...withPicking, passFilter: isOpaque, clear: { colors: opaqueClear, depth: 1.0 },
     }));
     const wboitTask = runtime.compile(oitSig, compileScene(scene, {
       ...base, passFilter: isTransparent, composeEffect: (e) => effect(e, wboitWriter), pipelineOverride: wboitPipelineOverride,
@@ -243,7 +320,7 @@ export function transparencyTask(
       color: { operation: "add", srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" },
       alpha: { operation: "add", srcFactor: "zero", dstFactor: "one" }, writeMask: 0xf,
     });
-    if (hasPick) compBlends = compBlends.add("PickData", { writeMask: 0 }); // write-mask-only: leave opaque pick intact
+    if (hasPick) compBlends = compBlends.add("pickId", { writeMask: 0 }); // write-mask-only: leave opaque pick intact
     const compRO: RenderObject = {
       effect: hasPick ? wboitCompositePick : wboitCompositeColor,
       pipelineState: PipelineState.constant({ rasterizer: RAST, depth: { write: false, compare: "always" }, blends: compBlends }),
@@ -257,7 +334,7 @@ export function transparencyTask(
     };
     const compositeTask = runtime.compile(signature, AList.ofArray<Command>([{ kind: "Render", tree: RenderTree.leaf(compRO) }]));
     const pickTask = hasPick
-      ? runtime.compile(signature, compileScene(scene, { ...base, passFilter: isTransparent, pipelineOverride: wboitPickOverride }))
+      ? runtime.compile(signature, compileScene(scene, { ...base, ...withPicking, passFilter: isTransparent, pipelineOverride: wboitPickOverride }))
       : undefined;
 
     return {
@@ -324,14 +401,14 @@ export function transparencyTask(
     pipelineOverride: abBuildPipelineOverride, injectStorage: buildStorage,
     injectUniforms: HashMap.empty<string, aval<unknown>>().add("u_width", widthU),
   }));
-  // When the output has a PickData attachment, the resolve writes Colors and
-  // leaves PickData masked; opaque + transparent are rendered into PickData/depth
+  // When the output has a pickId attachment, the resolve writes Colors and
+  // leaves pickId masked; opaque + transparent are rendered into pickId/depth
   // by dedicated pick passes (opaque rendered a second time, since A-buffer's
   // color path keeps the opaque in the intermediate it samples).
-  const hasPick = signature.colorNames.includes("PickData");
+  const hasPick = signature.colorNames.includes("pickId");
   const resolveDepth = hasPick ? { write: false, compare: "always" as GPUCompareFunction } : undefined;
   const resolveBlends = hasPick
-    ? HashMap.empty<string, PlainBlendState>().add("PickData", { writeMask: 0 })
+    ? HashMap.empty<string, PlainBlendState>().add("pickId", { writeMask: 0 })
     : undefined;
   const resolveRO: RenderObject = {
     effect: abResolveEffect,
@@ -346,13 +423,13 @@ export function transparencyTask(
   };
   const resolveTask = runtime.compile(signature, AList.ofArray<Command>([{ kind: "Render", tree: RenderTree.leaf(resolveRO) }]));
 
-  // pick passes (only when the output carries PickData)
-  let opaquePickClear = HashMap.empty<string, V4f>().add("Colors", black).add("PickData", new V4f(0, 0, 0, 0));
+  // pick passes (only when the output carries pickId)
+  let opaquePickClear = HashMap.empty<string, V4f>().add("Colors", black).add("pickId", new V4f(0, 0, 0, 0));
   const opaquePickTask = hasPick
-    ? runtime.compile(signature, compileScene(scene, { ...base, passFilter: isOpaque, pipelineOverride: wboitPickOverride, clear: { colors: opaquePickClear, depth: 1.0 } }))
+    ? runtime.compile(signature, compileScene(scene, { ...base, ...withPicking, passFilter: isOpaque, pipelineOverride: wboitPickOverride, clear: { colors: opaquePickClear, depth: 1.0 } }))
     : undefined;
   const transparentPickTask = hasPick
-    ? runtime.compile(signature, compileScene(scene, { ...base, passFilter: isTransparent, pipelineOverride: wboitPickOverride }))
+    ? runtime.compile(signature, compileScene(scene, { ...base, ...withPicking, passFilter: isTransparent, pipelineOverride: wboitPickOverride }))
     : undefined;
 
   return {
@@ -365,7 +442,7 @@ export function transparencyTask(
       opaqueTask.run(interRes.getValue(token), token);
       if (opaquePickTask !== undefined) opaquePickTask.run(userFb, token); // opaque pick + depth into output
       buildTask.run(interRes.getValue(token), token);
-      resolveTask.run(userFb, token);                                       // composite -> output Colors (PickData masked)
+      resolveTask.run(userFb, token);                                       // composite -> output Colors (pickId masked)
       if (transparentPickTask !== undefined) transparentPickTask.run(userFb, token);
     },
     dispose(): void {
