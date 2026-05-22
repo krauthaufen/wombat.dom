@@ -1,8 +1,29 @@
 # Order-Independent Transparency (OIT) — design
 
-Status: **DESIGN, not implemented.** Plan for a transparency render path in
-`@aardworx/wombat.dom`, modelled on aardvark.rendering's `transparency-oit-v57`
-branch, adapted to WebGPU's constraints.
+Status: **DESIGN + validated prototype.** Both techniques are proven end-to-end
+on the real GPU in `examples/transparency` (port of aardvark's
+`zStackWithOccluder`): WBOIT → `(0.25, 0.375, 0.375)`, exact A-buffer →
+`(0.25, 0.25, 0.5)`, both with correct pick (A=2) + depth (~0.1). Still TODO:
+the `Sg.transparent` library integration (this is at the RenderObject/Command
+level), MSAA variants. Plan modelled on aardvark.rendering's
+`transparency-oit-v57`, adapted to WebGPU's constraints.
+
+### WebGPU gotchas found while building the prototype (read before implementing)
+- **`maxColorAttachmentBytesPerSample` defaults to 32.** A 4-attachment FBO
+  (e.g. Colors16f + PickData32f + accum16f + reveal16f = 34 B) silently fails
+  pipeline validation. Request the adapter's max at `requestDevice`.
+- **`rgba32float` is not blendable.** PickData (32f) must never be in the
+  `blends` map (give it no blend; write-mask only). Use 16-float for blended
+  attachments (accum/reveal/Colors).
+- **Read-write storage must be FRAGMENT-only.** WebGPU forbids `read_write`
+  storage in the vertex stage. Fixed in wombat.rendering **0.19.5**
+  (`preparedRenderObject` binds read_write storage fragment-only).
+- **Fragment storage writes ignore the depth test** (late depth test with side
+  effects). So an A-buffer build pass inserts *occluded* fragments too. Occlude
+  explicitly: write the opaque depth to an attachment and skip behind-nodes in
+  the resolve (the prototype quantizes depth to u32 and compares against the
+  sampled opaque depth). aardvark dodges this with early-depth-test + interlock.
+- Texture binding split: `Sampler2D S` → texture `S_view` + sampler `S`.
 
 Two techniques, one shared frame structure:
 - **Weighted-Blended OIT (WBOIT)** — cheap, approximate, fully portable. The
