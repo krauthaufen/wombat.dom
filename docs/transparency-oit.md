@@ -1,12 +1,21 @@
 # Order-Independent Transparency (OIT) — design
 
-Status: **DESIGN + validated prototype.** Both techniques are proven end-to-end
-on the real GPU in `examples/transparency` (port of aardvark's
-`zStackWithOccluder`): WBOIT → `(0.25, 0.375, 0.375)`, exact A-buffer →
-`(0.25, 0.25, 0.5)`, both with correct pick (A=2) + depth (~0.1). Still TODO:
-the `Sg.transparent` library integration (this is at the RenderObject/Command
-level), MSAA variants. Plan modelled on aardvark.rendering's
-`transparency-oit-v57`, adapted to WebGPU's constraints.
+Status: **WBOIT shipped as a library feature; A-buffer proven as a prototype.**
+- `Sg.transparent` / `Sg.opaque` + `transparencyTask` (the OIT render-task
+  wrapper, aardvark's `WrappedTask` analog) ship in **wombat.dom 0.7.0**. An
+  `Sg.transparent` z-stack composites to `(0.25, 0.375, 0.375)` on the real GPU
+  (`examples/transparency`, Test 3).
+- Both techniques are also validated as hand-built prototypes against aardvark's
+  `zStackWithOccluder`: WBOIT → `(0.25, 0.375, 0.375)`, exact A-buffer →
+  `(0.25, 0.25, 0.5)`, with correct pick (A=2) + depth (~0.1).
+
+Still TODO: fold the **pick pass** into `transparencyTask` (the wrapper does
+color only today; the prototype proves the pick pass), wire the exact **A-buffer**
+mode into the wrapper, **MSAA** variants, and reactive (resize-driven) FBO sizing.
+Plan modelled on aardvark.rendering's `transparency-oit-v57`.
+
+`transparencyTask` relies on three additive `compileScene` hooks (`passFilter`,
+`composeEffect`, `pipelineOverride`) — see `scene/compile.ts`.
 
 ### WebGPU gotchas found while building the prototype (read before implementing)
 - **`maxColorAttachmentBytesPerSample` defaults to 32.** A 4-attachment FBO
