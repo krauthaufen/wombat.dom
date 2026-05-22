@@ -30,16 +30,24 @@ samples the opaque from its intermediate, so the wrapper adds an opaque-pick pas
 (opaque rendered once more into `PickData`+depth) plus the shared transparent-pick
 pass; the resolve masks `PickData` write-mask-only. Both modes now pick.
 
-Still TODO:
-- **MSAA** variants — multisampled OIT framebuffers + resolve targets (per-sample
-  accum/reveal, shared MS depth). A genuine chunk of FBO/resolve plumbing.
-- **Auto-wiring into `RenderControl`** — the wrapper is an opt-in standalone
-  `IRenderTask` today. RenderControl's canvas pick framebuffer names its pick
-  attachment `pickId` (+ a `Depth` attachment) and is driven by the pick registry,
-  so wiring `transparencyTask` in means aligning the wrapper's pick-attachment
-  naming (it currently assumes `PickData`), threading the registry, and possibly
-  handling an MSAA canvas — a deliberate, blast-radius-aware change to the core
-  loop, best done on its own.
+**MSAA (wombat.dom 0.11.0):** `transparencyTask({ sampleCount })`. Opaque +
+transparent render into one multisampled FBO `{Colors, accum, reveal, depth}`
+(opaque masks accum/reveal, transparent masks Colors); the composite samples the
+resolve, and the output stays single-sample. Both MSAA writers pass Colors
+through (a stage that doesn't reference an upstream output drops it). WBOIT color
+validated at 4×: `(0.25, 0.375, 0.375)`. (WBOIT only; picking is not produced in
+the MSAA path — `pickId` isn't meaningfully MS-resolvable.)
+
+**RenderControl auto-wiring (wombat.dom 0.11.0):** opt-in `<RenderControl
+transparency={true | "wboit" | "abuffer"}>`. It routes the scene through
+`transparencyTask`, threading the pick registry + traversal `initialState`. The
+wrapper's pick attachment was renamed `PickData` → **`pickId`** to match
+RenderControl's canvas pick framebuffer, so picking integrates with no registry
+changes.
+
+Remaining (minor): picking in the **MSAA** path (needs a non-resolved pick
+target / sample-0 read), and an **MSAA canvas** through RenderControl (the opt-in
+assumes a single-sample canvas today).
 
 `transparencyTask` relies on five additive `compileScene` hooks (`passFilter`,
 `composeEffect`, `pipelineOverride`, `injectStorage`, `injectUniforms`) — all
