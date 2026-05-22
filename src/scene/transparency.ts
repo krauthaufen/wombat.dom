@@ -153,7 +153,9 @@ const abResolveEffect: Effect = effect(fsVS, fragment((_in: {}, b: FragmentBuilt
       lastD = bestD;
     }
   }
-  return { Colors: new V4f(outRGB.add(opaque.xyz.mul(T)), 1.0) };
+  // PickData is emitted (dummy) so the pipeline matches a {Colors, PickData}
+  // output; it's masked write-mask-only when present, and dropped otherwise.
+  return { Colors: new V4f(outRGB.add(opaque.xyz.mul(T)), 1.0), PickData: new V4f(0.0, 0.0, 0.0, 0.0) };
 }));
 
 function abBuildPipelineOverride(ps: PipelineState): PipelineState {
@@ -322,8 +324,19 @@ export function transparencyTask(
     pipelineOverride: abBuildPipelineOverride, injectStorage: buildStorage,
     injectUniforms: HashMap.empty<string, aval<unknown>>().add("u_width", widthU),
   }));
+  // When the output has a PickData attachment, the resolve writes Colors and
+  // leaves PickData masked; opaque + transparent are rendered into PickData/depth
+  // by dedicated pick passes (opaque rendered a second time, since A-buffer's
+  // color path keeps the opaque in the intermediate it samples).
+  const hasPick = signature.colorNames.includes("PickData");
+  const resolveDepth = hasPick ? { write: false, compare: "always" as GPUCompareFunction } : undefined;
+  const resolveBlends = hasPick
+    ? HashMap.empty<string, PlainBlendState>().add("PickData", { writeMask: 0 })
+    : undefined;
   const resolveRO: RenderObject = {
-    effect: abResolveEffect, pipelineState: PipelineState.constant({ rasterizer: RAST }), vertexAttributes: quadAttrs,
+    effect: abResolveEffect,
+    pipelineState: PipelineState.constant({ rasterizer: RAST, ...(resolveDepth !== undefined ? { depth: resolveDepth } : {}), ...(resolveBlends !== undefined ? { blends: resolveBlends } : {}) }),
+    vertexAttributes: quadAttrs,
     uniforms: provider(HashMap.empty<string, aval<unknown>>().add("u_invSize", invSize).add("u_width", widthU)) as RenderObject["uniforms"],
     textures: provider(HashMap.empty<string, aval<ITexture>>()
       .add("tOpaque_view", AVal.map(interRes, (fb) => ITexture.fromGPU(fb.colorTextures!.tryFind("Colors")!)))
@@ -333,6 +346,15 @@ export function transparencyTask(
   };
   const resolveTask = runtime.compile(signature, AList.ofArray<Command>([{ kind: "Render", tree: RenderTree.leaf(resolveRO) }]));
 
+  // pick passes (only when the output carries PickData)
+  let opaquePickClear = HashMap.empty<string, V4f>().add("Colors", black).add("PickData", new V4f(0, 0, 0, 0));
+  const opaquePickTask = hasPick
+    ? runtime.compile(signature, compileScene(scene, { ...base, passFilter: isOpaque, pipelineOverride: wboitPickOverride, clear: { colors: opaquePickClear, depth: 1.0 } }))
+    : undefined;
+  const transparentPickTask = hasPick
+    ? runtime.compile(signature, compileScene(scene, { ...base, passFilter: isTransparent, pipelineOverride: wboitPickOverride }))
+    : undefined;
+
   return {
     signature,
     run(userFb: IFramebuffer, token: AdaptiveToken): void {
@@ -341,11 +363,14 @@ export function transparencyTask(
       device.queue.writeBuffer(headBufGpu!, 0, clearArr, 0, s.width * s.height); // reset linked-list heads
       device.queue.writeBuffer(counter, 0, zero1);                                // reset node allocator
       opaqueTask.run(interRes.getValue(token), token);
+      if (opaquePickTask !== undefined) opaquePickTask.run(userFb, token); // opaque pick + depth into output
       buildTask.run(interRes.getValue(token), token);
-      resolveTask.run(userFb, token);
+      resolveTask.run(userFb, token);                                       // composite -> output Colors (PickData masked)
+      if (transparentPickTask !== undefined) transparentPickTask.run(userFb, token);
     },
     dispose(): void {
       opaqueTask.dispose(); buildTask.dispose(); resolveTask.dispose();
+      opaquePickTask?.dispose(); transparentPickTask?.dispose();
       interRes.release();
       counter.destroy(); nDepth.destroy(); nColor.destroy(); nNext.destroy();
       if (headBufGpu !== undefined) headBufGpu.destroy();

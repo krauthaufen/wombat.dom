@@ -354,18 +354,21 @@ async function main() {
     check("Sg wboit color ~(0.25,0.375,0.375)", Math.abs(w[0]! - 0.25) < 0.05 && Math.abs(w[1]! - 0.375) < 0.05 && Math.abs(w[2]! - 0.375) < 0.05, `(${w[0]!.toFixed(3)},${w[1]!.toFixed(3)},${w[2]!.toFixed(3)})`);
     check("Sg wboit pick=A(2) depth~0.1", Math.abs(wp[0]! - 2) < 0.5 && wp[1]! < 0.2, `pick=${wp[0]!.toFixed(2)} depth=${wp[1]!.toFixed(3)}`);
 
-    // A-buffer (exact), color only.
+    // A-buffer (exact) with picking: output carries Colors + PickData + depth.
     setOitMode("abuffer");
-    const abSig = createFramebufferSignature({ colors: { Colors: "rgba32float" } });
+    const abSig = createFramebufferSignature({ colors: { Colors: "rgba32float", PickData: "rgba32float" }, depthStencil: { format: "depth32float" } });
     const abFb = allocateFramebuffer(device, abSig, size, { extraUsage: TextureUsage.COPY_SRC });
     abFb.acquire();
     const abTask = transparencyTask(runtime, device, abSig, size, scene);
     abTask.run(abFb.getValue(AdaptiveToken.top), AdaptiveToken.top);
     await device.queue.onSubmittedWorkDone();
-    const a = await readPixel0(device, abFb.getValue(AdaptiveToken.top).colorTextures!.tryFind("Colors")! as unknown as GPUTexture);
+    const abIfb = abFb.getValue(AdaptiveToken.top);
+    const a = await readPixel0(device, abIfb.colorTextures!.tryFind("Colors")! as unknown as GPUTexture);
+    const ap = await readPixel0(device, abIfb.colorTextures!.tryFind("PickData")! as unknown as GPUTexture);
     abTask.dispose(); abFb.release();
-    log(`== Sg + transparencyTask mode=abuffer ==  color=${[...a].slice(0, 3).map((v) => v.toFixed(3)).join(",")}`);
-    check("Sg abuffer exact ~(0.25,0.25,0.5)", Math.abs(a[0]! - 0.25) < 0.05 && Math.abs(a[1]! - 0.25) < 0.05 && Math.abs(a[2]! - 0.5) < 0.05, `(${a[0]!.toFixed(3)},${a[1]!.toFixed(3)},${a[2]!.toFixed(3)})`);
+    log(`== Sg + transparencyTask mode=abuffer ==  color=${[...a].slice(0, 3).map((v) => v.toFixed(3)).join(",")}  pick=${ap[0]!.toFixed(2)},${ap[1]!.toFixed(2)}`);
+    check("Sg abuffer color exact ~(0.25,0.25,0.5)", Math.abs(a[0]! - 0.25) < 0.05 && Math.abs(a[1]! - 0.25) < 0.05 && Math.abs(a[2]! - 0.5) < 0.05, `(${a[0]!.toFixed(3)},${a[1]!.toFixed(3)},${a[2]!.toFixed(3)})`);
+    check("Sg abuffer pick=A(2) depth~0.1", Math.abs(ap[0]! - 2) < 0.5 && ap[1]! < 0.2, `pick=${ap[0]!.toFixed(2)} depth=${ap[1]!.toFixed(3)}`);
   }
 }
 main().catch((e) => { out.textContent += "\nERROR: " + (e?.stack || e); });
