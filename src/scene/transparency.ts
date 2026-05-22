@@ -20,7 +20,7 @@ import {
   type BufferView, type Command, type DrawCall, type RenderObject, type IFramebuffer,
   type IRenderTask, type FramebufferSignature, type BlendState, type BlendComponentState, type PlainBlendState,
 } from "@aardworx/wombat.rendering/core";
-import { allocateFramebuffer, createFramebufferSignature, TextureUsage } from "@aardworx/wombat.rendering/resources";
+import { createFramebufferSignature } from "@aardworx/wombat.rendering/resources";
 import type { Runtime } from "@aardworx/wombat.rendering/runtime";
 import { effect, fragment, vertex, type Effect } from "@aardworx/wombat.shader";
 import { uniform } from "@aardworx/wombat.shader/uniforms";
@@ -242,10 +242,36 @@ export function transparencyTask(
     const hasPick = signature.colorNames.includes("pickId");
     // accum/reveal at the output's sample count; for MSAA they resolve to single
     // sample (colorTextures) which the composite samples and blends per output sample.
-    const oitColorSig = createFramebufferSignature({ colors: { accum: "rgba16float", reveal: "r16float" }, sampleCount });
-    const oitColorRes = allocateFramebuffer(device, oitColorSig, size, { extraUsage: TextureUsage.TEXTURE_BINDING });
-    oitColorRes.acquire();
     const oitSig = createFramebufferSignature({ colors: { accum: "rgba16float", reveal: "r16float" }, depthStencil: { format: "depth32float" }, sampleCount });
+    // Bounded LRU (aardvark's TransparencyRenderTask pattern) of accum/reveal
+    // bundles keyed by size — sample count is fixed per task. Alternating between
+    // a few sizes reuses bundles instead of dispose+rebuild thrash; the
+    // least-recently-used is evicted past 4 distinct sizes.
+    const ms = sampleCount > 1;
+    const texUsage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING;
+    interface OitBundle { accumView: GPUTextureView; revealView: GPUTextureView; accumResolveView?: GPUTextureView; revealResolveView?: GPUTextureView; accumTex: ITexture; revealTex: ITexture; destroy(): void; }
+    const fboCache = new Map<string, OitBundle>();
+    const buildOit = (w: number, h: number): OitBundle => {
+      const accum = device.createTexture({ size: [w, h], sampleCount, format: "rgba16float", usage: texUsage });
+      const reveal = device.createTexture({ size: [w, h], sampleCount, format: "r16float", usage: texUsage });
+      const accumR = ms ? device.createTexture({ size: [w, h], format: "rgba16float", usage: texUsage }) : undefined;
+      const revealR = ms ? device.createTexture({ size: [w, h], format: "r16float", usage: texUsage }) : undefined;
+      return {
+        accumView: accum.createView(), revealView: reveal.createView(),
+        ...(accumR !== undefined ? { accumResolveView: accumR.createView(), revealResolveView: revealR!.createView() } : {}),
+        accumTex: ITexture.fromGPU(accumR ?? accum), revealTex: ITexture.fromGPU(revealR ?? reveal),
+        destroy: () => { accum.destroy(); reveal.destroy(); accumR?.destroy(); revealR?.destroy(); },
+      };
+    };
+    const ensureOit = (w: number, h: number): OitBundle => {
+      const key = `${w}x${h}`;
+      const hit = fboCache.get(key);
+      if (hit !== undefined) { fboCache.delete(key); fboCache.set(key, hit); return hit; } // move to MRU
+      const made = buildOit(w, h);
+      fboCache.set(key, made);
+      while (fboCache.size > 4) { const oldest = fboCache.keys().next().value as string; fboCache.get(oldest)!.destroy(); fboCache.delete(oldest); }
+      return made;
+    };
 
     let opaqueClear = HashMap.empty<string, V4f>().add("Colors", black);
     if (hasPick) opaqueClear = opaqueClear.add("pickId", new V4f(0, 0, 0, 0));
@@ -268,8 +294,8 @@ export function transparencyTask(
       vertexAttributes: quadAttrs,
       uniforms: provider(HashMap.empty<string, aval<unknown>>().add("u_invSize", invSize)) as RenderObject["uniforms"],
       textures: provider(HashMap.empty<string, aval<ITexture>>()
-        .add("tAccum_view", AVal.map(oitColorRes, (fb) => ITexture.fromGPU(fb.colorTextures!.tryFind("accum")!)))
-        .add("tReveal_view", AVal.map(oitColorRes, (fb) => ITexture.fromGPU(fb.colorTextures!.tryFind("reveal")!)))) as RenderObject["textures"],
+        .add("tAccum_view", AVal.map(size, (s) => ensureOit(s.width, s.height).accumTex))
+        .add("tReveal_view", AVal.map(size, (s) => ensureOit(s.width, s.height).revealTex))) as RenderObject["textures"],
       samplers: provider(HashMap.empty<string, aval<ISampler>>().add("tAccum", nearestSampler()).add("tReveal", nearestSampler())) as RenderObject["samplers"],
       drawCall: quadDraw,
     };
@@ -282,11 +308,11 @@ export function transparencyTask(
       signature,
       run(userFb: IFramebuffer, token: AdaptiveToken): void {
         opaqueTask.run(userFb, token);
-        const oc = oitColorRes.getValue(token);
+        const b = ensureOit(userFb.width, userFb.height);
         const oitFb: IFramebuffer = {
-          signature: oitSig, colors: oc.colors,
-          ...(oc.resolveColors !== undefined ? { resolveColors: oc.resolveColors } : {}),
-          ...(oc.colorTextures !== undefined ? { colorTextures: oc.colorTextures } : {}),
+          signature: oitSig,
+          colors: HashMap.empty<string, GPUTextureView>().add("accum", b.accumView).add("reveal", b.revealView),
+          ...(b.accumResolveView !== undefined ? { resolveColors: HashMap.empty<string, GPUTextureView>().add("accum", b.accumResolveView).add("reveal", b.revealResolveView!) } : {}),
           ...(userFb.depthStencil !== undefined ? { depthStencil: userFb.depthStencil } : {}),
           ...(userFb.depthStencilTexture !== undefined ? { depthStencilTexture: userFb.depthStencilTexture } : {}),
           width: userFb.width, height: userFb.height,
@@ -297,15 +323,35 @@ export function transparencyTask(
       },
       dispose(): void {
         opaqueTask.dispose(); wboitTask.dispose(); compositeTask.dispose(); pickTask?.dispose();
-        oitColorRes.release();
+        for (const b of fboCache.values()) b.destroy();
+        fboCache.clear();
       },
     } as unknown as IRenderTask;
   }
 
   // ----- A-buffer (exact) -----
   const interSig = createFramebufferSignature({ colors: { Colors: "rgba16float", odepth: "r16float" }, depthStencil: { format: "depth32float" } });
-  const interRes = allocateFramebuffer(device, interSig, size, { extraUsage: TextureUsage.TEXTURE_BINDING });
-  interRes.acquire();
+  // Bounded LRU(4) of the intermediate {Colors, odepth, depth} bundle by size,
+  // mirroring the WBOIT path / aardvark's per-(size) FBO cache.
+  const interUsage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING;
+  interface InterBundle { fb: IFramebuffer; colorsTex: ITexture; odepthTex: ITexture; destroy(): void; }
+  const interCache = new Map<string, InterBundle>();
+  const ensureInter = (w: number, h: number): InterBundle => {
+    const key = `${w}x${h}`;
+    const hit = interCache.get(key);
+    if (hit !== undefined) { interCache.delete(key); interCache.set(key, hit); return hit; }
+    const colors = device.createTexture({ size: [w, h], format: "rgba16float", usage: interUsage });
+    const odepth = device.createTexture({ size: [w, h], format: "r16float", usage: interUsage });
+    const depth = device.createTexture({ size: [w, h], format: "depth32float", usage: GPUTextureUsage.RENDER_ATTACHMENT });
+    const made: InterBundle = {
+      fb: { signature: interSig, colors: HashMap.empty<string, GPUTextureView>().add("Colors", colors.createView()).add("odepth", odepth.createView()), depthStencil: depth.createView(), width: w, height: h },
+      colorsTex: ITexture.fromGPU(colors), odepthTex: ITexture.fromGPU(odepth),
+      destroy: () => { colors.destroy(); odepth.destroy(); depth.destroy(); },
+    };
+    interCache.set(key, made);
+    while (interCache.size > 4) { const oldest = interCache.keys().next().value as string; interCache.get(oldest)!.destroy(); interCache.delete(oldest); }
+    return made;
+  };
 
   // Device-owned node pool (fixed) + per-pixel head (re-allocated on resize).
   const su = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
@@ -358,8 +404,8 @@ export function transparencyTask(
     vertexAttributes: quadAttrs,
     uniforms: provider(HashMap.empty<string, aval<unknown>>().add("u_invSize", invSize).add("u_width", widthU)) as RenderObject["uniforms"],
     textures: provider(HashMap.empty<string, aval<ITexture>>()
-      .add("tOpaque_view", AVal.map(interRes, (fb) => ITexture.fromGPU(fb.colorTextures!.tryFind("Colors")!)))
-      .add("tODepth_view", AVal.map(interRes, (fb) => ITexture.fromGPU(fb.colorTextures!.tryFind("odepth")!)))) as RenderObject["textures"],
+      .add("tOpaque_view", AVal.map(size, (s) => ensureInter(s.width, s.height).colorsTex))
+      .add("tODepth_view", AVal.map(size, (s) => ensureInter(s.width, s.height).odepthTex))) as RenderObject["textures"],
     samplers: provider(HashMap.empty<string, aval<ISampler>>().add("tOpaque", nearestSampler()).add("tODepth", nearestSampler())) as RenderObject["samplers"],
     storageBuffers: resolveStorage, drawCall: quadDraw,
   };
@@ -381,16 +427,18 @@ export function transparencyTask(
       ensureHead(s.width * s.height);
       device.queue.writeBuffer(headBufGpu!, 0, clearArr, 0, s.width * s.height); // reset linked-list heads
       device.queue.writeBuffer(counter, 0, zero1);                                // reset node allocator
-      opaqueTask.run(interRes.getValue(token), token);
+      const ib = ensureInter(s.width, s.height);
+      opaqueTask.run(ib.fb, token);
       if (opaquePickTask !== undefined) opaquePickTask.run(userFb, token); // opaque pick + depth into output
-      buildTask.run(interRes.getValue(token), token);
+      buildTask.run(ib.fb, token);
       resolveTask.run(userFb, token);                                       // composite -> output Colors (pickId masked)
       if (transparentPickTask !== undefined) transparentPickTask.run(userFb, token);
     },
     dispose(): void {
       opaqueTask.dispose(); buildTask.dispose(); resolveTask.dispose();
       opaquePickTask?.dispose(); transparentPickTask?.dispose();
-      interRes.release();
+      for (const b of interCache.values()) b.destroy();
+      interCache.clear();
       counter.destroy(); nDepth.destroy(); nColor.destroy(); nNext.destroy();
       if (headBufGpu !== undefined) headBufGpu.destroy();
     },
