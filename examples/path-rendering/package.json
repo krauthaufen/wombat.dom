@@ -11,8 +11,8 @@
   "dependencies": {
     "@aardworx/wombat.adaptive": "^0.2.5",
     "@aardworx/wombat.base": "^0.5.0",
-    "@aardworx/wombat.dom": "^0.6.2",
-    "@aardworx/wombat.rendering": "^0.19.4",
+    "@aardworx/wombat.dom": "^0.14.1",
+    "@aardworx/wombat.rendering": "^0.19.11",
     "@aardworx/wombat.shader": "^0.6.0",
     "@aardworx/wombat.shader-vite": "^0.3.5",
     "clipper-lib": "^6.4.2",
