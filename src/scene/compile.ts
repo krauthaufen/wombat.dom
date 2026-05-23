@@ -770,6 +770,11 @@ function buildRenderObject(
       : {}),
     ...(leaf.indices !== undefined ? { indices: leaf.indices } : {}),
     drawCall: leaf.drawCall,
+    // GPU transform propagation: hand the heap the Model ancestor chain so it
+    // composes per-RO Model on the GPU (a shared root trafo over N descendants
+    // stays O(1) on the CPU). The legacy path ignores this and uses the eager
+    // `ModelTrafo` uniform instead.
+    ...(state.modelChain.length > 0 ? { modelChain: state.modelChain } : {}),
     // Route any derived-mode rule the traversal accumulated onto the
     // RO so the heap path picks it up. The heap runtime evaluates the
     // rule's CPU closure (or runs the GPU kernel if the rule carries

@@ -165,6 +165,16 @@ export const AUTO_UNIFORM_NAMES: readonly string[] = [
 export class TraversalState implements IUniformProvider {
   /** Local-to-world model trafo. Starts at identity. */
   readonly model: aval<Trafo3d>;
+  /**
+   * The accumulated `Model` ancestor trafo chain (root→leaf), one entry per
+   * `<Sg Trafo>` scope. The heap path consumes this (`RenderObject.modelChain`)
+   * and composes per-RO Model on the GPU — so a shared root trafo over N
+   * descendants never fans out to N composed CPU avals. `model` (the eager
+   * composite) is kept for the legacy/CPU path but stays UNOBSERVED on the heap
+   * path (the heap reads the chain, not the composite). See
+   * docs/gpu-transform-propagation.md in wombat.rendering.
+   */
+  readonly modelChain: readonly aval<Trafo3d>[];
   /** World-to-view trafo (camera). Starts at identity. */
   readonly view: aval<Trafo3d>;
   /** View-to-clip projection. Starts at identity. */
@@ -309,6 +319,7 @@ export class TraversalState implements IUniformProvider {
 
   private constructor(spec: TraversalSpec) {
     this.model = spec.model;
+    this.modelChain = spec.modelChain;
     this.view = spec.view;
     this.proj = spec.proj;
     this.viewport = spec.viewport;
@@ -353,6 +364,7 @@ export class TraversalState implements IUniformProvider {
   /** Empty initial state — identity transforms, no shader, no uniforms, active=true. */
   static readonly empty: TraversalState = new TraversalState({
     model: AVal.constant(Trafo3d.identity),
+    modelChain: [],
     view: AVal.constant(Trafo3d.identity),
     proj: AVal.constant(Trafo3d.identity),
     viewport: AVal.constant({ width: 1, height: 1 }),
@@ -401,7 +413,18 @@ export class TraversalState implements IUniformProvider {
   /** `<Sg Trafo={t}>` scope: child point first goes through `t`, then parent.model. */
   pushTrafo(t: TrafoValue): TraversalState {
     const composed = composeTrafoValue(t);
-    return this.with({ model: composeModel(this.model, composed) });
+    // PREPEND to the chain (heap GPU-composes it) AND keep the eager composite
+    // (legacy/CPU). The composite is unobserved on the heap path, so a shared
+    // root trafo here no longer fans out to every descendant RO.
+    //
+    // Order: composeModel is `child·parent`, so the eager model is
+    // `leaf·…·root` (deepest leftmost). The GPU folds the chain in array order
+    // (`chain[0]·chain[1]·…`), so the chain must be `[leaf, …, root]` to match —
+    // i.e. each new (deeper) scope prepends its trafo.
+    return this.with({
+      model: composeModel(this.model, composed),
+      modelChain: [composed, ...this.modelChain],
+    });
   }
 
   /** `<Sg Shader={e}>` scope: override. */
@@ -636,6 +659,7 @@ export class TraversalState implements IUniformProvider {
   private with(patch: Partial<TraversalSpec>): TraversalState {
     return new TraversalState({
       model: patch.model ?? this.model,
+      modelChain: patch.modelChain ?? this.modelChain,
       view: patch.view ?? this.view,
       proj: patch.proj ?? this.proj,
       viewport: patch.viewport ?? this.viewport,
@@ -776,6 +800,7 @@ export class TraversalState implements IUniformProvider {
 }
 
 interface TraversalSpec {
+  modelChain: readonly aval<Trafo3d>[];
   instancing: import("./sg.js").SgInstanced | undefined;
   instancingParentModel: aval<Trafo3d> | undefined;
   pipelineState: PipelineState | undefined;
