@@ -103,6 +103,14 @@ function composeTrafoArray(arr: ReadonlyArray<Trafo3d | aval<Trafo3d>>): aval<Tr
   if (arr.length === 1) return asAval(arr[0]!);
   // Lift each element to an aval, then zip and reduce by mul.
   const lifted = arr.map(asAval);
+  // All-constant array → fold to one constant aval (same reduction order as the
+  // map below) so it stays foldable in the modelChain constant-run pass instead
+  // of being an opaque computed node.
+  if (lifted.every((a) => a.isConstant)) {
+    let acc: Trafo3d = Trafo3d.identity;
+    for (const a of lifted) acc = a.force().mul(acc);
+    return AVal.constant(acc);
+  }
   return AVal.zip(...lifted).map((...vs: Trafo3d[]) => {
     let acc: Trafo3d = Trafo3d.identity;
     // Forward iteration: acc = arr[i].mul(acc) — see file header.
@@ -421,9 +429,23 @@ export class TraversalState implements IUniformProvider {
     // `leaf·…·root` (deepest leftmost). The GPU folds the chain in array order
     // (`chain[0]·chain[1]·…`), so the chain must be `[leaf, …, root]` to match —
     // i.e. each new (deeper) scope prepends its trafo.
+    //
+    // Constant-run folding: if both the new link and the current chain head are
+    // constant (AVal.constant — immutable), pre-multiply them into ONE constant
+    // link (`composed·head`, preserving the product). A deep stack of static
+    // trafos then costs one constituent slot + one GPU multiply instead of N.
+    // A dynamic link breaks the run, so constants on either side stay separate.
+    const prev = this.modelChain;
+    let modelChain: readonly aval<Trafo3d>[];
+    if (composed.isConstant && prev.length > 0 && prev[0]!.isConstant) {
+      const folded = AVal.constant(composed.force().mul(prev[0]!.force()));
+      modelChain = [folded, ...prev.slice(1)];
+    } else {
+      modelChain = [composed, ...prev];
+    }
     return this.with({
       model: composeModel(this.model, composed),
-      modelChain: [composed, ...this.modelChain],
+      modelChain,
     });
   }
 
