@@ -51,3 +51,21 @@ both **shipped** — they're no longer open.
 - Auto-fusing leaves without an explicit instancing wrapper.
 - MDI without manual setup.
 - Storage-buffer instance data.
+
+### Sampler state from shaders (shader-defined filter/address)
+- FShade-style sampler builders (`sampler2d { texture uniform?Bla; filter …;
+  addressU … }`) are now recognised by the F# shader plugin
+  (Wombat.Fable.Shader.Plugin), which recovers the **texture-uniform binding
+  name** (`Bla`) — a scene then supplies the texture under that name
+  (`Sg.DiffuseTexture` / `Sg.Texture(name, tex)`), and textured rendering works.
+  BUT the **sampler STATE** (filter, addressU/V/W) the shader specifies is NOT
+  yet threaded to the GPU sampler descriptor:
+  - the plugin walks the builder chain but `IR.VSampler` (binding * name * type)
+    has **no state slot**, so filter/address are dropped at the IR boundary;
+  - consequently `wombat.shader`'s WGSL `SamplerBinding` and
+    `wombat.rendering`'s `HeapSamplerBinding` / GPUSampler descriptor fall back
+    to a default sampler.
+  TODO: add a sampler-state field to `IR.VSampler` (+ IR JSON in IREncoder),
+  carry it through `wombat.shader` (SamplerBinding) into `wombat.rendering`
+  (build the `GPUSamplerDescriptor` from it), so shader-defined sampler state
+  actually reaches the GPU instead of the default.
