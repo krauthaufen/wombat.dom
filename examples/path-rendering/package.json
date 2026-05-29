@@ -11,10 +11,10 @@
   "dependencies": {
     "@aardworx/wombat.adaptive": "^0.2.5",
     "@aardworx/wombat.base": "^0.5.0",
-    "@aardworx/wombat.dom": "^0.14.3",
+    "@aardworx/wombat.dom": "^0.15.0",
     "@aardworx/wombat.rendering": "^0.19.13",
     "@aardworx/wombat.shader": "^0.6.0",
-    "@aardworx/wombat.shader-vite": "^0.3.5",
+    "@aardworx/wombat.shader-vite": "^0.3.6",
     "clipper-lib": "^6.4.2",
     "libtess": "^1.2.2",
     "opentype.js": "^1.3.5",
