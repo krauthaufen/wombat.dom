@@ -9,8 +9,8 @@ import { Trafo3d } from "@aardworx/wombat.base";
 
 import { PickDispatcher } from "../src/scene/picking/dispatcher.js";
 import { PickRegistry } from "../src/scene/picking/registry.js";
-import type { PickRegion } from "../src/scene/picking/readback.js";
-import { SNAP_RADIUS_MAX, SNAP_REGION_SIZE } from "../src/scene/picking/snapOffsets.js";
+import type { PickArgminResult } from "../src/scene/picking/pickArgminCompute.js";
+import { noPixel, pixelWinner } from "./pickArgminTestUtil.js";
 
 function makeCanvas(): HTMLCanvasElement {
   const c = document.createElement("canvas");
@@ -33,27 +33,17 @@ function makeDispatcher(reg: PickRegistry, canvas: HTMLCanvasElement): PickDispa
   );
 }
 
-function makeRegion(centerX: number, centerY: number, stamps: ReadonlyArray<{ dx: number; dy: number; pickId: number }>): PickRegion {
-  const sizeX = SNAP_REGION_SIZE;
-  const sizeY = SNAP_REGION_SIZE;
-  const originX = centerX - SNAP_RADIUS_MAX;
-  const originY = centerY - SNAP_RADIUS_MAX;
-  const data = new Float32Array(sizeX * sizeY * 4);
+function makeRegion(centerX: number, centerY: number, stamps: ReadonlyArray<{ dx: number; dy: number; pickId: number }>): PickArgminResult {
+  // Argmin verdict: the nearest stamp to the cursor is the winner
+  // (the per-pixel snap/MSAA gating now lives in the GPU kernel).
+  if (stamps.length === 0) return noPixel();
+  let best = stamps[0]!;
+  let bestD = best.dx * best.dx + best.dy * best.dy;
   for (const s of stamps) {
-    for (let ddy = -1; ddy <= 1; ddy++) {
-      for (let ddx = -1; ddx <= 1; ddx++) {
-        const lx = (centerX + s.dx + ddx) - originX;
-        const ly = (centerY + s.dy + ddy) - originY;
-        if (lx < 0 || ly < 0 || lx >= sizeX || ly >= sizeY) continue;
-        const i = (ly * sizeX + lx) * 4;
-        data[i] = s.pickId;
-        data[i + 1] = 0;
-        data[i + 2] = 0;
-        data[i + 3] = 0;
-      }
-    }
+    const d = s.dx * s.dx + s.dy * s.dy;
+    if (d < bestD) { best = s; bestD = d; }
   }
-  return { data, originX, originY, sizeX, sizeY };
+  return pixelWinner(best.pickId, { px: centerX + best.dx, py: centerY + best.dy, dist2: bestD });
 }
 
 function pevent(canvas: HTMLCanvasElement, type: string, x: number, y: number): void {

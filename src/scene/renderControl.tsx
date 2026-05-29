@@ -45,7 +45,8 @@ import { TraversalState } from "./traversalState.js";
 import { PickRegistry } from "./picking/registry.js";
 import { createPickFramebuffer, PICK_NAME } from "./picking/pickFramebuffer.js";
 import { PickDispatcher, type TapThresholds } from "./picking/dispatcher.js";
-import { PickRegionReader, type PickRegion } from "./picking/readback.js";
+import { PickMetadata } from "./picking/pickMetadata.js";
+import { createPickArgminCompute, type PickArgminResult } from "./picking/pickArgminCompute.js";
 import { setAmbient, clearAmbient } from "./ambient.js";
 
 // ---------------------------------------------------------------------------
@@ -418,21 +419,55 @@ async function initialise(
     () => canvas.getBoundingClientRect(),
     props.tapThresholds,
   );
-  // Pooled + coalescing pickFb readback. Without this, every
-  // pointermove allocates+destroys a fresh GPU staging buffer and
-  // queues a fresh copy+map (60+ readbacks/sec under sustained
-  // pointer-move flood the queue; the pacer's onSubmittedWorkDone
-  // wait then includes all of them, stalling the render loop).
-  // The reader caps in-flight readbacks to 1 and drops intermediate
-  // pointer events that arrive while one is pending.
-  const regionReader = new PickRegionReader(
-    device,
-    () => AVal.force(pickFb.readbackPickTexture),
-  );
-  scope.onDispose(() => regionReader.dispose());
-  const readRegion = (x: number, y: number): Promise<PickRegion | undefined> =>
-    regionReader.read(x, y);
-  const detach = dispatcher.attach(canvas, readRegion);
+  // GPU argmin pick path. A per-id metadata buffer (snap radius +
+  // mode, folding active/noEvents) mirrors the registry; the argmin
+  // kernel finds THE single nearest valid pixel under the cursor and
+  // we read back ~40 B. This replaces the old 33×33 region readback +
+  // CPU spiral walk. The dispatcher then merges this with ONE BVH
+  // centre ray (see pickArbitrate).
+  const pickMetadata = new PickMetadata(device);
+  registry.attachObserver(pickMetadata);
+  scope.onDispose(() => { registry.attachObserver(undefined); pickMetadata.dispose(); });
+  const argmin = createPickArgminCompute(device);
+  scope.onDispose(() => argmin.dispose());
+
+  // Coalescing wrapper: at most one argmin dispatch+readback in flight
+  // (the readback buffer is reused, so concurrent reads would clash).
+  // A request arriving while one is pending replaces any prior pending
+  // one — that caller gets `undefined`, which the dispatcher's seq
+  // counter already drops. Mirrors the old PickRegionReader pacing.
+  let pickInFlight = false;
+  let pickPending: { x: number; y: number; resolve: (r: PickArgminResult | undefined) => void } | undefined;
+  const runArgmin = async (x: number, y: number, resolve: (r: PickArgminResult | undefined) => void): Promise<void> => {
+    pickInFlight = true;
+    try {
+      if (scope.isDisposed) { resolve(undefined); return; }
+      pickMetadata.flush();
+      const tex = AVal.force(pickFb.readbackPickTexture);
+      const view = tex.createView({ label: "pick.argmin.src" });
+      const enc = device.createCommandEncoder({ label: "pick.argmin.frame" });
+      argmin.compute(enc, view, pickMetadata.buffer, x, y, tex.width, tex.height);
+      argmin.copyResult(enc);
+      device.queue.submit([enc.finish()]);
+      resolve(await argmin.read());
+    } catch {
+      resolve(undefined);
+    } finally {
+      pickInFlight = false;
+      const next = pickPending;
+      pickPending = undefined;
+      if (next !== undefined) void runArgmin(next.x, next.y, next.resolve);
+    }
+  };
+  const resolvePixel = (x: number, y: number): Promise<PickArgminResult | undefined> => {
+    if (scope.isDisposed) return Promise.resolve(undefined);
+    if (pickInFlight) {
+      if (pickPending !== undefined) pickPending.resolve(undefined);
+      return new Promise((resolve) => { pickPending = { x, y, resolve }; });
+    }
+    return new Promise((resolve) => { void runArgmin(x, y, resolve); });
+  };
+  const detach = dispatcher.attach(canvas, resolvePixel);
   scope.onDispose(detach);
 
   // For MSAA picking we need a custom resolve compute pass after the

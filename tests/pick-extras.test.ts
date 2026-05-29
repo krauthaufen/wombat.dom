@@ -10,8 +10,8 @@ import { Trafo3d } from "@aardworx/wombat.base";
 
 import { PickDispatcher, LONG_PRESS_MS, HOVER_DELAY_MS } from "../src/scene/picking/dispatcher.js";
 import { PickRegistry } from "../src/scene/picking/registry.js";
-import type { PickRegion } from "../src/scene/picking/readback.js";
-import { SNAP_RADIUS_MAX, SNAP_REGION_SIZE } from "../src/scene/picking/snapOffsets.js";
+import type { PickArgminResult } from "../src/scene/picking/pickArgminCompute.js";
+import { noPixel, pixelWinner } from "./pickArgminTestUtil.js";
 import type { SceneEvent, SceneEventKind } from "../src/scene/picking/sceneEvent.js";
 import type { EventHandlers, SceneEventHandler } from "../src/scene/sg.js";
 
@@ -31,20 +31,9 @@ function bubbleOf(rec: Record<string, (e: SceneEvent) => unknown>): EventHandler
   return { bubble };
 }
 
-function makeRegion(centerX: number, centerY: number, pickId: number): PickRegion {
-  const sz = SNAP_REGION_SIZE;
-  const originX = centerX - SNAP_RADIUS_MAX;
-  const originY = centerY - SNAP_RADIUS_MAX;
-  const data = new Float32Array(sz * sz * 4);
-  for (let ddy = -1; ddy <= 1; ddy++) {
-    for (let ddx = -1; ddx <= 1; ddx++) {
-      const lx = (centerX + ddx) - originX;
-      const ly = (centerY + ddy) - originY;
-      if (lx < 0 || ly < 0 || lx >= sz || ly >= sz) continue;
-      data[(ly * sz + lx) * 4] = pickId;
-    }
-  }
-  return { data, originX, originY, sizeX: sz, sizeY: sz };
+function makeRegion(centerX: number, centerY: number, pickId: number): PickArgminResult {
+  // Argmin verdict: pickId is the centre-pixel winner (0 ⇒ no hit).
+  return pickId === 0 ? noPixel() : pixelWinner(pickId, { px: centerX, py: centerY });
 }
 
 function pevent(canvas: HTMLCanvasElement, type: string, x: number, y: number, pointerId = 1): PointerEvent {

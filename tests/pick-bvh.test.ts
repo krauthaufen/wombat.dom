@@ -9,9 +9,8 @@ import { Box3d, Intersectable, Trafo3d, V3d } from "@aardworx/wombat.base";
 
 import { PickDispatcher } from "../src/scene/picking/dispatcher.js";
 import { PickRegistry } from "../src/scene/picking/registry.js";
-import type { PickRegion } from "../src/scene/picking/readback.js";
 import type { SceneEvent } from "../src/scene/picking/sceneEvent.js";
-import { SNAP_RADIUS_MAX, SNAP_REGION_SIZE } from "../src/scene/picking/snapOffsets.js";
+import { noPixel, pixelWinner, resolverOf } from "./pickArgminTestUtil.js";
 import type { EventHandlers, SceneEventHandler } from "../src/scene/sg.js";
 import type { SceneEventKind } from "../src/scene/picking/sceneEvent.js";
 
@@ -39,37 +38,6 @@ function makeDispatcher(reg: PickRegistry, canvas: HTMLCanvasElement): PickDispa
     () => Trafo3d.identity,
     () => canvas.getBoundingClientRect(),
   );
-}
-
-function makeRegion(
-  centerX: number,
-  centerY: number,
-  stamps: ReadonlyArray<{ dx: number; dy: number; pickId: number }>,
-  /** When true, expand each stamp to a 3×3 patch so the spiral validator's neighbour count passes. */
-  expand = false,
-): PickRegion {
-  const sizeX = SNAP_REGION_SIZE;
-  const sizeY = SNAP_REGION_SIZE;
-  const originX = centerX - SNAP_RADIUS_MAX;
-  const originY = centerY - SNAP_RADIUS_MAX;
-  const data = new Float32Array(sizeX * sizeY * 4);
-  const r = expand ? 1 : 0;
-  for (const s of stamps) {
-    for (let ddy = -r; ddy <= r; ddy++) {
-      for (let ddx = -r; ddx <= r; ddx++) {
-        const lx = (centerX + s.dx + ddx) - originX;
-        const ly = (centerY + s.dy + ddy) - originY;
-        if (lx < 0 || ly < 0 || lx >= sizeX || ly >= sizeY) continue;
-        const i = (ly * sizeX + lx) * 4;
-        data[i] = s.pickId;
-      }
-    }
-  }
-  return { data, originX, originY, sizeX, sizeY };
-}
-
-function regionOf(region: PickRegion): (x: number, y: number) => Promise<PickRegion> {
-  return async () => region;
 }
 
 function pevent(canvas: HTMLCanvasElement, type: string, x: number, y: number): PointerEvent {
@@ -128,9 +96,10 @@ describe("PickDispatcher BVH fall-through", () => {
 
     const canvas = makeCanvas();
     const d = makeDispatcher(reg, canvas);
-    // Region only stamps the pickThrough scope at the centre; spiral
-    // skips it (no non-pickThrough pixel hit) → BVH fall-through.
-    const detach = d.attach(canvas, regionOf(makeRegion(50, 50, [{ dx: 0, dy: 0, pickId: idA }])));
+    // No valid pixel winner (the only pixel is the pickThrough scope,
+    // which the kernel never reports as a normal winner) → BVH path.
+    void idA;
+    const detach = d.attach(canvas, resolverOf(noPixel()));
 
     pevent(canvas, "pointerdown", 50, 50);
     await flush();
@@ -160,10 +129,10 @@ describe("PickDispatcher BVH fall-through", () => {
 
     const canvas = makeCanvas();
     const d = makeDispatcher(reg, canvas);
-    // Single-pixel stamp: 3-neighbour check rejects the pixel
-    // candidate, so BVH on idA wins. idA is pickThrough → re-trace
-    // with no other scopes finds nothing → keep idA.
-    const detach = d.attach(canvas, regionOf(makeRegion(50, 50, [{ dx: 0, dy: 0, pickId: idA }])));
+    // No valid pixel winner → BVH on idA wins. idA is pickThrough →
+    // re-trace with no other scopes finds nothing → keep idA.
+    void idA;
+    const detach = d.attach(canvas, resolverOf(noPixel()));
 
     pevent(canvas, "pointerdown", 50, 50);
     await flush();
@@ -185,7 +154,9 @@ describe("PickDispatcher BVH fall-through", () => {
 
     const canvas = makeCanvas();
     const d = makeDispatcher(reg, canvas);
-    const detach = d.attach(canvas, regionOf(makeRegion(50, 50, [{ dx: 0, dy: 0, pickId: idA }], true)));
+    // Valid centre-pixel winner on idA → pixel wins over the BVH ray
+    // (centred + in front), short-circuiting the BVH.
+    const detach = d.attach(canvas, resolverOf(pixelWinner(idA)));
 
     pevent(canvas, "pointerdown", 50, 50);
     await flush();
@@ -212,7 +183,7 @@ describe("PickDispatcher BVH fall-through", () => {
 
     const canvas = makeCanvas();
     const d = makeDispatcher(reg, canvas);
-    const detach = d.attach(canvas, regionOf(makeRegion(50, 50, [])));
+    const detach = d.attach(canvas, resolverOf(noPixel()));
 
     pevent(canvas, "pointerdown", 50, 50);
     await flush();

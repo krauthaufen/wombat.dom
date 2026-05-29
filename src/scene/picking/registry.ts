@@ -164,8 +164,20 @@ interface PickObject {
   readonly trafo: aval<Trafo3d>;
 }
 
+/**
+ * Observer the picker's GPU metadata buffer implements so it can mirror
+ * scope register/deregister without the registry depending on a
+ * `GPUDevice`. {@link PickMetadata} satisfies this shape.
+ */
+export interface PickRegistryObserver {
+  register(scope: LeafPickScope, mode: PickMode): void;
+  deregister(id: PickId): void;
+  clear(): void;
+}
+
 export class PickRegistry {
   private next: PickId = 1;
+  private observer: PickRegistryObserver | undefined;
   private readonly entries = new Map<PickId, LeafPickScope>();
   // Mode the leaf was registered with — Mode-A writes `+pickId`,
   // Mode-B writes `-pickId`. The spiral hit-test rejects any pixel
@@ -254,11 +266,25 @@ export class PickRegistry {
     });
   }
 
+  /**
+   * Attach the GPU metadata mirror. Replays all current entries so a
+   * picker attached after a compile still sees every live scope.
+   */
+  attachObserver(obs: PickRegistryObserver | undefined): void {
+    this.observer = obs;
+    if (obs !== undefined) {
+      for (const [id, scope] of this.entries) {
+        obs.register(scope, this.modes.get(id) ?? "A");
+      }
+    }
+  }
+
   acquire(scope: Omit<LeafPickScope, "pickId">, mode: PickMode = "A"): PickId {
     const pickId = this.next++;
     const full: LeafPickScope = { pickId, ...scope };
     this.entries.set(pickId, full);
     this.modes.set(pickId, mode);
+    this.observer?.register(full, mode);
     // BVH-add gate. Pixel and BVH ray-cast are complementary — pixel-
     // path scopes resolve through the pickFb readback alone, so the
     // BVH only needs ray-cast-path entries. Without this gate a 10k-
@@ -298,6 +324,7 @@ export class PickRegistry {
     if (scope === undefined) return;
     this.entries.delete(id);
     this.modes.delete(id);
+    this.observer?.deregister(id);
     // Drop focus if we just removed the focused scope.
     // AVal.force OK: isConstant guard avoided — _focused is a cval,
     // so `force()` is one-shot here at the API boundary (same shape as
@@ -334,6 +361,7 @@ export class PickRegistry {
     this.modes.clear();
     this.bvhEntries.clear();
     this.next = 1;
+    this.observer?.clear();
   }
 
   size(): number {

@@ -13,9 +13,8 @@ import { Trafo3d } from "@aardworx/wombat.base";
 
 import { PickDispatcher } from "../src/scene/picking/dispatcher.js";
 import { PickRegistry } from "../src/scene/picking/registry.js";
-import type { PickRegion } from "../src/scene/picking/readback.js";
 import type { SceneEvent } from "../src/scene/picking/sceneEvent.js";
-import { SNAP_RADIUS_MAX, SNAP_REGION_SIZE } from "../src/scene/picking/snapOffsets.js";
+import { noPixel, pixelWinner, resolverOf } from "./pickArgminTestUtil.js";
 import { TraversalState } from "../src/scene/traversalState.js";
 import type { EventHandlers, SceneEventHandler } from "../src/scene/sg.js";
 import type { SceneEventKind } from "../src/scene/picking/sceneEvent.js";
@@ -41,38 +40,6 @@ function makeDispatcher(reg: PickRegistry, canvas: HTMLCanvasElement): PickDispa
     () => Trafo3d.identity,
     () => canvas.getBoundingClientRect(),
   );
-}
-
-/**
- * Build a region centred on `(centerX, centerY)` of full
- * `SNAP_REGION_SIZE` × `SNAP_REGION_SIZE`, with all-zero slots, then
- * stamp pickIds at given (dx, dy) offsets relative to the centre.
- */
-function makeRegion(centerX: number, centerY: number, stamps: ReadonlyArray<{ dx: number; dy: number; pickId: number }>): PickRegion {
-  const sizeX = SNAP_REGION_SIZE;
-  const sizeY = SNAP_REGION_SIZE;
-  const originX = centerX - SNAP_RADIUS_MAX;
-  const originY = centerY - SNAP_RADIUS_MAX;
-  const data = new Float32Array(sizeX * sizeY * 4);
-  for (const s of stamps) {
-    for (let ddy = -1; ddy <= 1; ddy++) {
-      for (let ddx = -1; ddx <= 1; ddx++) {
-        const lx = (centerX + s.dx + ddx) - originX;
-        const ly = (centerY + s.dy + ddy) - originY;
-        if (lx < 0 || ly < 0 || lx >= sizeX || ly >= sizeY) continue;
-        const i = (ly * sizeX + lx) * 4;
-        data[i] = s.pickId;       // slot0 = +id (mode-A)
-        data[i + 1] = 0;
-        data[i + 2] = 0;           // ndcZ
-        data[i + 3] = 0;
-      }
-    }
-  }
-  return { data, originX, originY, sizeX, sizeY };
-}
-
-function regionOf(region: PickRegion): (x: number, y: number) => Promise<PickRegion> {
-  return async () => region;
 }
 
 function pevent(canvas: HTMLCanvasElement, type: string, x: number, y: number): PointerEvent {
@@ -121,7 +88,7 @@ describe("PickDispatcher", () => {
 
     const canvas = makeCanvas();
     const d = makeDispatcher(reg, canvas);
-    const detach = d.attach(canvas, regionOf(makeRegion(50, 50, [{ dx: 0, dy: 0, pickId: id }])));
+    const detach = d.attach(canvas, resolverOf(pixelWinner(id)));
 
     pevent(canvas, "pointerdown", 50, 50);
     await flush();
@@ -138,7 +105,7 @@ describe("PickDispatcher", () => {
 
     const canvas = makeCanvas();
     const d = makeDispatcher(reg, canvas);
-    const detach = d.attach(canvas, regionOf(makeRegion(50, 50, [])));
+    const detach = d.attach(canvas, resolverOf(noPixel()));
 
     pevent(canvas, "pointerdown", 50, 50);
     await flush();
@@ -150,12 +117,13 @@ describe("PickDispatcher", () => {
   it("center empty, neighbour within snap radius wins", async () => {
     const reg = new PickRegistry();
     const calls: SceneEvent[] = [];
-    // Scope X with snap radius = 5 (r² = 25). Hit at (dx=2, dy=0) → d² = 4 ≤ 25.
+    // Scope X with snap radius = 5 (r² = 25). Kernel's nearest valid
+    // pixel is at (52, 50) → d² = 4 ≤ 25, off-centre.
     const id = acquire(reg, [{ OnPointerDown: (e) => calls.push(e) }], { pixelSnapRadius: 5 });
 
     const canvas = makeCanvas();
     const d = makeDispatcher(reg, canvas);
-    const detach = d.attach(canvas, regionOf(makeRegion(50, 50, [{ dx: 2, dy: 0, pickId: id }])));
+    const detach = d.attach(canvas, resolverOf(pixelWinner(id, { px: 52, dist2: 4 })));
 
     pevent(canvas, "pointerdown", 50, 50);
     await flush();
@@ -168,13 +136,14 @@ describe("PickDispatcher", () => {
   it("neighbour outside its own snap radius does not dispatch", async () => {
     const reg = new PickRegistry();
     const calls: SceneEvent[] = [];
-    // pixelSnapRadius = 1 → r² = 1. Stamp the 3×3 patch at (dx=3, dy=0):
-    // the closest neighbour pixel within the patch is at (2, 0), d²=4 > 1.
+    // pixelSnapRadius = 1 → r² = 1. The nearest stamped pixel is at
+    // d²=4 > 1, so the kernel rejects it (no valid winner).
     const id = acquire(reg, [{ OnPointerDown: (e) => calls.push(e) }], { pixelSnapRadius: 1 });
+    void id;
 
     const canvas = makeCanvas();
     const d = makeDispatcher(reg, canvas);
-    const detach = d.attach(canvas, regionOf(makeRegion(50, 50, [{ dx: 3, dy: 0, pickId: id }])));
+    const detach = d.attach(canvas, resolverOf(noPixel()));
 
     pevent(canvas, "pointerdown", 50, 50);
     await flush();
@@ -188,15 +157,13 @@ describe("PickDispatcher", () => {
     const calls: SceneEvent[] = [];
     const idNear = acquire(reg, [{ OnPointerDown: (e) => calls.push(e) }], { pixelSnapRadius: 5 });
     const idFar  = acquire(reg, [{ OnPointerDown: (e) => calls.push(e) }], { pixelSnapRadius: 5 });
+    void idFar;
 
     const canvas = makeCanvas();
     const d = makeDispatcher(reg, canvas);
-    // far at (3,0) d²=9, near at (1,0) d²=1; spiral visits (1,0) first.
-    const region = makeRegion(50, 50, [
-      { dx: 1, dy: 0, pickId: idNear },
-      { dx: 3, dy: 0, pickId: idFar },
-    ]);
-    const detach = d.attach(canvas, regionOf(region));
+    // far at d²=9, near at d²=1; the kernel's argmin returns the
+    // nearest valid pixel, idNear at d²=1.
+    const detach = d.attach(canvas, resolverOf(pixelWinner(idNear, { px: 51, dist2: 1 })));
 
     pevent(canvas, "pointerdown", 50, 50);
     await flush();
@@ -216,14 +183,13 @@ describe("PickDispatcher", () => {
       pickThrough: true, pixelSnapRadius: 5,
     });
     const idBehind = acquire(reg, [{ OnPointerDown: (e) => calls.push(e) }], { pixelSnapRadius: 5 });
+    void idBehind;
 
     const canvas = makeCanvas();
     const d = makeDispatcher(reg, canvas);
-    const region = makeRegion(50, 50, [
-      { dx: 0, dy: 0, pickId: idThrough }, // pickThrough at the centre
-      { dx: 2, dy: 0, pickId: idBehind  },
-    ]);
-    const detach = d.attach(canvas, regionOf(region));
+    // The pickThrough scope is the centre pixel winner. A pixel-picked
+    // pickThrough can't re-trace (no depth behind a pixel) → warn+keep.
+    const detach = d.attach(canvas, resolverOf(pixelWinner(idThrough)));
 
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     pevent(canvas, "pointerdown", 50, 50);
@@ -240,10 +206,13 @@ describe("PickDispatcher", () => {
     const reg = new PickRegistry();
     const calls: SceneEvent[] = [];
     const id = acquire(reg, [{ OnPointerDown: (e) => calls.push(e) }], { active: false });
+    void id;
 
     const canvas = makeCanvas();
     const d = makeDispatcher(reg, canvas);
-    const detach = d.attach(canvas, regionOf(makeRegion(50, 50, [{ dx: 0, dy: 0, pickId: id }])));
+    // Inactive scope → the kernel's per-id metadata gates it out
+    // (effectiveRadius < 0) → no valid winner.
+    const detach = d.attach(canvas, resolverOf(noPixel()));
 
     pevent(canvas, "pointerdown", 10, 10);
     await flush();
@@ -274,9 +243,7 @@ describe("PickDispatcher", () => {
     const d = makeDispatcher(reg, canvas);
 
     let nextId = idA;
-    const reader = async (cx: number, cy: number): Promise<PickRegion> =>
-      makeRegion(cx, cy, [{ dx: 0, dy: 0, pickId: nextId }]);
-    const detach = d.attach(canvas, reader);
+    const detach = d.attach(canvas, async (cx, cy) => pixelWinner(nextId, { px: cx, py: cy }));
 
     pevent(canvas, "pointermove", 10, 10);
     await flush();

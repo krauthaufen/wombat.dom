@@ -39,15 +39,16 @@
 import { AVal, avalAddCallback } from "@aardworx/wombat.adaptive";
 import { Trafo3d, V2d, V2i, V3d, V4d } from "@aardworx/wombat.base";
 
+import { arbitratePick } from "./pickArbitrate.js";
+import type { PickArgminResult } from "./pickArgminCompute.js";
 import type { LeafPickEntry, LeafPickScope, PickRegistry } from "./registry.js";
-import { type PickRegion } from "./readback.js";
 import {
   SceneEvent,
   type SceneEventDispatch,
   type SceneEventKind,
 } from "./sceneEvent.js";
 import { SceneEventLocation } from "./sceneEventLocation.js";
-import { spiralHitTest, pointHitTest, type ResolvedHit } from "./spiralHitTest.js";
+import { type ResolvedHit } from "./spiralHitTest.js";
 
 // --- Tap / long-press / double-tap detection thresholds ----------------
 // Sensible defaults. Exported so callers can read or — eventually —
@@ -84,11 +85,14 @@ export interface TapThresholds {
 }
 
 /**
- * Reader for the 33×33 pick region centred on `(x, y)` in device
- * pixels. The renderControl wires this to `readPickRegion`; tests
- * mock it with a canned region.
+ * Resolve the single best pick pixel under `(x, y)` (device pixels) via
+ * the GPU argmin kernel. The renderControl wires this to a
+ * `PickMetadata.flush()` → `createPickArgminCompute` dispatch +
+ * readback; tests mock it with a canned `PickArgminResult`. Resolves to
+ * `undefined` when the GPU read fails/was skipped — the dispatcher then
+ * falls back to a BVH-only centre-ray resolve.
  */
-export type ReadRegion = (x: number, y: number) => Promise<PickRegion | undefined>;
+export type ResolvePixel = (x: number, y: number) => Promise<PickArgminResult | undefined>;
 
 /**
  * Snapshot of the most-recent move for synthetic-move replay on
@@ -232,7 +236,7 @@ export class PickDispatcher implements SceneEventDispatch {
   /**
    * Wire pointer listeners to the canvas. Returns a disposer.
    */
-  attach(canvas: HTMLCanvasElement, readRegion: ReadRegion): () => void {
+  attach(canvas: HTMLCanvasElement, resolvePixel: ResolvePixel): () => void {
     this.canvasSize = () => new V2i(canvas.width, canvas.height);
     this.canvas = canvas;
     const handle = (ev: PointerEvent, kind: SceneEventKind): void => {
@@ -246,11 +250,11 @@ export class PickDispatcher implements SceneEventDispatch {
       const devX = Math.floor(cssX * sx);
       const devY = Math.floor(cssY * sy);
 
-      void readRegion(devX, devY).then((region) => {
+      void resolvePixel(devX, devY).then((result) => {
         if (seq < this.lastSettledSeq) return;
         this.lastSettledSeq = seq;
-        const hit = region !== undefined ? this.resolve(region, devX, devY) : undefined;
-        this.dispatch(ev, kind, cssX, cssY, hit, rect, sx, sy, region, devX, devY);
+        const hit = this.resolve(result, devX, devY);
+        this.dispatch(ev, kind, cssX, cssY, hit, rect, sx, sy);
       });
     };
 
@@ -312,10 +316,10 @@ export class PickDispatcher implements SceneEventDispatch {
       const sy = rect.height > 0 ? canvas.height / rect.height : 1;
       const devX = Math.floor(cssX * sx);
       const devY = Math.floor(cssY * sy);
-      void readRegion(devX, devY).then((region) => {
+      void resolvePixel(devX, devY).then((result) => {
         if (seq < this.lastSettledSeq) return;
         this.lastSettledSeq = seq;
-        const hit = region !== undefined ? this.resolve(region, devX, devY) : undefined;
+        const hit = this.resolve(result, devX, devY);
         this.dispatchWheel(ev, cssX, cssY, hit, rect, sx, sy);
       });
     };
@@ -494,16 +498,16 @@ export class PickDispatcher implements SceneEventDispatch {
     return this.capturedScopes.get(pointerId) === scope;
   }
 
-  // --- spiral hit-test -----------------------------------------------------
+  // --- pick resolution -----------------------------------------------------
 
   /**
-   * Single-call merge of the pixel + BVH candidates that mirrors F#'s
-   * SceneHandler step-for-step. Replaces the previous separate
-   * `spiralResolve` + `bvhFallthrough` paths.
+   * Merge the GPU argmin winner (`result`) with one BVH centre ray into
+   * a single `ResolvedHit` (see `pickArbitrate`). `result === undefined`
+   * (GPU read failed/skipped) falls back to a BVH-only resolve.
    */
-  private resolve(region: PickRegion, centerX: number, centerY: number): ResolvedHit | undefined {
-    return spiralHitTest(
-      region,
+  private resolve(result: PickArgminResult | undefined, centerX: number, centerY: number): ResolvedHit | undefined {
+    return arbitratePick(
+      result,
       { devX: centerX, devY: centerY },
       this.registry,
       this._getView(),
@@ -523,9 +527,6 @@ export class PickDispatcher implements SceneEventDispatch {
     rect: DOMRect,
     sx: number,
     sy: number,
-    region?: PickRegion,
-    devX?: number,
-    devY?: number,
   ): void {
     const pointerId = ev.pointerId ?? 0;
 
@@ -593,23 +594,13 @@ export class PickDispatcher implements SceneEventDispatch {
       // `SceneHandler.fs:1700–` skips lastOver updates while a
       // pointer is captured, then re-fires move on release.
       //
-      // For the dispatched `viewPos` / `worldPos`: query the cursor's
-      // current pixel + BVH ray (no snap) so handlers see the world
-      // position UNDER the cursor regardless of where the captured
-      // geometry is. Strictly more expressive than nothing — same
-      // query the spiral runs at offset (0,0).
-      let viewPos: V3d | undefined;
-      let viewNormal: V3d | undefined;
-      if (region !== undefined && devX !== undefined && devY !== undefined && this.canvasSize !== undefined) {
-        const point = pointHitTest(
-          region, { devX, devY }, this.registry,
-          AVal.force(captured.view), AVal.force(captured.proj), this.canvasSize(),
-        );
-        if (point !== undefined) {
-          viewPos = point.viewPos;
-          viewNormal = point.viewNormal;
-        }
-      }
+      // For the dispatched `viewPos` / `worldPos`: reuse the resolved
+      // `hit` under the cursor (argmin winner / centre-ray BVH) so
+      // handlers see the world position UNDER the cursor regardless of
+      // where the captured geometry is — the single-result equivalent
+      // of the old centre-only `pointHitTest`.
+      const viewPos: V3d | undefined = hit?.viewPos;
+      const viewNormal: V3d | undefined = hit?.viewNormal;
       const modeB = this.registry.modeOf(captured.pickId) === "B";
       const sceneEv = this.makeEvent(kind, ev, cssX, cssY, captured, captured.pickId, modeB, viewPos, viewNormal);
       this.runCaptureBubble(captured.handlers, sceneEv);

@@ -17,9 +17,9 @@ import {
   LONG_PRESS_MS,
 } from "../src/scene/picking/dispatcher.js";
 import { PickRegistry } from "../src/scene/picking/registry.js";
-import type { PickRegion } from "../src/scene/picking/readback.js";
+import type { PickArgminResult } from "../src/scene/picking/pickArgminCompute.js";
+import { noPixel, pixelWinner } from "./pickArgminTestUtil.js";
 import type { SceneEvent, SceneEventKind } from "../src/scene/picking/sceneEvent.js";
-import { SNAP_RADIUS_MAX, SNAP_REGION_SIZE } from "../src/scene/picking/snapOffsets.js";
 import type { EventHandlers, SceneEventHandler } from "../src/scene/sg.js";
 
 function makeCanvas(): HTMLCanvasElement {
@@ -43,23 +43,9 @@ function makeDispatcher(reg: PickRegistry, canvas: HTMLCanvasElement): PickDispa
   );
 }
 
-function makeRegion(centerX: number, centerY: number, pickId: number): PickRegion {
-  const sizeX = SNAP_REGION_SIZE;
-  const sizeY = SNAP_REGION_SIZE;
-  const originX = centerX - SNAP_RADIUS_MAX;
-  const originY = centerY - SNAP_RADIUS_MAX;
-  const data = new Float32Array(sizeX * sizeY * 4);
-  // Stamp a 3×3 block around the centre so the spiral validator's
-  // ≥ 3 same-id neighbour count passes.
-  for (let ddy = -1; ddy <= 1; ddy++) {
-    for (let ddx = -1; ddx <= 1; ddx++) {
-      const lx = (centerX + ddx) - originX;
-      const ly = (centerY + ddy) - originY;
-      if (lx < 0 || ly < 0 || lx >= sizeX || ly >= sizeY) continue;
-      data[(ly * sizeX + lx) * 4] = pickId;
-    }
-  }
-  return { data, originX, originY, sizeX, sizeY };
+function makeRegion(centerX: number, centerY: number, pickId: number): PickArgminResult {
+  // Argmin verdict: pickId is the centre-pixel winner (0 ⇒ no hit).
+  return pickId === 0 ? noPixel() : pixelWinner(pickId, { px: centerX, py: centerY });
 }
 
 function pevent(canvas: HTMLCanvasElement, type: string, x: number, y: number, pointerId = 1): PointerEvent {

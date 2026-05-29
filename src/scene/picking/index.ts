@@ -86,6 +86,6 @@ export {
   LONG_PRESS_MS,
   DRAG_THRESHOLD_PX,
   HOVER_DELAY_MS,
-  type ReadRegion,
+  type ResolvePixel,
   type TapThresholds,
 } from "./dispatcher.js";

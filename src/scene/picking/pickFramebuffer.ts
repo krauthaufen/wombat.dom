@@ -117,9 +117,13 @@ export function createPickFramebuffer(
   let latestHeight = 0;
 
   const reallocate = (w: number, h: number): { renderTex: GPUTexture; resolvedTex: GPUTexture } => {
+    // Non-MSAA: renderTex IS the readback/resolved texture, so it also
+    // needs TEXTURE_BINDING for the argmin pick kernel to sample it
+    // (the kernel binds it as texture_2d<f32>). COPY_SRC stays for the
+    // legacy PickRegionReader region readback path.
     const renderUsage = isMSAA
       ? GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
-      : GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC;
+      : GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.TEXTURE_BINDING;
     const renderTex = device.createTexture({
       size: { width: w, height: h, depthOrArrayLayers: 1 },
       format: PICK_FORMAT,
