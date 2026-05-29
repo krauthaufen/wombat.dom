@@ -21,6 +21,7 @@ const here = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
   plugins: [wombatShader({ rootDir: here })],
+  define: { global: "globalThis" },
   esbuild: {
     jsx: "automatic",
     jsxImportSource: "@aardworx/wombat.dom",
