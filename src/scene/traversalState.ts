@@ -382,7 +382,7 @@ export class TraversalState implements IUniformProvider {
     cursor: undefined,
     pickThrough: false,
     intersectable: undefined,
-    pixelSnapRadius: AVal.constant(1),
+    pixelSnapRadius: AVal.constant(0),
     active: AVal.constant(true),
     handlers: [],
     depthTest: AVal.constant<DepthCompare>("less"),

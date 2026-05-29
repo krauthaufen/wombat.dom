@@ -221,8 +221,8 @@ describe("PickDispatcher", () => {
     detach();
   });
 
-  it("default pixelSnapRadius is 1 in TraversalState", () => {
-    expect(AVal.force(TraversalState.empty.pixelSnapRadius)).toBe(1);
+  it("default pixelSnapRadius is 0 (pixel-exact) in TraversalState", () => {
+    expect(AVal.force(TraversalState.empty.pixelSnapRadius)).toBe(0);
   });
 
   it("pointermove changing pickId fires leave on old + enter on new", async () => {
