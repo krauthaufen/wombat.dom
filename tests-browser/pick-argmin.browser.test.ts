@@ -33,7 +33,8 @@ function setPx(buf: Float32Array, x: number, y: number, s0: number, s2 = 0): voi
   const i = (y * W + x) * 4;
   buf[i] = s0; buf[i + 1] = 0; buf[i + 2] = s2; buf[i + 3] = 0;
 }
-// 3×3 block so the kernel's ≥3 same-id neighbour (MSAA) gate passes.
+// A 3×3 stamp (a single pixel also works now — the 3×3 MSAA guard was
+// dropped; MSAA ids are resolved upstream by pickResolveCompute).
 function block(buf: Float32Array, cx: number, cy: number, id: number, sign = 1, s2 = 0): void {
   for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) setPx(buf, cx + dx, cy + dy, sign * id, s2);
 }
@@ -64,7 +65,7 @@ const scenarios: Scenario[] = [
   { name: "center hit (block, r16)", build: (b) => block(b, CX, CY, 7), meta: meta([[7, 16, 1]]) },
   { name: "off-center within radius", build: (b) => block(b, CX + 5, CY, 7), meta: meta([[7, 16, 1]]) },
   { name: "outside snap radius → reject", build: (b) => block(b, CX + 10, CY, 7), meta: meta([[7, 4, 1]]) },
-  { name: "single pixel → MSAA reject", build: (b) => setPx(b, CX, CY, 7), meta: meta([[7, 16, 1]]) },
+  { name: "single pixel accepted (no 3×3 guard)", build: (b) => setPx(b, CX, CY, 7), meta: meta([[7, 16, 1]]) },
   { name: "mode-sign mismatch → reject", build: (b) => block(b, CX, CY, 7, +1), meta: meta([[7, 16, -1]]) },
   { name: "mode-B (negative id) accepted", build: (b) => block(b, CX, CY, 7, -1), meta: meta([[7, 16, -1]]) },
   { name: "two ids — nearer wins", build: (b) => { block(b, CX + 3, CY, 5); block(b, CX + 8, CY, 9); }, meta: meta([[5, 16, 1], [9, 16, 1]]) },

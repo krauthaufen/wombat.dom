@@ -1,38 +1,47 @@
-// Single-pass GPU argmin pick kernel.
+// Multi-workgroup GPU argmin pick kernel.
 //
-// Replaces the CPU spiral walk's PIXEL side: instead of reading back a
-// (2·SNAP_RADIUS_MAX+1)² disc and walking ~800 offsets on the CPU, one
-// compute dispatch finds THE single best pixel — nearest to the cursor
-// (screen-dist²), among pixels that are valid per their own scope — and
-// writes one tiny result the host maps back (~32 B).
+// Finds THE single best pixel under the cursor — nearest (screen-dist²),
+// among pixels valid per their own scope — and writes one ~40 B result
+// the host maps back. Replaces the old 33×33 region readback + CPU spiral
+// walk: the readback is constant (40 B) at any radius.
 //
-// Validity, per candidate pixel (all in-kernel so the argmin lands on a
-// pixel the host will accept, never one it would reject and have to
-// fall past):
-//   - slot0 != 0                       (0 = "no hit" clear value)
-//   - dist² ≤ effectiveRadius²         (per-id snap radius)
-//   - pixel sign == registered mode    (rejects MSAA silhouette averages
-//                                        that surface a valid id, wrong layout)
-//   - ≥3 of the 8 neighbours share the exact slot0 (further MSAA guard,
-//     mirrors spiralHitTest's 3×3 same-id count)
+// Two compute passes over a shared `bestKey: atomic<u32>`:
+//   findMin — one invocation per disc pixel, across as many workgroups as
+//     needed (full GPU utilisation; NOT a single workgroup). Each VALID
+//     candidate does `atomicMin(bestKey, key)` where
+//         key = (dist² << SHIFT) | discLocalIndex
+//     dist² dominates; the disc-local index is the tie-break. Within the
+//     disc, ascending disc-local index == ascending (py·W+px), so this
+//     matches the JS reference's tie-break exactly.
+//   decode — one invocation: unpacks the winning (dist², index), decodes
+//     the pixel, reads its 4 slots + the centre pixel (hover), writes the
+//     result struct.
 //
-// Per-id metadata (`metadata[absId] = vec2(effectiveRadius, modeSign)`):
-//   - effectiveRadius < 0  ⇒ the scope is inactive / noEvents / unknown
-//     ⇒ never a candidate. This folds the host's `active`/`noEvents`
-//     gating INTO the radius test, so a single argmin reproduces the
-//     spiral's "skip invalid, take next-nearest valid" without iterating.
-//   - modeSign = +1 for Mode-A (slot0 = +id), -1 for Mode-B (slot0 = -id).
+// Validity, per candidate pixel:
+//   - slot0 != 0                    (0 = "no hit" clear value)
+//   - dist² ≤ effectiveRadius²      (per-id snap radius; effR<0 ⇒ the
+//                                     scope is inactive/noEvents/unknown)
+//   - pixel sign == registered mode (+id Mode-A / −id Mode-B)
 //
-// The kernel is MODE-AGNOSTIC beyond the sign check: it copies the
-// winner's raw slot0..slot3 verbatim, so the host's existing `decodePick`
-// reconstructs Mode-A (normal/depth/part) and Mode-B (PickViewPosition)
-// identically to the spiral path.
+// There is NO 3×3 neighbour (MSAA) check: MSAA pickIds are resolved
+// upstream by `pickResolveCompute`'s majority vote (averaging ids is
+// nonsense), and the non-MSAA path is single-sample, so averaged-id
+// pixels never reach here. Dropping the check makes each thread a single
+// texture load + atomicMin — embarrassingly parallel, so a large radius
+// stays cheap. (It does make 1px slivers pickable, which the old 3×3
+// guard rejected — an intentional behaviour change.)
 //
-// One workgroup, grid-strided over the disc; a shared-memory reduction
-// picks the winner (key: dist² asc, then linear pixel index asc for a
-// deterministic tie-break — matching the spiral's stable d²-order).
+// RADIUS is a runtime uniform (the search window), capped at RMAX by the
+// packing budget: dist² ≤ RMAX² must fit in (32-SHIFT) bits and the disc-
+// local index ≤ (2·RMAX+1)² must fit in SHIFT bits. SHIFT=17, RMAX=127:
+// (255)² = 65025 < 2^17, and 127² = 16129 < 2^15. One pipeline serves any
+// radius ≤ 127 with no recompile. Per-scope radius stays fully flexible
+// via the metadata buffer; this is just the window ceiling.
 
 import { SNAP_RADIUS_MAX } from "./snapOffsets.js";
+
+/** Largest radius the packed-key budget supports at runtime. */
+export const PICK_ARGMIN_MAX_RADIUS = 127;
 
 /** Bytes of the result struct mapped back to the host. See `RESULT_*` offsets. */
 export const PICK_ARGMIN_RESULT_BYTES = 40;
@@ -46,9 +55,8 @@ const R_SLOT0 = 4; // f32×4: raw winning pixel slots 0..3
 const R_CENTER_SLOT0 = 8; // f32: raw slot0 exactly under the cursor (hover, even if invalid)
 // index 9 is padding
 
-const WORKGROUP_X = 16;
-const WORKGROUP_Y = 16;
-const THREADS = WORKGROUP_X * WORKGROUP_Y;
+// Packing: key = (dist² << SHIFT) | discLocalIndex.
+const SHIFT = 17;
 
 /** Decoded host-side view of the kernel's result buffer. */
 export interface PickArgminResult {
@@ -84,10 +92,7 @@ export function decodeArgminResult(buf: ArrayBuffer): PickArgminResult {
 }
 
 export function buildPickArgminWgsl(): string {
-  const R = SNAP_RADIUS_MAX;
-  const SIDE = 2 * R + 1;
-  const DISC = SIDE * SIDE;
-  return `// Auto-generated single-pass pick argmin. radius=${R}.
+  return `// Auto-generated multi-workgroup pick argmin. SHIFT=${SHIFT}, RMAX=${PICK_ARGMIN_MAX_RADIUS}.
 @group(0) @binding(0) var pickTex: texture_2d<f32>;
 
 struct Params {
@@ -95,11 +100,15 @@ struct Params {
   cy: i32,        // cursor device-pixel y
   width: i32,     // pick texture width
   height: i32,    // pick texture height
+  radius: i32,    // search-window radius (≤ RMAX)
 };
 @group(0) @binding(1) var<uniform> params: Params;
 
 // metadata[absId] = vec2(effectiveRadius, modeSign). radius<0 ⇒ invalid.
 @group(0) @binding(2) var<storage, read> metadata: array<vec2<f32>>;
+
+// Packed winner key: (dist² << SHIFT) | discLocalIndex. Init to 0xffffffff.
+@group(0) @binding(3) var<storage, read_write> bestKey: atomic<u32>;
 
 struct Result {
   found: u32,
@@ -113,23 +122,10 @@ struct Result {
   centerSlot0: f32,
   _pad: f32,
 };
-@group(0) @binding(3) var<storage, read_write> result: Result;
+@group(0) @binding(4) var<storage, read_write> result: Result;
 
-const R: i32 = ${R};
-const SIDE: i32 = ${SIDE};
-const DISC: i32 = ${DISC};
-const THREADS: u32 = ${THREADS}u;
-// Sentinel "no candidate": dist² larger than any real disc distance.
-const NO_CAND: f32 = 1.0e30;
-
-var<workgroup> wgDist2: array<f32, ${THREADS}>;
-var<workgroup> wgIndex: array<i32, ${THREADS}>; // linear pixel index, tie-break
-var<workgroup> wgPx:    array<i32, ${THREADS}>;
-var<workgroup> wgPy:    array<i32, ${THREADS}>;
-var<workgroup> wgS0:    array<f32, ${THREADS}>;
-var<workgroup> wgS1:    array<f32, ${THREADS}>;
-var<workgroup> wgS2:    array<f32, ${THREADS}>;
-var<workgroup> wgS3:    array<f32, ${THREADS}>;
+const SHIFT: u32 = ${SHIFT}u;
+const NO_WINNER: u32 = 0xffffffffu;
 
 // load slot0 at (x,y); out-of-bounds reads as 0 (= no hit).
 fn loadSlot0(x: i32, y: i32) -> f32 {
@@ -137,105 +133,60 @@ fn loadSlot0(x: i32, y: i32) -> f32 {
   return textureLoad(pickTex, vec2<i32>(x, y), 0).x;
 }
 
-// "a beats b": smaller dist², ties broken by smaller linear index.
-fn beats(da: f32, ia: i32, db: f32, ib: i32) -> bool {
-  return da < db || (da == db && ia < ib);
+@compute @workgroup_size(256)
+fn findMin(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let R: i32 = params.radius;
+  let SIDE: i32 = 2 * R + 1;
+  let k: i32 = i32(gid.x);
+  if (k >= SIDE * SIDE) { return; }
+  let dx: i32 = (k % SIDE) - R;
+  let dy: i32 = (k / SIDE) - R;
+  let d2i: i32 = dx * dx + dy * dy;
+  if (d2i > R * R) { return; }                 // reject the bounding square's corners
+  let s0: f32 = loadSlot0(params.cx + dx, params.cy + dy);
+  if (s0 == 0.0) { return; }
+  let absId: u32 = u32(abs(s0));
+  let md: vec2<f32> = metadata[absId];
+  let effR: f32 = md.x;
+  let d2f: f32 = f32(d2i);
+  if (effR < 0.0 || d2f > effR * effR) { return; }      // snap radius (folds active/noEvents)
+  let pixSign: f32 = select(1.0, -1.0, s0 < 0.0);
+  if (pixSign != md.y) { return; }                       // mode-sign gate
+  // disc-local index is monotonic in (dy, dx) ⇒ matches a (py·W+px) tie-break.
+  let discIdx: u32 = u32((dy + R) * SIDE + (dx + R));
+  atomicMin(&bestKey, (u32(d2i) << SHIFT) | discIdx);
 }
 
-@compute @workgroup_size(${WORKGROUP_X}, ${WORKGROUP_Y}, 1)
-fn main(@builtin(local_invocation_index) lid: u32) {
-  var bestD: f32 = NO_CAND;
-  var bestI: i32 = 0x7fffffff;
-  var bPx: i32 = 0; var bPy: i32 = 0;
-  var bS0: f32 = 0.0; var bS1: f32 = 0.0; var bS2: f32 = 0.0; var bS3: f32 = 0.0;
-
-  // grid-stride over the disc's bounding square; reject corners by radius.
-  var k: i32 = i32(lid);
-  loop {
-    if (k >= DISC) { break; }
-    let dx: i32 = (k % SIDE) - R;
-    let dy: i32 = (k / SIDE) - R;
-    let d2i: i32 = dx * dx + dy * dy;
-    if (d2i <= R * R) {
-      let px: i32 = params.cx + dx;
-      let py: i32 = params.cy + dy;
-      let s = textureLoad(pickTex, vec2<i32>(clamp(px, 0, params.width - 1), clamp(py, 0, params.height - 1)), 0);
-      let s0: f32 = select(0.0, s.x, px >= 0 && py >= 0 && px < params.width && py < params.height);
-      if (s0 != 0.0) {
-        let absId: u32 = u32(abs(s0));
-        let md: vec2<f32> = metadata[absId];
-        let effR: f32 = md.x;
-        let d2f: f32 = f32(d2i);
-        // radius gate (also encodes active/noEvents: effR<0 ⇒ never valid)
-        if (effR >= 0.0 && d2f <= effR * effR) {
-          // mode-sign gate
-          let pixSign: f32 = select(1.0, -1.0, s0 < 0.0);
-          if (pixSign == md.y) {
-            // 3×3 same-id neighbour count ≥ 3 (MSAA silhouette guard)
-            var matches: i32 = 0;
-            for (var ddy: i32 = -1; ddy <= 1; ddy = ddy + 1) {
-              for (var ddx: i32 = -1; ddx <= 1; ddx = ddx + 1) {
-                if (!(ddx == 0 && ddy == 0)) {
-                  if (loadSlot0(px + ddx, py + ddy) == s0) { matches = matches + 1; }
-                }
-              }
-            }
-            if (matches >= 3) {
-              let li: i32 = py * params.width + px;
-              if (beats(d2f, li, bestD, bestI)) {
-                bestD = d2f; bestI = li; bPx = px; bPy = py;
-                bS0 = s.x; bS1 = s.y; bS2 = s.z; bS3 = s.w;
-              }
-            }
-          }
-        }
-      }
-    }
-    k = k + i32(THREADS);
+@compute @workgroup_size(1)
+fn decode() {
+  let R: i32 = params.radius;
+  let SIDE: i32 = 2 * R + 1;
+  result.centerSlot0 = loadSlot0(params.cx, params.cy);
+  let key: u32 = atomicLoad(&bestKey);
+  if (key == NO_WINNER) {
+    result.found = 0u;
+    result.px = 0; result.py = 0; result.dist2 = 0.0;
+    result.slot0 = 0.0; result.slot1 = 0.0; result.slot2 = 0.0; result.slot3 = 0.0;
+    return;
   }
-
-  wgDist2[lid] = bestD; wgIndex[lid] = bestI;
-  wgPx[lid] = bPx; wgPy[lid] = bPy;
-  wgS0[lid] = bS0; wgS1[lid] = bS1; wgS2[lid] = bS2; wgS3[lid] = bS3;
-  workgroupBarrier();
-
-  // tree reduction over the workgroup
-  var stride: u32 = THREADS / 2u;
-  loop {
-    if (stride == 0u) { break; }
-    if (lid < stride) {
-      let j = lid + stride;
-      if (beats(wgDist2[j], wgIndex[j], wgDist2[lid], wgIndex[lid])) {
-        wgDist2[lid] = wgDist2[j]; wgIndex[lid] = wgIndex[j];
-        wgPx[lid] = wgPx[j]; wgPy[lid] = wgPy[j];
-        wgS0[lid] = wgS0[j]; wgS1[lid] = wgS1[j]; wgS2[lid] = wgS2[j]; wgS3[lid] = wgS3[j];
-      }
-    }
-    workgroupBarrier();
-    stride = stride / 2u;
-  }
-
-  if (lid == 0u) {
-    result.centerSlot0 = loadSlot0(params.cx, params.cy);
-    if (wgDist2[0] < NO_CAND) {
-      result.found = 1u;
-      result.px = wgPx[0]; result.py = wgPy[0];
-      result.dist2 = wgDist2[0];
-      result.slot0 = wgS0[0]; result.slot1 = wgS1[0];
-      result.slot2 = wgS2[0]; result.slot3 = wgS3[0];
-    } else {
-      result.found = 0u;
-      result.px = 0; result.py = 0; result.dist2 = 0.0;
-      result.slot0 = 0.0; result.slot1 = 0.0; result.slot2 = 0.0; result.slot3 = 0.0;
-    }
-  }
+  let discIdx: i32 = i32(key & ((1u << SHIFT) - 1u));
+  let d2: i32 = i32(key >> SHIFT);
+  let dx: i32 = (discIdx % SIDE) - R;
+  let dy: i32 = (discIdx / SIDE) - R;
+  let px: i32 = params.cx + dx;
+  let py: i32 = params.cy + dy;
+  let s: vec4<f32> = textureLoad(pickTex, vec2<i32>(clamp(px, 0, params.width - 1), clamp(py, 0, params.height - 1)), 0);
+  result.found = 1u;
+  result.px = px; result.py = py; result.dist2 = f32(d2);
+  result.slot0 = s.x; result.slot1 = s.y; result.slot2 = s.z; result.slot3 = s.w;
 }
 `;
 }
 
 interface CacheEntry {
   module: GPUShaderModule;
-  pipeline: GPUComputePipeline;
+  findMin: GPUComputePipeline;
+  decode: GPUComputePipeline;
   layout: GPUBindGroupLayout;
 }
 
@@ -253,26 +204,24 @@ function getOrBuildEntry(device: GPUDevice): CacheEntry {
       { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
       { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
       { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
     ],
   });
   const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout] });
-  const pipeline = device.createComputePipeline({
-    label: "pick.argmin.pipeline",
-    layout: pipelineLayout,
-    compute: { module, entryPoint: "main" },
-  });
-  const entry: CacheEntry = { module, pipeline, layout };
+  const findMin = device.createComputePipeline({ label: "pick.argmin.findMin", layout: pipelineLayout, compute: { module, entryPoint: "findMin" } });
+  const decode = device.createComputePipeline({ label: "pick.argmin.decode", layout: pipelineLayout, compute: { module, entryPoint: "decode" } });
+  const entry: CacheEntry = { module, findMin, decode, layout };
   pipelineCache.set(device, entry);
   return entry;
 }
 
 export interface PickArgminCompute {
   /**
-   * Encode one argmin dispatch into `encoder`. `metadataBuffer` is a
-   * read-only storage buffer of `vec2<f32>(effectiveRadius, modeSign)`
-   * indexed by absolute pickId (see module header); it must be at least
-   * `(maxPickId+1) * 8` bytes. The result lands in the internal result
-   * buffer; call `read()` after the submit to map it back.
+   * Encode one argmin (findMin + decode) into `encoder`. `metadataBuffer`
+   * is a read-only storage buffer of `vec2<f32>(effectiveRadius, modeSign)`
+   * indexed by absolute pickId; it must be ≥ `(maxPickId+1)*8` bytes.
+   * `radius` is the search-window radius (clamped to `PICK_ARGMIN_MAX_RADIUS`;
+   * defaults to `SNAP_RADIUS_MAX`). Call `read()` after the submit.
    */
   compute(
     encoder: GPUCommandEncoder,
@@ -282,6 +231,7 @@ export interface PickArgminCompute {
     cy: number,
     width: number,
     height: number,
+    radius?: number,
   ): void;
   /** Copy the result into the mappable buffer (encode before submit). */
   copyResult(encoder: GPUCommandEncoder): void;
@@ -291,11 +241,16 @@ export interface PickArgminCompute {
 }
 
 export function createPickArgminCompute(device: GPUDevice): PickArgminCompute {
-  const { pipeline, layout } = getOrBuildEntry(device);
+  const { findMin, decode, layout } = getOrBuildEntry(device);
   const params = device.createBuffer({
-    size: 16,
+    size: 32, // 5×i32, padded to a 16-byte multiple
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     label: "pick.argmin.params",
+  });
+  const bestKey = device.createBuffer({
+    size: 4,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    label: "pick.argmin.bestKey",
   });
   const result = device.createBuffer({
     size: PICK_ARGMIN_RESULT_BYTES,
@@ -309,22 +264,32 @@ export function createPickArgminCompute(device: GPUDevice): PickArgminCompute {
   });
 
   return {
-    compute(encoder, pickView, metadataBuffer, cx, cy, width, height): void {
-      device.queue.writeBuffer(params, 0, new Int32Array([cx | 0, cy | 0, width | 0, height | 0]));
+    compute(encoder, pickView, metadataBuffer, cx, cy, width, height, radius): void {
+      const r = Math.max(0, Math.min(PICK_ARGMIN_MAX_RADIUS, Math.floor(radius ?? SNAP_RADIUS_MAX)));
+      device.queue.writeBuffer(params, 0, new Int32Array([cx | 0, cy | 0, width | 0, height | 0, r]));
+      device.queue.writeBuffer(bestKey, 0, new Uint32Array([0xffffffff]));
       const bg = device.createBindGroup({
         layout,
         entries: [
           { binding: 0, resource: pickView },
           { binding: 1, resource: { buffer: params } },
           { binding: 2, resource: { buffer: metadataBuffer } },
-          { binding: 3, resource: { buffer: result } },
+          { binding: 3, resource: { buffer: bestKey } },
+          { binding: 4, resource: { buffer: result } },
         ],
       });
-      const pass = encoder.beginComputePass({ label: "pick.argmin.pass" });
-      pass.setPipeline(pipeline);
-      pass.setBindGroup(0, bg);
-      pass.dispatchWorkgroups(1, 1, 1);
-      pass.end();
+      const side = 2 * r + 1;
+      const groups = Math.ceil((side * side) / 256);
+      const find = encoder.beginComputePass({ label: "pick.argmin.findMin" });
+      find.setPipeline(findMin);
+      find.setBindGroup(0, bg);
+      find.dispatchWorkgroups(groups, 1, 1);
+      find.end();
+      const dec = encoder.beginComputePass({ label: "pick.argmin.decode" });
+      dec.setPipeline(decode);
+      dec.setBindGroup(0, bg);
+      dec.dispatchWorkgroups(1, 1, 1);
+      dec.end();
     },
     copyResult(encoder): void {
       encoder.copyBufferToBuffer(result, 0, readback, 0, PICK_ARGMIN_RESULT_BYTES);
@@ -341,6 +306,7 @@ export function createPickArgminCompute(device: GPUDevice): PickArgminCompute {
     },
     dispose(): void {
       try { params.destroy(); } catch { /* gone */ }
+      try { bestKey.destroy(); } catch { /* gone */ }
       try { result.destroy(); } catch { /* gone */ }
       try { readback.destroy(); } catch { /* gone */ }
     },
@@ -351,7 +317,8 @@ export function createPickArgminCompute(device: GPUDevice): PickArgminCompute {
  * Host-side reference of the kernel's argmin — used by unit tests and as
  * the spec the WGSL mirrors. `pixelAt(x,y)` returns the 4 slot floats at
  * a device pixel (0,0,0,0 when out of bounds). `metadata[absId] =
- * [effectiveRadius, modeSign]`.
+ * [effectiveRadius, modeSign]`. `radius` is the search window (defaults
+ * to `SNAP_RADIUS_MAX`, matching `compute`'s default).
  */
 export function argminPickReference(
   cx: number,
@@ -360,8 +327,9 @@ export function argminPickReference(
   height: number,
   pixelAt: (x: number, y: number) => readonly [number, number, number, number],
   metadata: ReadonlyArray<readonly [number, number]>,
+  radius: number = SNAP_RADIUS_MAX,
 ): PickArgminResult {
-  const R = SNAP_RADIUS_MAX;
+  const R = Math.max(0, Math.min(PICK_ARGMIN_MAX_RADIUS, Math.floor(radius)));
   let bestD = Infinity;
   let bestI = Infinity;
   const slot0At = (x: number, y: number): number => {
@@ -389,15 +357,8 @@ export function argminPickReference(
       if (effR < 0 || d2 > effR * effR) continue;
       const pixSign = s0 < 0 ? -1 : 1;
       if (pixSign !== meta[1]) continue;
-      let matches = 0;
-      for (let ddy = -1; ddy <= 1; ddy++) {
-        for (let ddx = -1; ddx <= 1; ddx++) {
-          if (ddx === 0 && ddy === 0) continue;
-          if (slot0At(px + ddx, py + ddy) === s0) matches++;
-        }
-      }
-      if (matches < 3) continue;
-      const li = py * width + px;
+      // disc-local index tie-break (== ascending py·W+px within the disc).
+      const li = (dy + R) * (2 * R + 1) + (dx + R);
       if (d2 < bestD || (d2 === bestD && li < bestI)) {
         bestD = d2;
         bestI = li;

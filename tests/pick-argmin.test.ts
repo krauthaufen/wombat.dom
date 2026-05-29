@@ -20,7 +20,8 @@ function gridFrom(
   return (x, y) => pixels.get(`${x},${y}`) ?? [0, 0, 0, 0];
 }
 
-// Fill a 3×3 block of identical slots so the neighbour-count gate passes.
+// Fill a 3×3 block of identical slots. (A single pixel works too now —
+// the 3×3 neighbour gate was dropped; MSAA ids are resolved upstream.)
 function block(
   pixels: Map<string, readonly [number, number, number, number]>,
   cx: number,
@@ -34,18 +35,22 @@ function block(
 
 describe("buildPickArgminWgsl", () => {
   const src = buildPickArgminWgsl();
-  it("bakes the snap radius in", () => {
-    expect(src).toContain(`const R: i32 = ${SNAP_RADIUS_MAX};`);
-    expect(src).toContain(`const SIDE: i32 = ${2 * SNAP_RADIUS_MAX + 1};`);
+  it("takes the radius as a runtime uniform (not baked)", () => {
+    expect(src).toContain("radius: i32");
+    expect(src).not.toContain("const R: i32 = ");
   });
-  it("declares the four bindings", () => {
+  it("declares the five bindings", () => {
     expect(src).toContain("var pickTex: texture_2d<f32>");
     expect(src).toContain("var<uniform> params: Params");
     expect(src).toContain("var<storage, read> metadata: array<vec2<f32>>");
+    expect(src).toContain("var<storage, read_write> bestKey: atomic<u32>");
     expect(src).toContain("var<storage, read_write> result: Result");
   });
-  it("uses a 16×16 workgroup", () => {
-    expect(src).toContain("@workgroup_size(16, 16, 1)");
+  it("does the argmin via a lock-free atomicMin across workgroups", () => {
+    expect(src).toContain("@workgroup_size(256)");
+    expect(src).toContain("atomicMin(&bestKey");
+    expect(src).toContain("fn findMin");
+    expect(src).toContain("fn decode");
   });
 });
 
@@ -106,12 +111,15 @@ describe("argminPickReference", () => {
     expect(r.found).toBe(false);
   });
 
-  it("rejects an isolated pixel (3×3 neighbour count < 3)", () => {
+  it("accepts an isolated pixel (no 3×3 guard — MSAA handled upstream)", () => {
     const px = new Map<string, readonly [number, number, number, number]>();
     setMeta(7, SNAP_RADIUS_MAX, 1);
     px.set(`${CX + 2},${CY}`, [7, 0, 0, 0]); // single pixel, no neighbours
     const r = argminPickReference(CX, CY, W, H, gridFrom(px), meta);
-    expect(r.found).toBe(false);
+    expect(r.found).toBe(true);
+    expect(r.slot0).toBe(7);
+    expect(r.px).toBe(CX + 2);
+    expect(r.dist2).toBe(4);
   });
 
   it("reports centerSlot0 for hover even when the center pixel is invalid", () => {

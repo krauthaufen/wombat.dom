@@ -134,9 +134,9 @@ describe("pick benchmark (real WebGPU)", () => {
     return { tex, metaBuf };
   }
 
-  async function newTotal(reg: PickRegistry, tex: GPUTexture, metaBuf: GPUBuffer, cx: number): Promise<void> {
+  async function newTotal(reg: PickRegistry, tex: GPUTexture, metaBuf: GPUBuffer, cx: number, radius?: number): Promise<void> {
     const enc = device.createCommandEncoder();
-    argmin.compute(enc, tex.createView(), metaBuf, cx, CY, W, H);
+    argmin.compute(enc, tex.createView(), metaBuf, cx, CY, W, H, radius);
     argmin.copyResult(enc);
     device.queue.submit([enc.finish()]);
     const r = await argmin.read();
@@ -179,5 +179,22 @@ describe("pick benchmark (real WebGPU)", () => {
     // eslint-disable-next-line no-console
     console.log(`[bench] pixel-hit N=1000  old_cpu=${oldCpu.toFixed(4)}ms  new_cpu=${newCpu.toFixed(4)}ms  new_total=${newTot.toFixed(3)}ms  speedup_cpu=${(oldCpu / newCpu).toFixed(0)}x  readback: 25KB→40B`);
     expect(newTot).toBeGreaterThan(0);
+  });
+
+  // Flexible R is a runtime uniform now (no recompile). The multi-
+  // workgroup atomicMin keeps large radii cheap, unlike the old single-
+  // workgroup design (R=48 there cost ~1ms; see git history).
+  it("flexible radius sweep (runtime R, multi-workgroup)", async () => {
+    const reg = buildRegistry(1000);
+    const { tex, metaBuf } = makeGpu(reg, undefined); // BVH-heavy, no pixel
+    const times: string[] = [];
+    for (const R of [16, 32, 48, 96]) {
+      const t = await benchAsync((i) => newTotal(reg, tex, metaBuf, px(i), R), 100, 20);
+      times.push(`R=${R}:${t.toFixed(3)}ms`);
+    }
+    tex.destroy(); metaBuf.destroy();
+    // eslint-disable-next-line no-console
+    console.log(`[bench] radius sweep N=1000 new_total  ${times.join("  ")}`);
+    expect(times.length).toBe(4);
   });
 });
