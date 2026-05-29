@@ -38,10 +38,18 @@
 // radius ≤ 127 with no recompile. Per-scope radius stays fully flexible
 // via the metadata buffer; this is just the window ceiling.
 
-import { SNAP_RADIUS_MAX } from "./snapOffsets.js";
-
 /** Largest radius the packed-key budget supports at runtime. */
 export const PICK_ARGMIN_MAX_RADIUS = 127;
+
+/**
+ * Default pick snap window / per-scope radius ceiling for the live path.
+ * The multi-workgroup argmin makes this ~free up to {@link PICK_ARGMIN_MAX_RADIUS}
+ * (measured flat to R=96 on an RTX 5060), so we search a generous disc and
+ * let each scope's own `pixelSnapRadius` (default 1) decide how far it
+ * actually snaps. Distinct from the legacy spiral's `SNAP_RADIUS_MAX`
+ * (kept at 16 so its precomputed `SNAP_OFFSETS` disc stays small).
+ */
+export const PICK_SNAP_RADIUS = 96;
 
 /** Bytes of the result struct mapped back to the host. See `RESULT_*` offsets. */
 export const PICK_ARGMIN_RESULT_BYTES = 40;
@@ -265,7 +273,7 @@ export function createPickArgminCompute(device: GPUDevice): PickArgminCompute {
 
   return {
     compute(encoder, pickView, metadataBuffer, cx, cy, width, height, radius): void {
-      const r = Math.max(0, Math.min(PICK_ARGMIN_MAX_RADIUS, Math.floor(radius ?? SNAP_RADIUS_MAX)));
+      const r = Math.max(0, Math.min(PICK_ARGMIN_MAX_RADIUS, Math.floor(radius ?? PICK_SNAP_RADIUS)));
       device.queue.writeBuffer(params, 0, new Int32Array([cx | 0, cy | 0, width | 0, height | 0, r]));
       device.queue.writeBuffer(bestKey, 0, new Uint32Array([0xffffffff]));
       const bg = device.createBindGroup({
@@ -327,7 +335,7 @@ export function argminPickReference(
   height: number,
   pixelAt: (x: number, y: number) => readonly [number, number, number, number],
   metadata: ReadonlyArray<readonly [number, number]>,
-  radius: number = SNAP_RADIUS_MAX,
+  radius: number = PICK_SNAP_RADIUS,
 ): PickArgminResult {
   const R = Math.max(0, Math.min(PICK_ARGMIN_MAX_RADIUS, Math.floor(radius)));
   let bestD = Infinity;

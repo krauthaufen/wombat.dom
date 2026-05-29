@@ -7,16 +7,16 @@ import {
   effectiveRadius,
   planMetadataUploads,
 } from "../src/scene/picking/pickMetadata.js";
-import { SNAP_RADIUS_MAX } from "../src/scene/picking/snapOffsets.js";
+import { PICK_SNAP_RADIUS } from "../src/scene/picking/pickArgminCompute.js";
 
 describe("effectiveRadius", () => {
   it("folds inactive / noEvents to -1", () => {
     expect(effectiveRadius(false, false, 8)).toBe(-1);
     expect(effectiveRadius(true, true, 8)).toBe(-1);
   });
-  it("clamps to [0, SNAP_RADIUS_MAX]", () => {
+  it("clamps to [0, PICK_SNAP_RADIUS]", () => {
     expect(effectiveRadius(true, false, -3)).toBe(0);
-    expect(effectiveRadius(true, false, 999)).toBe(SNAP_RADIUS_MAX);
+    expect(effectiveRadius(true, false, 999)).toBe(PICK_SNAP_RADIUS);
     expect(effectiveRadius(true, false, 5)).toBe(5);
   });
 });

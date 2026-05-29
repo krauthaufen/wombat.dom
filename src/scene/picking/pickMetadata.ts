@@ -19,7 +19,7 @@
 import { AVal, type aval } from "@aardworx/wombat.adaptive";
 
 import type { LeafPickScope, PickMode } from "./registry.js";
-import { SNAP_RADIUS_MAX } from "./snapOffsets.js";
+import { PICK_SNAP_RADIUS } from "./pickArgminCompute.js";
 
 export const METADATA_FLOATS_PER_ID = 2;
 
@@ -27,7 +27,7 @@ export const METADATA_FLOATS_PER_ID = 2;
 export function effectiveRadius(active: boolean, noEvents: boolean, radius: number): number {
   if (!active || noEvents) return -1;
   if (radius < 0) return 0;
-  return radius > SNAP_RADIUS_MAX ? SNAP_RADIUS_MAX : radius;
+  return radius > PICK_SNAP_RADIUS ? PICK_SNAP_RADIUS : radius;
 }
 
 /**
