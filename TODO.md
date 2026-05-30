@@ -92,3 +92,19 @@ both **shipped** — they're no longer open.
     wombat.shader + wombat.rendering, reinstall into wombat.fable/node_modules
     (they're installed copies, not symlinks), and validate visually
     (Filter.MinMagMipPoint → blocky checker vs MinMagMipLinear → smooth).
+
+  UPDATE (end-to-end attempt): the contract is now threaded F#→wombat.shader→
+  wombat.rendering: SamplerInfo.state → HeapSamplerBinding.state, and BOTH the
+  legacy (`preparedRenderObject.ts`) and heap (`heapAdapter.ts`) sampler paths
+  build a GPUSamplerDescriptor from it. All repos build + dists propagate, and
+  the emitted IR carries `state` (verified). BUT the visible filter change does
+  NOT appear: a runtime `console.log` in heapAdapter's sampler-folding block
+  NEVER fires for the textured cube — so that texture/sampler is bound via a
+  render path neither override touches. NEXT: instrument the actual dispatch
+  (which heap/standalone branch binds the sampler for a single-texture RO) to
+  find where the GPUSampler is really created, and apply the state THERE. Also:
+  (a) small textures atlas-route (AtlasPool) and may sample via a shared/page
+  sampler, so per-binding state won't apply to atlas textures — confirm whether
+  the test cube atlas-routes; (b) rule out vite dep pre-bundling serving a stale
+  wombat.rendering (clear ALL .vite caches / force re-optimize) before trusting
+  a "no visible change" result.
