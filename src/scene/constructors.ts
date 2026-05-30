@@ -206,6 +206,22 @@ const onPointerUp    = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => 
 const onPointerMove  = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnPointerMove", fn);
 const onPointerEnter = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnPointerEnter", fn);
 const onPointerLeave = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnPointerLeave", fn);
+// Gesture / wheel / keyboard / focus / drag convenience factories. The
+// dispatcher (picking/dispatcher.ts) already synthesises and routes every
+// one of these SceneEventKinds — these are just the bubble-only single-event
+// `Sg.on({bubble:{Kind:fn}}, child)` wrappers, matching the pointer set above.
+const onTap        = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnTap", fn);
+const onDoubleTap  = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnDoubleTap", fn);
+const onLongPress  = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnLongPress", fn);
+const onWheel      = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnWheel", fn);
+const onFocus      = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnFocus", fn);
+const onBlur       = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnBlur", fn);
+const onKeyDown    = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnKeyDown", fn);
+const onKeyUp      = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnKeyUp", fn);
+const onKeyPress   = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnKeyPress", fn);
+const onDragStart  = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnDragStart", fn);
+const onDrag       = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnDrag", fn);
+const onDragEnd    = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnDragEnd", fn);
 
 function active(value: aval<boolean>, child: SgChild): SgNode {
   return { kind: "Active", active: value, child: coerceChild(child) };
@@ -1143,6 +1159,18 @@ export interface SgNamespace {
   onPointerMove:  typeof onPointerMove;
   onPointerEnter: typeof onPointerEnter;
   onPointerLeave: typeof onPointerLeave;
+  onTap:          typeof onTap;
+  onDoubleTap:    typeof onDoubleTap;
+  onLongPress:    typeof onLongPress;
+  onWheel:        typeof onWheel;
+  onFocus:        typeof onFocus;
+  onBlur:         typeof onBlur;
+  onKeyDown:      typeof onKeyDown;
+  onKeyUp:        typeof onKeyUp;
+  onKeyPress:     typeof onKeyPress;
+  onDragStart:    typeof onDragStart;
+  onDrag:         typeof onDrag;
+  onDragEnd:      typeof onDragEnd;
   active:      typeof active;
   view:        typeof viewScope;
   proj:        typeof projScope;
@@ -1232,6 +1260,18 @@ export const Sg: SgNamespace = (() => {
   fn.onPointerMove  = onPointerMove;
   fn.onPointerEnter = onPointerEnter;
   fn.onPointerLeave = onPointerLeave;
+  fn.onTap          = onTap;
+  fn.onDoubleTap    = onDoubleTap;
+  fn.onLongPress    = onLongPress;
+  fn.onWheel        = onWheel;
+  fn.onFocus        = onFocus;
+  fn.onBlur         = onBlur;
+  fn.onKeyDown      = onKeyDown;
+  fn.onKeyUp        = onKeyUp;
+  fn.onKeyPress     = onKeyPress;
+  fn.onDragStart    = onDragStart;
+  fn.onDrag         = onDrag;
+  fn.onDragEnd      = onDragEnd;
   fn.active      = active;
   fn.view        = viewScope;
   fn.proj        = projScope;
