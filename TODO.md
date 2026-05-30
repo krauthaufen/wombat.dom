@@ -58,53 +58,37 @@ both **shipped** — they're no longer open.
   (Wombat.Fable.Shader.Plugin), which recovers the **texture-uniform binding
   name** (`Bla`) — a scene then supplies the texture under that name
   (`Sg.DiffuseTexture` / `Sg.Texture(name, tex)`), and textured rendering works.
-  BUT the **sampler STATE** (filter, addressU/V/W) the shader specifies is NOT
-  yet threaded to the GPU sampler descriptor:
-  - the plugin walks the builder chain but `IR.VSampler` (binding * name * type)
-    has **no state slot**, so filter/address are dropped at the IR boundary;
-  - consequently `wombat.shader`'s WGSL `SamplerBinding` and
-    `wombat.rendering`'s `HeapSamplerBinding` / GPUSampler descriptor fall back
-    to a default sampler.
-  TODO: add a sampler-state field to `IR.VSampler` (+ IR JSON in IREncoder),
-  carry it through `wombat.shader` (SamplerBinding) into `wombat.rendering`
-  (build the `GPUSamplerDescriptor` from it), so shader-defined sampler state
-  actually reaches the GPU instead of the default.
+  RESOLVED ✅ — shader-defined sampler **state** (filter, addressU/V) now reaches
+  the GPU end-to-end on the Fable/web backend, validated visually
+  (Filter.MinMagMipPoint → blocky checker vs MinMagMipLinear → smooth).
 
-  PROGRESS (sampler state threading):
-  - DONE (F# plugin, Wombat.Fable.Shader.Plugin): `IR.VSampler` gained a
+  The full chain, repo by repo:
+  - F# plugin (Wombat.Fable.Shader.Plugin): `IR.VSampler` carries a
     `SamplerState option` (Filter/AddressU/AddressV); `Hash.fs` emits it as the
     Sampler ValueDef's `state`; `Translator.fs` recovers it from the sampler
-    builder (SamplerCache, keyed by binding name) and threads it into both
-    VSampler construction sites.
-  - DONE (wombat.shader): IR `ir/types.ts` Sampler ValueDef + `SamplerState`
-    type; `runtime/interface.ts` `SamplerInfo.state` + `collectSamplersAndTextures`
-    reads `v.state`. Type-checks; additive.
-  - REMAINING (wombat.rendering, the deep bit): a texture-valued uniform is
-    split into a texture binding + a DEFAULT sampler upstream of
-    `preparedRenderObject.ts` (which at ~L733 already requires `obj.samplers` to
-    contain the sampler). Find where that default sampler is created (the
-    scene→render-object/heap adapter — heapAdapter / heapEffect, possibly in
-    wombat.dom's scene layer) and build its `GPUSamplerDescriptor` from the
-    effect's `iface.samplers[name].state`: map Filter→{magFilter,minFilter,
-    mipmapFilter} (MinMagMipLinear→all "linear"; MinMagMipPoint→all "nearest";
-    MinMagLinearMipPoint→mag/min "linear", mip "nearest") and AddressU/V→
-    addressModeU/V ("repeat"/"clamp-to-edge"/"mirror-repeat"). Then rebuild
-    wombat.shader + wombat.rendering, reinstall into wombat.fable/node_modules
-    (they're installed copies, not symlinks), and validate visually
-    (Filter.MinMagMipPoint → blocky checker vs MinMagMipLinear → smooth).
+    builder (SamplerCache, keyed by binding name). (commit `c0171a3`)
+  - wombat.shader: IR `ir/types.ts` Sampler ValueDef + `SamplerState` type;
+    `runtime/interface.ts` `SamplerInfo.state` + `collectSamplersAndTextures`
+    reads `v.state`. (commit `53dc90c`)
+  - wombat.rendering: `heapAdapter.ts` / `preparedRenderObject.ts` build a
+    `GPUSamplerDescriptor` from the binding's `state` (`samplerDescriptorFromState`);
+    `heapScene.ts` `samplerStateBits` packs mag/min-filter + address into the
+    atlas `formatBits`. (commit `0892adf`)
 
-  UPDATE (end-to-end attempt): the contract is now threaded F#→wombat.shader→
-  wombat.rendering: SamplerInfo.state → HeapSamplerBinding.state, and BOTH the
-  legacy (`preparedRenderObject.ts`) and heap (`heapAdapter.ts`) sampler paths
-  build a GPUSamplerDescriptor from it. All repos build + dists propagate, and
-  the emitted IR carries `state` (verified). BUT the visible filter change does
-  NOT appear: a runtime `console.log` in heapAdapter's sampler-folding block
-  NEVER fires for the textured cube — so that texture/sampler is bound via a
-  render path neither override touches. NEXT: instrument the actual dispatch
-  (which heap/standalone branch binds the sampler for a single-texture RO) to
-  find where the GPUSampler is really created, and apply the state THERE. Also:
-  (a) small textures atlas-route (AtlasPool) and may sample via a shared/page
-  sampler, so per-binding state won't apply to atlas textures — confirm whether
-  the test cube atlas-routes; (b) rule out vite dep pre-bundling serving a stale
-  wombat.rendering (clear ALL .vite caches / force re-optimize) before trusting
-  a "no visible change" result.
+  THE LAST-MILE FIX (the part that made the pixels actually change):
+  small textures atlas-route through the shared AtlasPool page, which has ONE
+  hardware-linear sampler across all sub-rects — so per-binding GPUSampler state
+  can't apply. The atlas does software filtering, and its WGSL (`atlasSample`)
+  decoded `formatBits` for format/mips/address but **ignored the mag/min filter
+  bits** → every atlas-routed texture sampled bilinear regardless of the shader.
+  Fix: decode the filter bit and, for nearest, snap the atlas-pixel coord to the
+  texel center before the (still hardware-linear) fetch — bilinear at a texel
+  center == nearest. Bumped `HEAP_PERSIST_VERSION` h1→h2 (WGSL emitter changed,
+  invalidate cached compiled heap shaders). (commit `45d04c3`)
+
+  Two debugging traps worth remembering: (a) vite dep pre-bundling served a
+  stale wombat.rendering — must `vite --force`; (b) the heap compile cache
+  persists compiled WGSL to **localStorage** — clear it (or bump
+  HEAP_PERSIST_VERSION) or shader-emitter changes stay invisible.
+
+  This matches the .NET/FShade path (already GPU-validated on aardvark.dom).
