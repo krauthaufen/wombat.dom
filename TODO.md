@@ -69,3 +69,26 @@ both **shipped** — they're no longer open.
   carry it through `wombat.shader` (SamplerBinding) into `wombat.rendering`
   (build the `GPUSamplerDescriptor` from it), so shader-defined sampler state
   actually reaches the GPU instead of the default.
+
+  PROGRESS (sampler state threading):
+  - DONE (F# plugin, Wombat.Fable.Shader.Plugin): `IR.VSampler` gained a
+    `SamplerState option` (Filter/AddressU/AddressV); `Hash.fs` emits it as the
+    Sampler ValueDef's `state`; `Translator.fs` recovers it from the sampler
+    builder (SamplerCache, keyed by binding name) and threads it into both
+    VSampler construction sites.
+  - DONE (wombat.shader): IR `ir/types.ts` Sampler ValueDef + `SamplerState`
+    type; `runtime/interface.ts` `SamplerInfo.state` + `collectSamplersAndTextures`
+    reads `v.state`. Type-checks; additive.
+  - REMAINING (wombat.rendering, the deep bit): a texture-valued uniform is
+    split into a texture binding + a DEFAULT sampler upstream of
+    `preparedRenderObject.ts` (which at ~L733 already requires `obj.samplers` to
+    contain the sampler). Find where that default sampler is created (the
+    scene→render-object/heap adapter — heapAdapter / heapEffect, possibly in
+    wombat.dom's scene layer) and build its `GPUSamplerDescriptor` from the
+    effect's `iface.samplers[name].state`: map Filter→{magFilter,minFilter,
+    mipmapFilter} (MinMagMipLinear→all "linear"; MinMagMipPoint→all "nearest";
+    MinMagLinearMipPoint→mag/min "linear", mip "nearest") and AddressU/V→
+    addressModeU/V ("repeat"/"clamp-to-edge"/"mirror-repeat"). Then rebuild
+    wombat.shader + wombat.rendering, reinstall into wombat.fable/node_modules
+    (they're installed copies, not symlinks), and validate visually
+    (Filter.MinMagMipPoint → blocky checker vs MinMagMipLinear → smooth).
