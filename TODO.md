@@ -92,3 +92,13 @@ both **shipped** — they're no longer open.
   HEAP_PERSIST_VERSION) or shader-emitter changes stay invisible.
 
   This matches the .NET/FShade path (already GPU-validated on aardvark.dom).
+
+### aval<Child> mid-siblings reconciler hiccup
+`bindings/child` flush throws a caught `NotFoundError: insertBefore … is not
+a child of this node` when an `aval<VNode>` child SWAPS its node while sibling
+lists churn in the same flush (seen: puresg-generated conditional empty-state
+`aval<DomNode>` between static siblings + an alist sibling, wombat.fable
+HelloTodo). The DOM converges correctly afterwards (state is right, error is
+caught + logged), so this is reconciler noise, not corruption — but the anchor
+bookkeeping for aval-children should be fixed. Repro: HelloTodo add/remove
+across the empty-state boundary.
