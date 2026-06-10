@@ -23,7 +23,7 @@
 // runs in a `ref` callback on canvas mount and is asynchronous —
 // the first frame appears one rAF after the device is ready.
 
-import { AVal, HashMap, type aval } from "@aardworx/wombat.adaptive";
+import { AVal, HashMap, avalAddCallback, cval, type aval } from "@aardworx/wombat.adaptive";
 import { Trafo3d, V4f } from "@aardworx/wombat.base";
 import {
   Runtime, attachCanvas, runFrame,
@@ -148,6 +148,13 @@ export interface RenderControlProps {
    */
   readonly onReady?: (info: RenderControlReadyInfo) => void;
 
+  /** Called each frame immediately before the render task runs. */
+  readonly onBeforeRender?: (info: RenderControlFrameInfo) => void;
+  /** Called each frame immediately after the render task ran. */
+  readonly onRendered?: (info: RenderControlFrameInfo) => void;
+  /** Called whenever the framebuffer size changes. */
+  readonly onResize?: (info: RenderControlFrameInfo) => void;
+
   /**
    * Per-instance overrides for the tap / long-press / double-tap /
    * drag / hover thresholds. Any unset field falls back to the module
@@ -166,11 +173,25 @@ export interface RenderControlProps {
   readonly height?: number | string;
 }
 
+/** Per-frame statistics handed to onBeforeRender/onRendered/onResize —
+ *  mirrors Aardvark.Dom's RenderControlEventInfo (sans IFramebufferSignature,
+ *  which has no wombat counterpart). Times are milliseconds. */
+export interface RenderControlFrameInfo {
+  readonly size: { readonly width: number; readonly height: number };
+  readonly frameIndex: number;
+  /** ms since the control's loop started. */
+  readonly time: number;
+  /** ms duration since the previous frame began (0 on the first frame). */
+  readonly frameTime: number;
+}
+
 export interface RenderControlReadyInfo {
   readonly canvas: HTMLCanvasElement;
   readonly device: GPUDevice;
   readonly runtime: Runtime;
   readonly viewport: aval<{ width: number; height: number }>;
+  /** Canvas size in CSS pixels (clientWidth/Height; ResizeObserver-fed). */
+  readonly clientSize: aval<{ width: number; height: number }>;
   /** The view aval used for picking (from prop or sniffed from scene). */
   readonly view: aval<Trafo3d>;
   /** The proj aval used for picking. */
@@ -234,12 +255,14 @@ export function RenderControl(props: RenderControlProps): import("../jsx-runtime
   // attribute binder.
   const { scene, children, view, proj, defaultEffect, clear,
           device, runtime, attach, format, depthFormat, sampleCount,
-          onReady, tapThresholds, style: userStyle,
+          onReady, onBeforeRender, onRendered, onResize,
+          tapThresholds, style: userStyle,
           ...htmlProps } = props;
   void scene; void children; void view; void proj; void defaultEffect; void clear;
   void device; void runtime; void attach;
   void format; void depthFormat; void sampleCount;
   void onReady; void tapThresholds;
+  void onBeforeRender; void onRendered; void onResize;
 
   // Phase 5 — when no tabindex is supplied, set tabindex=0 so the
   // canvas can receive keyboard focus (otherwise key events do not
@@ -477,14 +500,32 @@ async function initialise(
   // upstream hook for piggy-backing on the render encoder would be
   // cleaner (see docs/FUTURE.md).
   const runResolve = pickFb.maybeRunResolve;
+  // Frame statistics for the onBeforeRender/onRendered/onResize hooks.
+  let frameIndex = 0;
+  let loopStart = -1;
+  let lastFrameStart = -1;
+  const frameInfo = (now: number): RenderControlFrameInfo => ({
+    size: AVal.force(attachment.size),
+    frameIndex,
+    time: loopStart < 0 ? 0 : now - loopStart,
+    frameTime: lastFrameStart < 0 ? 0 : now - lastFrameStart,
+  });
   const loop = runFrame(attachment, (token) => {
     if (scope.isDisposed) return;
+    const now = performance.now();
+    if (loopStart < 0) loopStart = now;
+    const info = (props.onBeforeRender !== undefined || props.onRendered !== undefined)
+      ? frameInfo(now) : undefined;
+    if (info !== undefined) props.onBeforeRender?.(info);
     task.run(outputFb.getValue(token), token);
     if (runResolve !== undefined) {
       const enc = device.createCommandEncoder({ label: "pick.resolve.frame" });
       runResolve(enc);
       device.queue.submit([enc.finish()]);
     }
+    if (info !== undefined) props.onRendered?.(info);
+    lastFrameStart = now;
+    frameIndex++;
   }, {
     // Tick the global time clock AFTER each frame's eval. This is
     // the dirty-tracking-loop equivalent of Aardvark.Rendering's
@@ -518,9 +559,34 @@ async function initialise(
   setAmbient({ viewport: attachment.size, view, proj, time: getGlobalTime(), registry });
   scope.onDispose(() => clearAmbient());
 
+  // onResize: fire on framebuffer-size transitions (skipping the initial
+  // value — Aardvark's Resize event fires on CHANGES).
+  if (props.onResize !== undefined) {
+    let first = true;
+    const sub = avalAddCallback(attachment.size, () => {
+      if (first) { first = false; return; }
+      if (scope.isDisposed) return;
+      props.onResize?.(frameInfo(performance.now()));
+    });
+    scope.onDispose(() => sub.dispose());
+  }
+
+  // clientSize: CSS-pixel canvas size as an adaptive value.
+  const clientSize = cval<{ width: number; height: number }>({
+    width: canvas.clientWidth, height: canvas.clientHeight,
+  });
+  const ro = new ResizeObserver(() => {
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    const cur = AVal.force(clientSize as aval<{ width: number; height: number }>);
+    if (cur.width !== w || cur.height !== h) clientSize.value = { width: w, height: h };
+  });
+  ro.observe(canvas);
+  scope.onDispose(() => ro.disconnect());
+
   props.onReady?.({
     canvas, device, runtime,
     viewport: attachment.size,
+    clientSize: clientSize as aval<{ width: number; height: number }>,
     view, proj,
     time: getGlobalTime(),
     picking: registry,
