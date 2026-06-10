@@ -54,16 +54,22 @@ import { type ResolvedHit } from "./spiralHitTest.js";
 // Sensible defaults. Exported so callers can read or — eventually —
 // override them at the RenderControl level (see docs/FUTURE.md).
 
+// Values mirror aardvark.dom's aardvark-dom.js tap/long-press detection
+// (dt <= 400ms && netMove <= 20px at pointerup; double tap < 600ms / 30px;
+// long-press 500ms cancelled by >10px movement).
 /** Max pointerdown→pointerup duration to count as a tap (ms). */
-export const TAP_MAX_DURATION_MS = 250;
-/** Max total movement during the press, in CSS pixels. */
-export const TAP_MAX_MOVE_PX = 10;
+export const TAP_MAX_DURATION_MS = 400;
+/** Max NET down→up displacement (CSS px). Checked at pointerup only —
+ * wandering further mid-press and returning still taps (Aardvark parity). */
+export const TAP_MAX_MOVE_PX = 20;
 /** Max gap between consecutive taps' pointerup times (ms). */
-export const DOUBLE_TAP_GAP_MS = 300;
+export const DOUBLE_TAP_GAP_MS = 600;
 /** Max distance between the two taps' down positions (CSS px). */
-export const DOUBLE_TAP_MOVE_PX = 20;
+export const DOUBLE_TAP_MOVE_PX = 30;
 /** A pointerdown held still for this long fires OnLongPress (ms). */
 export const LONG_PRESS_MS = 500;
+/** Movement (CSS px from down) past which a pending long-press is cancelled. */
+export const LONG_PRESS_CANCEL_MOVE_PX = 10;
 /** Distance moved (CSS px) past which a press becomes a drag. Mirrors Aardvark's drag threshold. */
 export const DRAG_THRESHOLD_PX = 5;
 /** Cursor must rest still over the same scope this long before OnHover fires (ms). */
@@ -80,6 +86,7 @@ export interface TapThresholds {
   readonly doubleTapGapMs?: number;
   readonly doubleTapMovePx?: number;
   readonly longPressMs?: number;
+  readonly longPressCancelMovePx?: number;
   readonly dragThresholdPx?: number;
   readonly hoverDelayMs?: number;
 }
@@ -111,11 +118,11 @@ interface LastMoveInfo {
 
 /**
  * Per-pointer state tracked from pointerdown onward, used to
- * synthesise OnTap / OnLongPress. Cleared on pointerup, pointercancel,
+ * synthesise OnTap / OnLongPress. Cleared on pointerup / pointercancel,
  * or when movement breaks the tap-distance threshold.
  *
- * `consumed` flips true when OnLongPress fires — the trailing
- * pointerup then suppresses OnTap.
+ * Tap is decided purely at pointerup (net displacement + duration —
+ * Aardvark parity); mid-press movement only cancels the long-press timer.
  */
 interface PressState {
   readonly downAt: number;
@@ -124,8 +131,6 @@ interface PressState {
   /** Resolved at pointerdown via spiral readback. May be 0 (no hit). */
   readonly hitPickId: number;
   longPressTimer: ReturnType<typeof setTimeout> | undefined;
-  consumed: boolean;
-  movedTooFar: boolean;
   /** Phase 6 — drag-state machine. Once `dragging`, the press routes
    * pointermove events as `OnDrag` to `dragScopeId`. */
   dragging: boolean;
@@ -183,6 +188,7 @@ export class PickDispatcher implements SceneEventDispatch {
   private readonly tDoubleTapGap: number;
   private readonly tDoubleTapMove: number;
   private readonly tLongPress: number;
+  private readonly tLongPressCancel: number;
   private readonly tDragThreshold: number;
   private readonly tHoverDelay: number;
 
@@ -229,6 +235,7 @@ export class PickDispatcher implements SceneEventDispatch {
     this.tDoubleTapGap   = thresholds?.doubleTapGapMs   ?? DOUBLE_TAP_GAP_MS;
     this.tDoubleTapMove  = thresholds?.doubleTapMovePx  ?? DOUBLE_TAP_MOVE_PX;
     this.tLongPress      = thresholds?.longPressMs      ?? LONG_PRESS_MS;
+    this.tLongPressCancel = thresholds?.longPressCancelMovePx ?? LONG_PRESS_CANCEL_MOVE_PX;
     this.tDragThreshold  = thresholds?.dragThresholdPx  ?? DRAG_THRESHOLD_PX;
     this.tHoverDelay     = thresholds?.hoverDelayMs     ?? HOVER_DELAY_MS;
   }
@@ -262,7 +269,9 @@ export class PickDispatcher implements SceneEventDispatch {
     const onUp     = (e: PointerEvent): void => handle(e, "OnPointerUp");
     const onMove   = (e: PointerEvent): void => handle(e, "OnPointerMove");
     const onClick  = (e: PointerEvent): void => handle(e, "OnClick");
-    const onEnter  = (e: PointerEvent): void => handle(e, "OnPointerEnter");
+    // NOTE: no canvas `pointerenter` listener — like Aardvark, scene
+    // OnPointerEnter fires ONLY from the differential mechanism
+    // (updateHover) on the first pointer event inside the canvas.
     const onCancel = (e: PointerEvent): void => {
       // Phase 6 — fire OnDragEnd if a drag was active. We don't have
       // fresh cursor coords, so reuse the press's original down pos.
@@ -275,19 +284,11 @@ export class PickDispatcher implements SceneEventDispatch {
       this.cancelPress(e.pointerId);
     };
     const onLeave  = (e: PointerEvent): void => {
+      // Cursor left the canvas: same differential path as a move that
+      // resolves to no scope (Aardvark: handleMove with None).
       this.cancelHover();
-      if (this.lastHit !== 0) {
-        const scope = this.registry.lookup(this.lastHit);
-        if (scope !== undefined && !scope.pickThrough && AVal.force(scope.active)) {
-          const rect = this.getCanvasRect();
-          const cssX = e.clientX - rect.left;
-          const cssY = e.clientY - rect.top;
-          const ev = this.makeEvent("OnPointerLeave", e, cssX, cssY, scope, scope.pickId, false, undefined);
-          this.runUpAll(this.lastPath, [], ev);
-        }
-        this.lastHit = 0;
-        this.lastPath = [];
-      }
+      const rect = this.getCanvasRect();
+      this.updateHover(e, e.clientX - rect.left, e.clientY - rect.top, undefined);
     };
 
     // Why { passive: false }: SceneEvent.preventDefault() / stopPropagation()
@@ -301,7 +302,6 @@ export class PickDispatcher implements SceneEventDispatch {
     canvas.addEventListener("pointermove", onMove, opts);
     canvas.addEventListener("pointercancel", onCancel as unknown as EventListener, opts);
     canvas.addEventListener("click", onClick as unknown as EventListener, opts);
-    canvas.addEventListener("pointerenter", onEnter, opts);
     canvas.addEventListener("pointerleave", onLeave, opts);
 
     // Phase 4 — wheel events. Read pixel under cursor (same spiral
@@ -396,7 +396,6 @@ export class PickDispatcher implements SceneEventDispatch {
       canvas.removeEventListener("pointermove", onMove);
       canvas.removeEventListener("pointercancel", onCancel as unknown as EventListener);
       canvas.removeEventListener("click", onClick as unknown as EventListener);
-      canvas.removeEventListener("pointerenter", onEnter);
       canvas.removeEventListener("pointerleave", onLeave);
       canvas.removeEventListener("wheel", onWheel as unknown as EventListener);
       canvas.removeEventListener("keydown",  onKeyDown  as EventListener);
@@ -470,8 +469,9 @@ export class PickDispatcher implements SceneEventDispatch {
     scope: LeafPickScope,
     modeB: boolean,
     viewPos: V3d | undefined,
+    extras?: { deltaTime?: number; movementX?: number; movementY?: number },
   ): SceneEvent {
-    const sceneEv = this.makeEvent(kind, raw, cssX, cssY, scope, scope.pickId, modeB, viewPos);
+    const sceneEv = this.makeEvent(kind, raw, cssX, cssY, scope, scope.pickId, modeB, viewPos, undefined, 0, extras);
     this.runCaptureBubble(scope.handlers, sceneEv);
     return sceneEv;
   }
@@ -604,7 +604,7 @@ export class PickDispatcher implements SceneEventDispatch {
       const modeB = this.registry.modeOf(captured.pickId) === "B";
       const sceneEv = this.makeEvent(kind, ev, cssX, cssY, captured, captured.pickId, modeB, viewPos, viewNormal);
       this.runCaptureBubble(captured.handlers, sceneEv);
-      if (kind === "OnPointerMove" || kind === "OnPointerEnter") {
+      if (kind === "OnPointerMove") {
         this.applyCursor(captured);
       }
       return;
@@ -621,50 +621,60 @@ export class PickDispatcher implements SceneEventDispatch {
       if (hitId !== this.hoverPickId) this.cancelHover();
     }
 
-    if (kind === "OnPointerMove" && hitId !== this.lastHit) {
-      // Differential enter/leave. Diff oldPath vs newPath by
-      // longest shared prefix (reference equality on EventHandlers
-      // objects — see file header).
-      const prefix = sharedPrefixLength(this.lastPath, newPath);
+    // Differential enter/leave on EVERY pointer event (Aardvark parity:
+    // SceneHandler runs handleMove for every HandlePointerEvent — down,
+    // up, move, click — not just moves; wheel and synthetic taps do not).
+    this.updateHover(ev, cssX, cssY, hit);
 
-      if (this.lastHit !== 0) {
-        const oldScope = this.registry.lookup(this.lastHit);
-        if (oldScope !== undefined && !oldScope.pickThrough && AVal.force(oldScope.active)) {
-          const leaveEv = this.makeEvent("OnPointerLeave", ev, cssX, cssY, oldScope, oldScope.pickId, false, undefined);
-          // Walk the OLD path (above prefix) firing OnPointerLeave
-          // — F# `runUp` fires capture+bubble together and ignores
-          // continue/stop. We mirror that.
-          this.runUpAll(this.lastPath, this.lastPath.slice(0, prefix), leaveEv);
-        }
-      }
-
-      if (hitScope !== undefined && hit !== undefined) {
-        const modeB = !hit.isPixel ? false : (this.registry.modeOf(hitScope.pickId) === "B");
-        const enterEv = this.makeEvent("OnPointerEnter", ev, cssX, cssY, hitScope, hitScope.pickId, modeB, hit.viewPos, hit.viewNormal, hit.partIndex);
-        this.runDownAll(newPath, newPath.slice(0, prefix), enterEv);
-      }
-
-      this.lastHit = hitId;
-      this.lastPath = newPath;
+    // ---- press bookkeeping (ALL pointers, hit or not) --------------------
+    // Aardvark tracks presses window-wide: a down on empty space still
+    // arms the press, so an up over geometry within the tap thresholds
+    // taps that geometry. Long-press re-resolves its scope by pickId at
+    // fire time (a down on empty space simply has none to fire on).
+    if (kind === "OnPointerDown") {
+      // Replace any stale press for this pointer (extremely rare: a
+      // missed pointerup / cancel).
+      this.cancelPress(pointerId);
+      const press: PressState = {
+        downAt: Date.now(),
+        downX: cssX,
+        downY: cssY,
+        hitPickId: hitScope?.pickId ?? 0,
+        longPressTimer: undefined,
+        dragging: false,
+        dragScopeId: hitScope?.pickId ?? 0,
+      };
+      press.longPressTimer = setTimeout(() => {
+        const cur = this.presses.get(pointerId);
+        if (cur === undefined || cur !== press) return;
+        cur.longPressTimer = undefined;
+        // Re-resolve the scope by pickId — it may have been released
+        // mid-press; if so (or the down hit nothing), drop silently.
+        const lpScope = this.registry.lookup(cur.hitPickId);
+        if (lpScope === undefined || !AVal.force(lpScope.active) || lpScope.pickThrough) return;
+        const lpModeB = this.registry.modeOf(lpScope.pickId) === "B";
+        this.dispatchSynthetic("OnLongPress", ev, cssX, cssY, lpScope, lpModeB, hit?.viewPos);
+      }, this.tLongPress);
+      this.presses.set(pointerId, press);
+    } else if (kind === "OnPointerMove") {
+      this.checkPressMove(pointerId, cssX, cssY);
+      // A drag in progress still gets OnDrag fired on its press scope
+      // even if the cursor leaves the geometry — Aardvark / DOM
+      // semantics.
+      this.maybeDispatchDrag(pointerId, ev, cssX, cssY);
+    } else if (kind === "OnPointerUp") {
+      // Finalise drag state. Note: a finished micro-drag does NOT
+      // suppress the tap — tap detection is independent (Aardvark
+      // parity); a real drag exceeds TAP_MAX_MOVE_PX anyway.
+      this.maybeFinishDrag(pointerId, ev, cssX, cssY);
     }
 
     if (hitScope === undefined) {
-      if (kind === "OnPointerMove" || kind === "OnPointerEnter") this.applyCursor(undefined);
+      if (kind === "OnPointerMove") this.applyCursor(undefined);
       if (kind === "OnPointerMove") this.cancelHover();
-      // No scope under cursor: still let pointermove cancel a press
-      // that drifted off-target (movement check below). Pointerdown /
-      // pointerup with no hit can't synthesise a tap (no scope to
-      // dispatch to), so we just return.
-      if (kind === "OnPointerMove") {
-        this.checkPressMove(pointerId, cssX, cssY);
-        // A drag in progress still gets OnDrag fired on its press scope
-        // even if the cursor leaves the geometry — Aardvark / DOM
-        // semantics.
-        this.maybeDispatchDrag(pointerId, ev, cssX, cssY);
-      }
-      if (kind === "OnPointerUp") {
-        this.maybeFinishDrag(pointerId, ev, cssX, cssY);
-      }
+      // Pointerup with no hit can't synthesise a tap (no scope to
+      // dispatch to) — clear the press so it can't pair later.
+      if (kind === "OnPointerUp") this.cancelPress(pointerId);
       // A click landing on no scope clears focus.
       if (kind === "OnClick") this.registry.clearFocus();
       return;
@@ -679,7 +689,7 @@ export class PickDispatcher implements SceneEventDispatch {
     const sceneEv = this.makeEvent(kind, ev, cssX, cssY, hitScope, hitScope.pickId, modeB, viewPos, viewNormal, partIndex);
     this.runCaptureBubble(hitScope.handlers, sceneEv);
 
-    if (kind === "OnPointerMove" || kind === "OnPointerEnter") {
+    if (kind === "OnPointerMove") {
       this.applyCursor(hitScope);
     }
 
@@ -702,72 +712,35 @@ export class PickDispatcher implements SceneEventDispatch {
       }
     }
 
-    // ---- tap / long-press synthesis -------------------------------------
-    if (kind === "OnPointerDown") {
-      // Replace any stale press for this pointer (extremely rare: a
-      // missed pointerup / cancel).
-      this.cancelPress(pointerId);
-      const downAt = Date.now();
-      const press: PressState = {
-        downAt,
-        downX: cssX,
-        downY: cssY,
-        hitPickId: hitScope.pickId,
-        longPressTimer: undefined,
-        consumed: false,
-        movedTooFar: false,
-        dragging: false,
-        dragScopeId: hitScope.pickId,
-      };
-      press.longPressTimer = setTimeout(() => {
-        const cur = this.presses.get(pointerId);
-        if (cur === undefined || cur !== press) return;
-        if (cur.movedTooFar) return;
-        cur.consumed = true;
-        cur.longPressTimer = undefined;
-        // Re-resolve the scope by pickId — it may have been released
-        // mid-press; if so, drop the long-press silently.
-        const lpScope = this.registry.lookup(cur.hitPickId);
-        if (lpScope === undefined || !AVal.force(lpScope.active) || lpScope.pickThrough) return;
-        this.dispatchSynthetic("OnLongPress", ev, cssX, cssY, lpScope, modeB, viewPos);
-      }, this.tLongPress);
-      this.presses.set(pointerId, press);
-    } else if (kind === "OnPointerMove") {
-      this.checkPressMove(pointerId, cssX, cssY);
-      this.maybeDispatchDrag(pointerId, ev, cssX, cssY);
-    } else if (kind === "OnPointerUp") {
-      // Phase 6 — DragEnd suppresses any trailing tap. We finalise
-      // drag state here, BEFORE the tap detection below.
-      const wasDrag = this.maybeFinishDrag(pointerId, ev, cssX, cssY);
+    // ---- tap synthesis (pointerup with a scope under the cursor) ---------
+    // Aardvark parity (aardvark-dom.js): tap fires iff the press lasted
+    // <= TAP_MAX_DURATION_MS AND the NET down→up displacement is
+    // <= TAP_MAX_MOVE_PX. No mid-press cancellation, no drag/long-press
+    // interplay — a long-press hold exceeds the tap window by itself.
+    if (kind === "OnPointerUp") {
       const press = this.presses.get(pointerId);
       this.cancelPress(pointerId);
       if (press === undefined) return;
-      if (press.consumed) return; // long-press already fired
-      if (wasDrag) return;
-      if (press.movedTooFar) return;
       const dt = Date.now() - press.downAt;
       if (dt > this.tTapMaxDuration) return;
-      // Movement check on the up position too — we may not have had a
-      // pointermove between down and up.
       const mdx = cssX - press.downX;
       const mdy = cssY - press.downY;
       if (mdx * mdx + mdy * mdy > this.tTapMaxMove * this.tTapMaxMove) return;
-      // Tap fires against the scope under the cursor at pointerup.
-      this.dispatchSynthetic("OnTap", ev, cssX, cssY, hitScope, modeB, viewPos);
+      // Tap fires against the scope under the cursor at pointerup; it
+      // carries the press duration + net movement (Aardvark's tap event).
+      this.dispatchSynthetic("OnTap", ev, cssX, cssY, hitScope, modeB, viewPos,
+        { deltaTime: dt, movementX: mdx, movementY: mdy });
 
-      // Double-tap detection: SAME pickId, gap ≤ DOUBLE_TAP_GAP_MS,
-      // down-position move ≤ DOUBLE_TAP_MOVE_PX.
+      // Double-tap (Aardvark parity): tap-to-tap gap <= DOUBLE_TAP_GAP_MS,
+      // down positions within DOUBLE_TAP_MOVE_PX. No pickId requirement.
       const now = Date.now();
       const prev = this.lastTap;
-      if (
-        prev !== undefined
-        && prev.pickId === hitScope.pickId
-        && now - prev.at <= this.tDoubleTapGap
-      ) {
+      if (prev !== undefined && now - prev.at <= this.tDoubleTapGap) {
         const dx = press.downX - prev.x;
         const dy = press.downY - prev.y;
         if (dx * dx + dy * dy <= this.tDoubleTapMove * this.tDoubleTapMove) {
-          this.dispatchSynthetic("OnDoubleTap", ev, cssX, cssY, hitScope, modeB, viewPos);
+          this.dispatchSynthetic("OnDoubleTap", ev, cssX, cssY, hitScope, modeB, viewPos,
+            { deltaTime: now - prev.at, movementX: dx, movementY: dy });
           // Consume — a third quick tap should not pair with this
           // tap as the "previous" one.
           this.lastTap = undefined;
@@ -794,11 +767,9 @@ export class PickDispatcher implements SceneEventDispatch {
     if (!press.dragging) {
       if (d2 < this.tDragThreshold * this.tDragThreshold) return;
       press.dragging = true;
-      // Cancel pending long-press — drag wins.
-      if (press.longPressTimer !== undefined) {
-        clearTimeout(press.longPressTimer);
-        press.longPressTimer = undefined;
-      }
+      // No long-press cancellation here: Aardvark cancels a pending
+      // long-press only when movement exceeds LONG_PRESS_CANCEL_MOVE_PX
+      // (checkPressMove) — the 5px drag threshold is below that.
       this.dispatchDrag("OnDragStart", ev, cssX, cssY, scope, press);
       return;
     }
@@ -846,17 +817,53 @@ export class PickDispatcher implements SceneEventDispatch {
     this.runCaptureBubble(scope.handlers, sceneEv);
   }
 
+  /**
+   * Differential enter/leave — the ONLY mechanism that fires
+   * OnPointerEnter/OnPointerLeave (mirrors Aardvark's
+   * `TraversalState.handleDifferential`). Diffs the old and new handler
+   * paths by longest shared prefix: OnPointerLeave walks UP the old
+   * branch, OnPointerEnter walks DOWN the new one; both fire
+   * capture+bubble together ignoring continue/stop (F# `runUp`/`runDown`).
+   * Pass `hit === undefined` for "no scope under the cursor" (fires the
+   * remaining leaves, e.g. on canvas pointerleave).
+   */
+  private updateHover(ev: PointerEvent, cssX: number, cssY: number, hit: ResolvedHit | undefined): void {
+    const hitScope = hit?.scope;
+    const hitId = hitScope?.pickId ?? 0;
+    if (hitId === this.lastHit) return;
+    const newPath = hitScope?.handlers ?? [];
+    const prefix = sharedPrefixLength(this.lastPath, newPath);
+
+    if (this.lastHit !== 0) {
+      const oldScope = this.registry.lookup(this.lastHit);
+      if (oldScope !== undefined && !oldScope.pickThrough && AVal.force(oldScope.active)) {
+        const leaveEv = this.makeEvent("OnPointerLeave", ev, cssX, cssY, oldScope, oldScope.pickId, false, undefined);
+        this.runUpAll(this.lastPath, this.lastPath.slice(0, prefix), leaveEv);
+      }
+    }
+
+    if (hitScope !== undefined && hit !== undefined) {
+      const modeB = !hit.isPixel ? false : (this.registry.modeOf(hitScope.pickId) === "B");
+      const enterEv = this.makeEvent("OnPointerEnter", ev, cssX, cssY, hitScope, hitScope.pickId, modeB, hit.viewPos, hit.viewNormal, hit.partIndex);
+      this.runDownAll(newPath, newPath.slice(0, prefix), enterEv);
+    }
+
+    this.lastHit = hitId;
+    this.lastPath = newPath;
+  }
+
+  /** Cancel a pending long-press once the pointer wanders past
+   * LONG_PRESS_CANCEL_MOVE_PX from the down position (Aardvark: 10px).
+   * Does NOT affect tap detection — the tap is decided at pointerup
+   * from the NET down→up displacement alone. */
   private checkPressMove(pointerId: number, cssX: number, cssY: number): void {
     const press = this.presses.get(pointerId);
-    if (press === undefined || press.movedTooFar) return;
+    if (press === undefined || press.longPressTimer === undefined) return;
     const dx = cssX - press.downX;
     const dy = cssY - press.downY;
-    if (dx * dx + dy * dy > this.tTapMaxMove * this.tTapMaxMove) {
-      press.movedTooFar = true;
-      if (press.longPressTimer !== undefined) {
-        clearTimeout(press.longPressTimer);
-        press.longPressTimer = undefined;
-      }
+    if (dx * dx + dy * dy > this.tLongPressCancel * this.tLongPressCancel) {
+      clearTimeout(press.longPressTimer);
+      press.longPressTimer = undefined;
     }
   }
 
@@ -1005,6 +1012,7 @@ export class PickDispatcher implements SceneEventDispatch {
     viewPos: V3d | undefined,
     viewNormal?: V3d,
     partIndex: number = 0,
+    extras?: { deltaTime?: number; movementX?: number; movementY?: number },
   ): SceneEvent {
     const vp = viewPos ?? V3d.zero;
     const vn = viewNormal ?? V3d.zero;
@@ -1020,6 +1028,9 @@ export class PickDispatcher implements SceneEventDispatch {
       pointerType: ev.pointerType ?? "",
       ctrl: ev.ctrlKey, shift: ev.shiftKey, alt: ev.altKey, meta: ev.metaKey,
       raw: ev,
+      ...(extras?.deltaTime !== undefined ? { deltaTime: extras.deltaTime } : {}),
+      ...(extras?.movementX !== undefined ? { movementX: extras.movementX } : {}),
+      ...(extras?.movementY !== undefined ? { movementY: extras.movementY } : {}),
       scope,
       dispatch: this,
     });

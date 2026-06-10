@@ -88,6 +88,10 @@ export interface SceneEventInit {
   readonly repeat?: boolean;
   // Focus
   readonly relatedTarget?: PickId;
+  // Tap / double-tap (Aardvark parity: down->up duration and net movement)
+  readonly deltaTime?: number;
+  readonly movementX?: number;
+  readonly movementY?: number;
   // Drag
   readonly dragStartX?: number;
   readonly dragStartY?: number;
@@ -142,6 +146,12 @@ export class SceneEvent {
   // Focus
   readonly relatedTarget?: PickId;
 
+  // Tap / double-tap. `deltaTime` is the press duration (tap) or the
+  // tap-to-tap gap (double-tap); `movementX/Y` the matching net delta.
+  readonly deltaTime?: number;
+  readonly movementX?: number;
+  readonly movementY?: number;
+
   // Drag
   readonly dragStartX?: number;
   readonly dragStartY?: number;
@@ -185,6 +195,9 @@ export class SceneEvent {
     if (init.code !== undefined) this.code = init.code;
     if (init.repeat !== undefined) this.repeat = init.repeat;
     if (init.relatedTarget !== undefined) this.relatedTarget = init.relatedTarget;
+    if (init.deltaTime !== undefined) this.deltaTime = init.deltaTime;
+    if (init.movementX !== undefined) this.movementX = init.movementX;
+    if (init.movementY !== undefined) this.movementY = init.movementY;
     if (init.dragStartX !== undefined) this.dragStartX = init.dragStartX;
     if (init.dragStartY !== undefined) this.dragStartY = init.dragStartY;
     if (init.pinchScale !== undefined) this.pinchScale = init.pinchScale;

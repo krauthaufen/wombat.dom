@@ -84,7 +84,7 @@ describe("PickDispatcher — drag synthesis", () => {
     detach();
   });
 
-  it("Movement past threshold ⇒ DragStart, then Drag, then DragEnd; tap suppressed", async () => {
+  it("Movement past threshold ⇒ DragStart, then Drag, then DragEnd; micro-drag still taps (Aardvark parity)", async () => {
     const reg = new PickRegistry();
     const log: string[] = [];
     const id = acquire(reg, [bubbleOf({
@@ -104,7 +104,10 @@ describe("PickDispatcher — drag synthesis", () => {
     pevent(canvas, "pointermove", 50 + DRAG_THRESHOLD_PX + 5, 50); await flush();
     pevent(canvas, "pointerup",   50 + DRAG_THRESHOLD_PX + 5, 50); await flush();
 
-    expect(log).toEqual(["dragStart", "drag", "dragEnd"]);
+    // Net movement (10px) is within TAP_MAX_MOVE_PX (20px), so the tap
+    // ALSO fires — tap detection is independent of the drag machinery
+    // (Aardvark parity). A real drag exceeds 20px and taps nothing.
+    expect(log).toEqual(["dragStart", "drag", "dragEnd", "tap"]);
     detach();
   });
 

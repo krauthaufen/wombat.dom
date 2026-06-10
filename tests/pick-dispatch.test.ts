@@ -254,4 +254,36 @@ describe("PickDispatcher", () => {
     expect(log).toEqual(["A.enter", "A.move", "A.leave", "B.enter", "B.move"]);
     detach();
   });
+
+  it("enter/leave also fires on pointerdown/up target changes (differential on every pointer event)", async () => {
+    const reg = new PickRegistry();
+    const log: string[] = [];
+    const idA = acquire(reg, [{
+      OnPointerEnter: () => log.push("A.enter"),
+      OnPointerLeave: () => log.push("A.leave"),
+    }]);
+    const idB = acquire(reg, [{
+      OnPointerEnter: () => log.push("B.enter"),
+      OnPointerLeave: () => log.push("B.leave"),
+    }]);
+
+    const canvas = makeCanvas();
+    const d = makeDispatcher(reg, canvas);
+
+    let nextId = idA;
+    const detach = d.attach(canvas, async (cx, cy) => pixelWinner(nextId, { px: cx, py: cy }));
+
+    // A pointerdown (no prior move) already establishes hover on A —
+    // Aardvark runs handleMove for EVERY pointer event, not just moves.
+    pevent(canvas, "pointerdown", 10, 10);
+    await flush();
+    expect(log).toEqual(["A.enter"]);
+
+    // A pointerup whose pick resolves to B transfers hover A→B.
+    nextId = idB;
+    pevent(canvas, "pointerup", 50, 50);
+    await flush();
+    expect(log).toEqual(["A.enter", "A.leave", "B.enter"]);
+    detach();
+  });
 });

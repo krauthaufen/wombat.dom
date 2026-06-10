@@ -102,6 +102,104 @@ async function downUp(canvas: HTMLCanvasElement, x: number, y: number, holdMs: n
 }
 
 describe("PickDispatcher tap synthesis", () => {
+  it("Aardvark window: 350ms hold still taps; 450ms does not", async () => {
+    const reg = new PickRegistry();
+    const log: string[] = [];
+    const id = acquire(reg, { OnTap: () => log.push("tap") });
+    const canvas = makeCanvas();
+    const d = makeDispatcher(reg, canvas);
+    const detach = d.attach(canvas, async (cx, cy) => makeRegion(cx, cy, id));
+
+    await downUp(canvas, 50, 50, 350);
+    expect(log).toEqual(["tap"]);
+    vi.advanceTimersByTime(DOUBLE_TAP_GAP_MS + 100);
+    await downUp(canvas, 50, 50, 450);
+    expect(log).toEqual(["tap"]);
+    detach();
+  });
+
+  it("mid-press wander beyond TAP_MAX_MOVE_PX that returns to start still taps (net displacement rule)", async () => {
+    const reg = new PickRegistry();
+    const log: string[] = [];
+    const id = acquire(reg, { OnTap: () => log.push("tap") });
+    const canvas = makeCanvas();
+    const d = makeDispatcher(reg, canvas);
+    let cx = 50, cy = 50;
+    const detach = d.attach(canvas, async () => makeRegion(cx, cy, id));
+
+    pevent(canvas, "pointerdown", 50, 50); await flush();
+    // Wander 30px out (beyond the 20px tap radius)...
+    cx = 80; pevent(canvas, "pointermove", 80, 50); await flush();
+    // ...and back to the start before releasing quickly.
+    cx = 51; vi.advanceTimersByTime(100);
+    pevent(canvas, "pointerup", 51, 50); await flush();
+
+    expect(log).toEqual(["tap"]);
+    detach();
+  });
+
+  it("tap carries deltaTime + movementX/Y (down→up)", async () => {
+    const reg = new PickRegistry();
+    let seen: SceneEvent | undefined;
+    const id = acquire(reg, { OnTap: (e) => { seen = e; } });
+    const canvas = makeCanvas();
+    const d = makeDispatcher(reg, canvas);
+    let cx = 50;
+    const detach = d.attach(canvas, async () => makeRegion(cx, 50, id));
+
+    pevent(canvas, "pointerdown", 50, 50); await flush();
+    vi.advanceTimersByTime(120);
+    cx = 55;
+    pevent(canvas, "pointerup", 55, 50); await flush();
+
+    expect(seen).toBeDefined();
+    expect(seen!.deltaTime).toBe(120);
+    expect(seen!.movementX).toBe(5);
+    expect(seen!.movementY).toBe(0);
+    detach();
+  });
+
+  it("down on empty space, quick up over geometry → taps the up target (window-wide press)", async () => {
+    const reg = new PickRegistry();
+    const log: string[] = [];
+    const id = acquire(reg, { OnTap: () => log.push("tap") });
+    const canvas = makeCanvas();
+    const d = makeDispatcher(reg, canvas);
+    let cur = 0;
+    const detach = d.attach(canvas, async (x, y) => makeRegion(x, y, cur));
+
+    pevent(canvas, "pointerdown", 50, 50); await flush();
+    cur = id;
+    vi.advanceTimersByTime(100);
+    pevent(canvas, "pointerup", 55, 50); await flush();
+
+    expect(log).toEqual(["tap"]);
+    detach();
+  });
+
+  it("long-press cancelled by >10px movement even though tap still fires on quick return", async () => {
+    const reg = new PickRegistry();
+    const log: string[] = [];
+    const id = acquire(reg, {
+      OnTap: () => log.push("tap"),
+      OnLongPress: () => log.push("long"),
+    });
+    const canvas = makeCanvas();
+    const d = makeDispatcher(reg, canvas);
+    let cx = 50;
+    const detach = d.attach(canvas, async () => makeRegion(cx, 50, id));
+
+    pevent(canvas, "pointerdown", 50, 50); await flush();
+    // 15px move: cancels the pending long-press (>10px)...
+    cx = 65; pevent(canvas, "pointermove", 65, 50); await flush();
+    vi.advanceTimersByTime(LONG_PRESS_MS + 100);
+    // ...but the press is now too old to tap anyway.
+    pevent(canvas, "pointerup", 65, 50); await flush();
+
+    expect(log).toEqual([]);
+    detach();
+  });
+
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });
 
@@ -215,7 +313,7 @@ describe("PickDispatcher tap synthesis", () => {
     detach();
   });
 
-  it("two taps on different pickIds → 2× OnTap, no OnDoubleTap", async () => {
+  it("two quick taps on different pickIds → OnDoubleTap on the second target (Aardvark parity: no same-target requirement)", async () => {
     const reg = new PickRegistry();
     const log: string[] = [];
     const idA = acquire(reg, {
@@ -237,7 +335,9 @@ describe("PickDispatcher tap synthesis", () => {
     curId = idB;
     await downUp(canvas, 60, 50, 50);
 
-    expect(log).toEqual(["tapA", "tapB"]);
+    // Aardvark's double-tap has no pickId equality check — only the
+    // tap-to-tap gap (<600ms) and down-position distance (<30px) matter.
+    expect(log).toEqual(["tapA", "tapB", "doubleB"]);
     detach();
   });
 });
