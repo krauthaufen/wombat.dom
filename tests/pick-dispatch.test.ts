@@ -286,4 +286,30 @@ describe("PickDispatcher", () => {
     expect(log).toEqual(["A.enter", "A.leave", "B.enter"]);
     detach();
   });
+
+  it("dblclick dispatches OnDoubleClick; events carry clientRect/context/target/self", async () => {
+    const reg = new PickRegistry();
+    let seen: SceneEvent | undefined;
+    const id = acquire(reg, [{
+      OnDoubleClick: (e: SceneEvent) => { seen = e; },
+    }]);
+
+    const canvas = makeCanvas();
+    const d = makeDispatcher(reg, canvas);
+    const detach = d.attach(canvas, async (cx, cy) => pixelWinner(id, { px: cx, py: cy }));
+
+    const Ctor = (globalThis as { MouseEvent: typeof MouseEvent }).MouseEvent;
+    canvas.dispatchEvent(new Ctor("dblclick", { clientX: 30, clientY: 30, bubbles: true, button: 0 }));
+    await flush();
+
+    expect(seen).toBeDefined();
+    expect(seen!.kind).toBe("OnDoubleClick");
+    // Aardvark-parity surface: ClientRect / Context / Target / This.
+    expect(seen!.clientRect).toBeDefined();
+    expect(seen!.context).toBeDefined();
+    expect(seen!.context!.size.x).toBe(200);
+    expect(seen!.target).toBeDefined();
+    expect(seen!.self).toBeDefined();
+    detach();
+  });
 });

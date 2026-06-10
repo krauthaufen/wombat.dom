@@ -36,14 +36,15 @@
 // any reader's dependency set. Each call site below is in one of
 // those contexts.
 
-import { AVal, avalAddCallback } from "@aardworx/wombat.adaptive";
-import { Trafo3d, V2d, V2i, V3d, V4d } from "@aardworx/wombat.base";
+import { AVal, avalAddCallback, cval } from "@aardworx/wombat.adaptive";
+import { Box2d, Trafo3d, V2d, V2i, V3d, V4d } from "@aardworx/wombat.base";
 
 import { arbitratePick } from "./pickArbitrate.js";
 import type { PickArgminResult } from "./pickArgminCompute.js";
 import type { LeafPickEntry, LeafPickScope, PickRegistry } from "./registry.js";
 import {
   SceneEvent,
+  type SceneEventContext,
   type SceneEventDispatch,
   type SceneEventKind,
 } from "./sceneEvent.js";
@@ -199,6 +200,9 @@ export class PickDispatcher implements SceneEventDispatch {
   private canvas: HTMLCanvasElement | undefined;
   /** Most-recently written `canvas.style.cursor`; tracked to avoid redundant writes. */
   private currentCursor: string | undefined;
+  /** Adaptive mirror of the applied cursor (SceneEvent.context.cursor —
+   * Aardvark IEventHandler.Cursor). */
+  private readonly cursorAval = cval<string | undefined>(undefined);
 
   /**
    * Resolve the desired cursor for `scope` and write it to
@@ -219,7 +223,13 @@ export class PickDispatcher implements SceneEventDispatch {
     if (desired !== this.currentCursor) {
       this.canvas.style.cursor = desired;
       this.currentCursor = desired;
+      this.cursorAval.value = desired === "" ? undefined : desired;
     }
+  }
+
+  /** Aardvark `IEventHandler` counterpart attached to every SceneEvent. */
+  private eventContext(): SceneEventContext {
+    return { size: this.canvasSize(), cursor: this.cursorAval };
   }
 
   constructor(
@@ -269,6 +279,10 @@ export class PickDispatcher implements SceneEventDispatch {
     const onUp     = (e: PointerEvent): void => handle(e, "OnPointerUp");
     const onMove   = (e: PointerEvent): void => handle(e, "OnPointerMove");
     const onClick  = (e: PointerEvent): void => handle(e, "OnClick");
+    // dblclick is a MouseEvent (no pointerId); the pipeline only reads the
+    // pointer-ish fields it carries. Routed through the same pick resolve +
+    // differential hover as every other pointer event (Aardvark parity).
+    const onDblClick = (e: MouseEvent): void => handle(e as PointerEvent, "OnDoubleClick");
     // NOTE: no canvas `pointerenter` listener — like Aardvark, scene
     // OnPointerEnter fires ONLY from the differential mechanism
     // (updateHover) on the first pointer event inside the canvas.
@@ -302,6 +316,7 @@ export class PickDispatcher implements SceneEventDispatch {
     canvas.addEventListener("pointermove", onMove, opts);
     canvas.addEventListener("pointercancel", onCancel as unknown as EventListener, opts);
     canvas.addEventListener("click", onClick as unknown as EventListener, opts);
+    canvas.addEventListener("dblclick", onDblClick as unknown as EventListener, opts);
     canvas.addEventListener("pointerleave", onLeave, opts);
 
     // Phase 4 — wheel events. Read pixel under cursor (same spiral
@@ -353,6 +368,31 @@ export class PickDispatcher implements SceneEventDispatch {
     canvas.addEventListener("keyup",    onKeyUp    as EventListener, opts);
     canvas.addEventListener("keypress", onKeyPress as EventListener, opts);
 
+    // Text input → OnKeyInput on the focused scope (Aardvark models text
+    // input as SceneEventKind.KeyInput from the DOM InputEvent). Fires
+    // whenever the browser emits `beforeinput` on the focused canvas
+    // (IME / virtual keyboards); the subscription mirrors Aardvark's.
+    const onInput = (ev: InputEvent): void => {
+      const focused = AVal.force(this.registry.focusedPickId);
+      if (focused === undefined) return;
+      const scope = this.registry.lookup(focused);
+      if (scope === undefined) return;
+      if (!AVal.force(scope.active)) return;
+      if (scope.noEvents !== undefined && AVal.force(scope.noEvents)) return;
+      const sceneEv = new SceneEvent({
+        kind: "OnKeyInput",
+        location: this.buildEmptyLocation(scope),
+        pickId: scope.pickId,
+        raw: ev,
+        data: ev.data ?? "",
+        inputType: ev.inputType ?? "",
+        context: this.eventContext(),
+        scope, dispatch: this,
+      });
+      this.runCaptureBubble(scope.handlers, sceneEv);
+    };
+    canvas.addEventListener("beforeinput", onInput as EventListener, opts);
+
     // Phase 5 — focus subscription: when focusedPickId changes,
     // dispatch OnBlur on the old scope's path then OnFocus on the
     // new one's. Both fire capture+bubble together (like enter/leave).
@@ -396,11 +436,13 @@ export class PickDispatcher implements SceneEventDispatch {
       canvas.removeEventListener("pointermove", onMove);
       canvas.removeEventListener("pointercancel", onCancel as unknown as EventListener);
       canvas.removeEventListener("click", onClick as unknown as EventListener);
+      canvas.removeEventListener("dblclick", onDblClick as unknown as EventListener);
       canvas.removeEventListener("pointerleave", onLeave);
       canvas.removeEventListener("wheel", onWheel as unknown as EventListener);
       canvas.removeEventListener("keydown",  onKeyDown  as EventListener);
       canvas.removeEventListener("keyup",    onKeyUp    as EventListener);
       canvas.removeEventListener("keypress", onKeyPress as EventListener);
+      canvas.removeEventListener("beforeinput", onInput as EventListener);
       focusUnsub.dispose();
       // Cancel any pending long-press timers so the disposer is clean.
       for (const id of [...this.presses.keys()]) this.cancelPress(id);
@@ -886,7 +928,7 @@ export class PickDispatcher implements SceneEventDispatch {
       const h = path[i]!.handlers.capture?.[ev.kind];
       if (h !== undefined) {
         const local = AVal.force(path[i]!.local2World);
-        const localEv = ev.transformed(local);
+        const localEv = ev.transformedAt(local, path[i]);
         let r: boolean | void;
         try { r = h(localEv); } catch (err) { console.error(`[PickDispatcher] capture ${ev.kind} threw:`, err); continue; }
         if (r === false || ev.propagationStopped) return;
@@ -897,7 +939,7 @@ export class PickDispatcher implements SceneEventDispatch {
       const h = path[i]!.handlers.bubble?.[ev.kind];
       if (h !== undefined) {
         const local = AVal.force(path[i]!.local2World);
-        const localEv = ev.transformed(local);
+        const localEv = ev.transformedAt(local, path[i]);
         let r: boolean | void;
         try { r = h(localEv); } catch (err) { console.error(`[PickDispatcher] bubble ${ev.kind} threw:`, err); continue; }
         if (r === false || ev.propagationStopped) return;
@@ -937,7 +979,7 @@ export class PickDispatcher implements SceneEventDispatch {
     const bub = entry.handlers.bubble?.[ev.kind];
     if (cap === undefined && bub === undefined) return;
     const local = AVal.force(entry.local2World);
-    const localEv = ev.transformed(local);
+    const localEv = ev.transformedAt(local, entry);
     if (cap !== undefined) {
       try { cap(localEv); } catch (err) { console.error(`[PickDispatcher] capture ${ev.kind} threw:`, err); }
     }
@@ -1017,11 +1059,14 @@ export class PickDispatcher implements SceneEventDispatch {
     const vp = viewPos ?? V3d.zero;
     const vn = viewNormal ?? V3d.zero;
     const location = this.buildLocation(scope, devX, devY, vp, vn, partIndex);
+    const rect = this.getCanvasRect();
     return new SceneEvent({
       kind,
       location,
       pickId,
       modeB,
+      clientRect: new Box2d(rect.left, rect.top, rect.right, rect.bottom),
+      context: this.eventContext(),
       ...(ev.button !== undefined ? { button: ev.button } : {}),
       ...(ev.buttons !== undefined ? { buttons: ev.buttons } : {}),
       pointerId: ev.pointerId ?? 0,

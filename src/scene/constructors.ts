@@ -195,33 +195,37 @@ function on(handlers: EventHandlers, child: SgChild): SgNode {
   return { kind: "On", handlers, child: coerceChild(child) };
 }
 
-/** Curried convenience: bubble-only single-event SgOn. */
-function onEvent(kind: SceneEventKind, fn: SceneEventHandler): (child: SgChild) => SgNode {
-  return (child) => on({ bubble: { [kind]: fn } }, child);
+/** Curried convenience: single-event SgOn. `capture: true` registers the
+ * handler for the capture phase (outer→inner) instead of bubble —
+ * Aardvark's `Sg.OnX(capture, action)` overloads. */
+function onEvent(kind: SceneEventKind, fn: SceneEventHandler, capture?: boolean): (child: SgChild) => SgNode {
+  return (child) => on(capture === true ? { capture: { [kind]: fn } } : { bubble: { [kind]: fn } }, child);
 }
 
-const onClick      = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnClick", fn);
-const onPointerDown  = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnPointerDown", fn);
-const onPointerUp    = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnPointerUp", fn);
-const onPointerMove  = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnPointerMove", fn);
-const onPointerEnter = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnPointerEnter", fn);
-const onPointerLeave = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnPointerLeave", fn);
+const onClick = (fn: SceneEventHandler, capture?: boolean): ((child: SgChild) => SgNode) => onEvent("OnClick", fn, capture);
+const onPointerDown = (fn: SceneEventHandler, capture?: boolean): ((child: SgChild) => SgNode) => onEvent("OnPointerDown", fn, capture);
+const onPointerUp = (fn: SceneEventHandler, capture?: boolean): ((child: SgChild) => SgNode) => onEvent("OnPointerUp", fn, capture);
+const onPointerMove = (fn: SceneEventHandler, capture?: boolean): ((child: SgChild) => SgNode) => onEvent("OnPointerMove", fn, capture);
+const onPointerEnter = (fn: SceneEventHandler, capture?: boolean): ((child: SgChild) => SgNode) => onEvent("OnPointerEnter", fn, capture);
+const onPointerLeave = (fn: SceneEventHandler, capture?: boolean): ((child: SgChild) => SgNode) => onEvent("OnPointerLeave", fn, capture);
 // Gesture / wheel / keyboard / focus / drag convenience factories. The
 // dispatcher (picking/dispatcher.ts) already synthesises and routes every
 // one of these SceneEventKinds — these are just the bubble-only single-event
 // `Sg.on({bubble:{Kind:fn}}, child)` wrappers, matching the pointer set above.
-const onTap        = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnTap", fn);
-const onDoubleTap  = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnDoubleTap", fn);
-const onLongPress  = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnLongPress", fn);
-const onWheel      = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnWheel", fn);
-const onFocus      = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnFocus", fn);
-const onBlur       = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnBlur", fn);
-const onKeyDown    = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnKeyDown", fn);
-const onKeyUp      = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnKeyUp", fn);
-const onKeyPress   = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnKeyPress", fn);
-const onDragStart  = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnDragStart", fn);
-const onDrag       = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnDrag", fn);
-const onDragEnd    = (fn: SceneEventHandler): ((child: SgChild) => SgNode) => onEvent("OnDragEnd", fn);
+const onTap = (fn: SceneEventHandler, capture?: boolean): ((child: SgChild) => SgNode) => onEvent("OnTap", fn, capture);
+const onDoubleTap = (fn: SceneEventHandler, capture?: boolean): ((child: SgChild) => SgNode) => onEvent("OnDoubleTap", fn, capture);
+const onLongPress = (fn: SceneEventHandler, capture?: boolean): ((child: SgChild) => SgNode) => onEvent("OnLongPress", fn, capture);
+const onWheel = (fn: SceneEventHandler, capture?: boolean): ((child: SgChild) => SgNode) => onEvent("OnWheel", fn, capture);
+const onFocus = (fn: SceneEventHandler, capture?: boolean): ((child: SgChild) => SgNode) => onEvent("OnFocus", fn, capture);
+const onBlur = (fn: SceneEventHandler, capture?: boolean): ((child: SgChild) => SgNode) => onEvent("OnBlur", fn, capture);
+const onKeyDown = (fn: SceneEventHandler, capture?: boolean): ((child: SgChild) => SgNode) => onEvent("OnKeyDown", fn, capture);
+const onKeyUp = (fn: SceneEventHandler, capture?: boolean): ((child: SgChild) => SgNode) => onEvent("OnKeyUp", fn, capture);
+const onKeyPress = (fn: SceneEventHandler, capture?: boolean): ((child: SgChild) => SgNode) => onEvent("OnKeyPress", fn, capture);
+const onDragStart = (fn: SceneEventHandler, capture?: boolean): ((child: SgChild) => SgNode) => onEvent("OnDragStart", fn, capture);
+const onDrag = (fn: SceneEventHandler, capture?: boolean): ((child: SgChild) => SgNode) => onEvent("OnDrag", fn, capture);
+const onDragEnd = (fn: SceneEventHandler, capture?: boolean): ((child: SgChild) => SgNode) => onEvent("OnDragEnd", fn, capture);
+const onDoubleClick = (fn: SceneEventHandler, capture?: boolean): ((child: SgChild) => SgNode) => onEvent("OnDoubleClick", fn, capture);
+const onKeyInput    = (fn: SceneEventHandler, capture?: boolean): ((child: SgChild) => SgNode) => onEvent("OnKeyInput", fn, capture);
 
 function active(value: aval<boolean>, child: SgChild): SgNode {
   return { kind: "Active", active: value, child: coerceChild(child) };
@@ -1171,6 +1175,8 @@ export interface SgNamespace {
   onDragStart:    typeof onDragStart;
   onDrag:         typeof onDrag;
   onDragEnd:      typeof onDragEnd;
+  onDoubleClick:  typeof onDoubleClick;
+  onKeyInput:     typeof onKeyInput;
   active:      typeof active;
   view:        typeof viewScope;
   proj:        typeof projScope;
@@ -1272,6 +1278,8 @@ export const Sg: SgNamespace = (() => {
   fn.onDragStart    = onDragStart;
   fn.onDrag         = onDrag;
   fn.onDragEnd      = onDragEnd;
+  fn.onDoubleClick  = onDoubleClick;
+  fn.onKeyInput     = onKeyInput;
   fn.active      = active;
   fn.view        = viewScope;
   fn.proj        = projScope;

@@ -14,13 +14,15 @@
 // to the underlying DOM event. PointerCapture is exposed as instance
 // methods that delegate to the dispatcher.
 
-import { Ray3d, Trafo3d, V2d, V2i, V3d } from "@aardworx/wombat.base";
+import { Box2d, Ray3d, Trafo3d, V2d, V2i, V3d } from "@aardworx/wombat.base";
+import type { aval } from "@aardworx/wombat.adaptive";
 
 import type { LeafPickScope, PickId } from "./registry.js";
 import { SceneEventLocation } from "./sceneEventLocation.js";
 
 export type SceneEventKind =
   | "OnClick"
+  | "OnDoubleClick"
   | "OnPointerDown"
   | "OnPointerUp"
   | "OnPointerMove"
@@ -37,6 +39,7 @@ export type SceneEventKind =
   | "OnKeyDown"
   | "OnKeyUp"
   | "OnKeyPress"
+  | "OnKeyInput"
   // Phase 6
   | "OnDragStart"
   | "OnDrag"
@@ -60,10 +63,19 @@ export interface SceneEventDispatch {
   hasPointerCapture(scope: LeafPickScope, pointerId: number): boolean;
 }
 
+/**
+ * Aardvark `IEventHandler` counterpart: the live event-handler context —
+ * the canvas size and the adaptive cursor the dispatcher maintains.
+ */
+export interface SceneEventContext {
+  readonly size: V2i;
+  readonly cursor: aval<string | undefined>;
+}
+
 export interface SceneEventInit {
   readonly kind: SceneEventKind;
   readonly location: SceneEventLocation;
-  readonly raw: PointerEvent | WheelEvent | KeyboardEvent | FocusEvent;
+  readonly raw: PointerEvent | MouseEvent | WheelEvent | KeyboardEvent | FocusEvent | InputEvent;
   readonly pickId: PickId;
   /** True iff the pick fragment was a Mode-B (negative slot 0) write. */
   readonly modeB?: boolean;
@@ -92,6 +104,16 @@ export interface SceneEventInit {
   readonly deltaTime?: number;
   readonly movementX?: number;
   readonly movementY?: number;
+  // Text input (OnKeyInput; from the DOM InputEvent on the focused canvas)
+  readonly data?: string;
+  readonly inputType?: string;
+  // Canvas bounding rect at dispatch time (Aardvark SceneEvent.ClientRect)
+  readonly clientRect?: Box2d;
+  // Event-handler context (Aardvark SceneEvent.Context)
+  readonly context?: SceneEventContext;
+  /** Handler-path entry currently being invoked (Aardvark SceneEvent.This);
+   * set per level by the capture/bubble walk. */
+  readonly self?: unknown;
   // Drag
   readonly dragStartX?: number;
   readonly dragStartY?: number;
@@ -115,7 +137,7 @@ export interface SceneEventInit {
 export class SceneEvent {
   readonly kind: SceneEventKind;
   readonly location: SceneEventLocation;
-  readonly raw: PointerEvent | WheelEvent | KeyboardEvent | FocusEvent;
+  readonly raw: PointerEvent | MouseEvent | WheelEvent | KeyboardEvent | FocusEvent | InputEvent;
   readonly pickId: PickId;
   /** True iff the pick fragment was a Mode-B (negative slot 0) write. Defaults to `false`. */
   readonly modeB: boolean;
@@ -151,6 +173,22 @@ export class SceneEvent {
   readonly deltaTime?: number;
   readonly movementX?: number;
   readonly movementY?: number;
+
+  // Text input (OnKeyInput)
+  readonly data?: string;
+  readonly inputType?: string;
+
+  // Canvas bounding rect at dispatch time (Aardvark SceneEvent.ClientRect).
+  readonly clientRect?: Box2d;
+
+  // Event-handler context (Aardvark SceneEvent.Context).
+  readonly context?: SceneEventContext;
+
+  /** Handler-path entry currently being invoked (Aardvark SceneEvent.This). */
+  readonly self?: unknown;
+
+  /** The dispatch-target scope (Aardvark SceneEvent.Target). */
+  get target(): unknown { return this._scope; }
 
   // Drag
   readonly dragStartX?: number;
@@ -198,6 +236,11 @@ export class SceneEvent {
     if (init.deltaTime !== undefined) this.deltaTime = init.deltaTime;
     if (init.movementX !== undefined) this.movementX = init.movementX;
     if (init.movementY !== undefined) this.movementY = init.movementY;
+    if (init.data !== undefined) this.data = init.data;
+    if (init.inputType !== undefined) this.inputType = init.inputType;
+    if (init.clientRect !== undefined) this.clientRect = init.clientRect;
+    if (init.context !== undefined) this.context = init.context;
+    if (init.self !== undefined) this.self = init.self;
     if (init.dragStartX !== undefined) this.dragStartX = init.dragStartX;
     if (init.dragStartY !== undefined) this.dragStartY = init.dragStartY;
     if (init.pinchScale !== undefined) this.pinchScale = init.pinchScale;
@@ -296,6 +339,18 @@ export class SceneEvent {
   transformed(trafo: Trafo3d): SceneEvent {
     return new SceneEvent(
       { ...this._init, location: this.location.transformed(trafo) },
+      this._prop,
+    );
+  }
+
+  /**
+   * `transformed` + sets `self` to the handler-path entry about to be
+   * invoked — used by the capture/bubble walk so handlers see Aardvark's
+   * `This` (their own scope level) alongside `Target` (the hit scope).
+   */
+  transformedAt(trafo: Trafo3d, self: unknown): SceneEvent {
+    return new SceneEvent(
+      { ...this._init, location: this.location.transformed(trafo), self },
       this._prop,
     );
   }
