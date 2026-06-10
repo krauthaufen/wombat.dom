@@ -93,12 +93,15 @@ both **shipped** — they're no longer open.
 
   This matches the .NET/FShade path (already GPU-validated on aardvark.dom).
 
-### aval<Child> mid-siblings reconciler hiccup
-`bindings/child` flush throws a caught `NotFoundError: insertBefore … is not
-a child of this node` when an `aval<VNode>` child SWAPS its node while sibling
-lists churn in the same flush (seen: puresg-generated conditional empty-state
-`aval<DomNode>` between static siblings + an alist sibling, wombat.fable
-HelloTodo). The DOM converges correctly afterwards (state is right, error is
-caught + logged), so this is reconciler noise, not corruption — but the anchor
-bookkeeping for aval-children should be fixed. Repro: HelloTodo add/remove
-across the empty-state boundary.
+### aval<Child> mid-siblings reconciler hiccup — RESOLVED ✅ (0.16.1)
+Root cause was the UIScheduler, not anchor bookkeeping: `flush()` swapped
+`_dirty` for a fresh Set BEFORE iterating the batch, so `forget()` (called
+when a binding's scope disposes) deleted from the NEW set while the loop
+kept iterating the OLD one. A binding flushed early in the batch (the
+conditional's aval-child swap) could dispose a subtree whose alist binding
+was queued LATER in the same batch — that stale binding then flushed
+against detached anchors (`NotFoundError: insertBefore`). Fix: the
+scheduler keeps a `_flushing` reference to the in-flight batch and
+`forget()` deletes from it too (Set deletion during for..of skips
+not-yet-visited entries) — disposed bindings now never flush. Verified:
+HelloTodo hammered across the empty-state boundary ×3, zero errors.

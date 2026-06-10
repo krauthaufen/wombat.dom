@@ -16,6 +16,13 @@ export interface Binding {
 
 export class UIScheduler {
   private _dirty = new Set<Binding>();
+  /** The batch currently being flushed (null outside flush). `forget`
+   *  must also delete from THIS set: a binding flushed earlier in the
+   *  batch can dispose a subtree whose bindings are queued later in the
+   *  same batch — flushing those would apply DOM ops against detached
+   *  anchors (NotFoundError: insertBefore). Deleting from a Set during
+   *  for..of skips not-yet-visited entries, which is exactly right. */
+  private _flushing: Set<Binding> | null = null;
   private _frame: number | null = null;
   private _disposed = false;
   private readonly _scheduleFrame: (cb: () => void) => number;
@@ -51,9 +58,12 @@ export class UIScheduler {
     }
   }
 
-  /** Forget a binding (e.g. on dispose). */
+  /** Forget a binding (e.g. on dispose). Effective even mid-flush:
+   *  the binding is removed from the in-flight batch too, so a
+   *  disposed binding never flushes. */
   forget(b: Binding): void {
     this._dirty.delete(b);
+    this._flushing?.delete(b);
   }
 
   /** Run any pending flush immediately and synchronously. */
@@ -70,13 +80,18 @@ export class UIScheduler {
     if (this._disposed) return;
     const work = this._dirty;
     this._dirty = new Set();
+    this._flushing = work;
     const tok = AdaptiveToken.top;
-    for (const b of work) {
-      try {
-        b.flush(tok);
-      } catch (err) {
-        console.error("[wombat.dom] binding flush threw", err);
+    try {
+      for (const b of work) {
+        try {
+          b.flush(tok);
+        } catch (err) {
+          console.error("[wombat.dom] binding flush threw", err);
+        }
       }
+    } finally {
+      this._flushing = null;
     }
   }
 
