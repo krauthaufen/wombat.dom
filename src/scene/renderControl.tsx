@@ -148,9 +148,18 @@ export interface RenderControlProps {
    */
   readonly onReady?: (info: RenderControlReadyInfo) => void;
 
-  /** Called each frame immediately before the render task runs. */
+  /**
+   * Called each frame immediately before the render task runs. Runs
+   * inside the frame eval — do NOT transact() here (marks would race
+   * the render loop's dirty tracking).
+   */
   readonly onBeforeRender?: (info: RenderControlFrameInfo) => void;
-  /** Called each frame immediately after the render task ran. */
+  /**
+   * Called after each rendered frame, on a microtask off the frame
+   * eval stack — transact() here is safe (the canonical use is a
+   * camera controller stepping its physics per frame, which marks the
+   * camera and thereby schedules the next frame).
+   */
   readonly onRendered?: (info: RenderControlFrameInfo) => void;
   /** Called whenever the framebuffer size changes. */
   readonly onResize?: (info: RenderControlFrameInfo) => void;
@@ -523,7 +532,16 @@ async function initialise(
       runResolve(enc);
       device.queue.submit([enc.finish()]);
     }
-    if (info !== undefined) props.onRendered?.(info);
+    // onRendered handlers may transact() (the Aardvark.Dom pattern of a
+    // camera controller stepping physics per frame). Marks fired inside
+    // this frame eval would race the wrapper aval's outOfDate reset and
+    // stall the loop permanently, so defer the handler to a microtask —
+    // it runs right after the eval unwinds, before the next rAF.
+    if (info !== undefined && props.onRendered !== undefined) {
+      queueMicrotask(() => {
+        if (!scope.isDisposed) props.onRendered?.(info);
+      });
+    }
     lastFrameStart = now;
     frameIndex++;
   }, {
