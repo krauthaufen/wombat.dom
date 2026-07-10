@@ -78,6 +78,12 @@ export {
 } from "./pickResolveCompute.js";
 
 export {
+  createPickProducer,
+  type PickProducer,
+  type PickProducerOptions,
+} from "./pickProducer.js";
+
+export {
   PickDispatcher,
   TAP_MAX_DURATION_MS,
   TAP_MAX_MOVE_PX,

@@ -23,30 +23,26 @@
 // runs in a `ref` callback on canvas mount and is asynchronous —
 // the first frame appears one rAF after the device is ready.
 
-import { AVal, HashMap, avalAddCallback, cval, type aval } from "@aardworx/wombat.adaptive";
-import { Trafo3d, V4f } from "@aardworx/wombat.base";
+import { AVal, avalAddCallback, cval, type aval } from "@aardworx/wombat.adaptive";
+import { Trafo3d } from "@aardworx/wombat.base";
 import {
   Runtime, attachCanvas, runFrame,
   type AttachCanvasOptions,
 } from "@aardworx/wombat.rendering";
 import type {
   ClearValues,
-  ClearColor,
   Effect,
 } from "@aardworx/wombat.rendering/core";
 
 import type { Child } from "../vnode.js";
 import { useScope } from "../scope.js";
 import { Sg, collectSgChildren } from "./constructors.js";
-import { compileScene } from "./compile.js";
-import { transparencyTask, type OitMode } from "./transparency.js";
+import type { OitMode } from "./transparency.js";
 import type { SgNode } from "./sg.js";
 import { TraversalState } from "./traversalState.js";
-import { PickRegistry } from "./picking/registry.js";
-import { createPickFramebuffer, PICK_NAME } from "./picking/pickFramebuffer.js";
 import { PickDispatcher, type TapThresholds } from "./picking/dispatcher.js";
-import { PickMetadata } from "./picking/pickMetadata.js";
-import { createPickArgminCompute, type PickArgminResult } from "./picking/pickArgminCompute.js";
+import type { PickRegistry } from "./picking/registry.js";
+import { createPickProducer } from "./picking/pickProducer.js";
 import { setAmbient, clearAmbient } from "./ambient.js";
 
 // ---------------------------------------------------------------------------
@@ -378,71 +374,21 @@ async function initialise(
   const view = props.view ?? sniffed.view ?? warnDefault("view");
   const proj = props.proj ?? sniffed.proj ?? warnDefault("proj");
 
-  // Initial traversal state — viewport + camera populated up front.
-  const initial = TraversalState.empty
-    .withViewport(attachment.size)
-    .withCamera(view, proj)
-    .withTime(getGlobalTime());
-
-  // Picking is always-on. Allocate a combined FB (canvas color +
-  // pickId + canvas depth), feed that to compileScene, and wire a
-  // PickDispatcher to the canvas. Handlers fire on cursor events
-  // after a 1-pixel readback decodes a registered pickId. The
-  // registry is created internally per RenderControl instance and
-  // exposed back via `onReady`.
-  const registry = new PickRegistry();
-  const pickFb = createPickFramebuffer(device, attachment, { colorAttachmentName: "Colors" });
-  const outputFb = pickFb.pickFramebuffer;
-  scope.onDispose(() => pickFb.dispose());
-
-  // Always inject a per-frame clear for the pickId attachment.
-  // Without this, fragments NOT covered by any drawn geometry
-  // retain last-frame pickIds (loadOp defaults to "load") and the
-  // hit-test readback decodes stale data — wrong NDC depth and a
-  // bogus registered ID. Picking can't rely on the user's clear
-  // config to know about its own attachments. (See
-  // ~/claude/wombat-todo.md: phase 4 / item 11.)
-  //
-  // Also default a canvas-color and depth clear when the user
-  // didn't supply one. Without a depth clear, the GPU sees an
-  // uninitialised depth buffer on the first frame; with the
-  // default `compare: "less"`, almost every fragment fails the
-  // depth test and the canvas stays at whatever the browser drew
-  // (typically white). The defaults match the pickId clear's
-  // alpha=0 (transparent) so RenderControl over a styled
-  // background doesn't paint a hard rectangle, and depth=1.0
-  // (the OpenGL/WebGPU "far" value) so the first frame has a
-  // valid background to test against.
-  const userClear = props.clear;
-  const userColors = userClear?.colors ?? HashMap.empty<string, ClearColor>();
-  const colorsWithDefaults = userColors.containsKey("Colors")
-    ? userColors
-    : userColors.add("Colors", new V4f(0, 0, 0, 0));
-  const clearWithPick: ClearValues = {
-    ...(userClear ?? {}),
-    colors: colorsWithDefaults.add(PICK_NAME, new V4f(0, 0, 0, 0)),
-    depth: userClear?.depth ?? 1.0,
-  };
-  // Lower the scene; compile into the runtime; drive the loop. When transparency
-  // is enabled, route through transparencyTask (it lowers the scene itself via
-  // compileScene's pass hooks and threads the same pick registry).
-  const task = props.transparency
-    ? transparencyTask(runtime, device, pickFb.signature, attachment.size, sceneTree, {
-        ...(typeof props.transparency === "string" ? { mode: props.transparency } : {}),
-        compile: {
-          initialState: initial,
-          autoUniforms: true,
-          ...(props.defaultEffect !== undefined ? { defaultEffect: props.defaultEffect } : {}),
-          picking: { registry },
-        },
-      })
-    : runtime.compile(pickFb.signature, compileScene(sceneTree, {
-        initialState: initial,
-        ...(props.defaultEffect !== undefined ? { defaultEffect: props.defaultEffect } : {}),
-        clear: clearWithPick,
-        picking: { registry },
-      }));
-  scope.onDispose(() => task.dispose());
+  // Picking is always-on. The PickProducer bundles the combined FB
+  // (canvas color + pickId + canvas depth), the id registry, the GPU
+  // metadata mirror, the argmin resolve, and the compiled render task
+  // — see `picking/pickProducer.ts`. The registry is created inside
+  // and exposed back via `onReady`.
+  const producer = createPickProducer(runtime, device, attachment, sceneTree, {
+    view, proj,
+    time: getGlobalTime(),
+    ...(props.transparency !== undefined ? { transparency: props.transparency } : {}),
+    ...(props.defaultEffect !== undefined ? { defaultEffect: props.defaultEffect } : {}),
+    ...(props.clear !== undefined ? { clear: props.clear } : {}),
+    colorAttachmentName: "Colors",
+  });
+  const registry = producer.registry;
+  scope.onDispose(() => producer.dispose());
 
   const dispatcher = new PickDispatcher(
     registry,
@@ -451,64 +397,8 @@ async function initialise(
     () => canvas.getBoundingClientRect(),
     props.tapThresholds,
   );
-  // GPU argmin pick path. A per-id metadata buffer (snap radius +
-  // mode, folding active/noEvents) mirrors the registry; the argmin
-  // kernel finds THE single nearest valid pixel under the cursor and
-  // we read back ~40 B. This replaces the old 33×33 region readback +
-  // CPU spiral walk. The dispatcher then merges this with ONE BVH
-  // centre ray (see pickArbitrate).
-  const pickMetadata = new PickMetadata(device);
-  registry.attachObserver(pickMetadata);
-  scope.onDispose(() => { registry.attachObserver(undefined); pickMetadata.dispose(); });
-  const argmin = createPickArgminCompute(device);
-  scope.onDispose(() => argmin.dispose());
-
-  // Coalescing wrapper: at most one argmin dispatch+readback in flight
-  // (the readback buffer is reused, so concurrent reads would clash).
-  // A request arriving while one is pending replaces any prior pending
-  // one — that caller gets `undefined`, which the dispatcher's seq
-  // counter already drops. Mirrors the old PickRegionReader pacing.
-  let pickInFlight = false;
-  let pickPending: { x: number; y: number; resolve: (r: PickArgminResult | undefined) => void } | undefined;
-  const runArgmin = async (x: number, y: number, resolve: (r: PickArgminResult | undefined) => void): Promise<void> => {
-    pickInFlight = true;
-    try {
-      if (scope.isDisposed) { resolve(undefined); return; }
-      pickMetadata.flush();
-      const tex = AVal.force(pickFb.readbackPickTexture);
-      const view = tex.createView({ label: "pick.argmin.src" });
-      const enc = device.createCommandEncoder({ label: "pick.argmin.frame" });
-      argmin.compute(enc, view, pickMetadata.buffer, x, y, tex.width, tex.height);
-      argmin.copyResult(enc);
-      device.queue.submit([enc.finish()]);
-      resolve(await argmin.read());
-    } catch {
-      resolve(undefined);
-    } finally {
-      pickInFlight = false;
-      const next = pickPending;
-      pickPending = undefined;
-      if (next !== undefined) void runArgmin(next.x, next.y, next.resolve);
-    }
-  };
-  const resolvePixel = (x: number, y: number): Promise<PickArgminResult | undefined> => {
-    if (scope.isDisposed) return Promise.resolve(undefined);
-    if (pickInFlight) {
-      if (pickPending !== undefined) pickPending.resolve(undefined);
-      return new Promise((resolve) => { pickPending = { x, y, resolve }; });
-    }
-    return new Promise((resolve) => { void runArgmin(x, y, resolve); });
-  };
-  const detach = dispatcher.attach(canvas, resolvePixel);
+  const detach = dispatcher.attach(canvas, producer.pickPixel);
   scope.onDispose(detach);
-
-  // For MSAA picking we need a custom resolve compute pass after the
-  // render pass. wombat.rendering's `runFrame` does not expose its
-  // per-frame command encoder, so we submit a SEPARATE encoder right
-  // after `task.run`. This adds one queue submission per frame; an
-  // upstream hook for piggy-backing on the render encoder would be
-  // cleaner (see docs/FUTURE.md).
-  const runResolve = pickFb.maybeRunResolve;
   // Frame statistics for the onBeforeRender/onRendered/onResize hooks.
   let frameIndex = 0;
   let loopStart = -1;
@@ -526,12 +416,7 @@ async function initialise(
     const info = (props.onBeforeRender !== undefined || props.onRendered !== undefined)
       ? frameInfo(now) : undefined;
     if (info !== undefined) props.onBeforeRender?.(info);
-    task.run(outputFb.getValue(token), token);
-    if (runResolve !== undefined) {
-      const enc = device.createCommandEncoder({ label: "pick.resolve.frame" });
-      runResolve(enc);
-      device.queue.submit([enc.finish()]);
-    }
+    producer.run(token);
     // onRendered handlers may transact() (the Aardvark.Dom pattern of a
     // camera controller stepping physics per frame). Marks fired inside
     // this frame eval would race the wrapper aval's outOfDate reset and
