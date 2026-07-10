@@ -27,13 +27,13 @@ declare module "@aardworx/wombat.shader/uniforms" {
 // NOTE the inter-stage color rides as `VtxColor` — the pick-chain
 // finals type the `Colors` port as V4f (the FS output), so a V3f
 // varying under the same name would clash in the fused effect.
-const cityVS = vertex((v: { Positions: V4f; Normals: V3f; Colors: V3f }) => {
+const cityVS = vertex((v: { Positions: V4f; Normals: V3f; Colors: V4f }) => {
   const t = uniform.ModelViewTrafoInv.transpose();
   const n4 = t.mul(new V4f(v.Normals.x, v.Normals.y, v.Normals.z, 0.0));
   return {
     gl_Position: uniform.ViewProjTrafo.mul(v.Positions),
     ViewSpaceNormal: new V3f(n4.x, n4.y, n4.z),
-    VtxColor: v.Colors,
+    VtxColor: new V3f(v.Colors.x, v.Colors.y, v.Colors.z),
   };
 });
 

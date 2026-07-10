@@ -96,12 +96,14 @@ interface Manifest {
 const KINDS = ["buildings", "trees", "ground", "water"] as const;
 type Kind = typeof KINDS[number];
 
-interface CityPart { v0: number; vn: number; kind: Kind; district: number }
+interface CityPart { v0: number; vn: number; c0: number; cn: number; kind: Kind; district: number }
 interface CityScene {
   parts: CityPart[];
   positions: Float32Array;
-  normals: Float32Array;
-  colors: Float32Array;
+  /** Raw oct32 normals (one u32 per vertex) — decoded by the heap VS. */
+  normalsOct: Uint32Array;
+  /** Raw decoupled C4b colors — parts slice via c0/cn (cn=1 = singleton). */
+  colorsC4b: Uint32Array;
   radius: number;
 }
 
@@ -139,25 +141,6 @@ async function fetchJson<T>(url: string): Promise<T> {
   return fetch(`${url}${DATA_V}`).then(r => r.json()) as Promise<T>;
 }
 
-function decodeOct32(packed: Int32Array): Float32Array {
-  const n = packed.length;
-  const out = new Float32Array(n * 3);
-  for (let i = 0; i < n; i++) {
-    const w = packed[i]!;
-    let x = ((w & 0xffff) / 65535) * 2 - 1;
-    let y = (((w >>> 16) & 0xffff) / 65535) * 2 - 1;
-    const z = 1 - Math.abs(x) - Math.abs(y);
-    if (z < 0) {
-      const ox = x;
-      x = (1 - Math.abs(y)) * (ox >= 0 ? 1 : -1);
-      y = (1 - Math.abs(ox)) * (y >= 0 ? 1 : -1);
-    }
-    const il = 1 / Math.hypot(x, y, z);
-    out[i * 3] = x * il; out[i * 3 + 1] = y * il; out[i * 3 + 2] = z * il;
-  }
-  return out;
-}
-
 async function loadCity(): Promise<CityScene> {
   // Relative to the page URL so the bundle works under any prefix.
   const dirs = DISTRICT_LIST.map((n) => `vienna/d0${n}`);
@@ -169,10 +152,11 @@ async function loadCity(): Promise<CityScene> {
   setStatus(`loading districts ${DISTRICT_LIST.join(",")} — ${(totalVerts / 1e6).toFixed(1)} M verts…`);
 
   const positions = new Float32Array(totalVerts * 3);
-  const normals = new Float32Array(totalVerts * 3);
-  const colors = new Float32Array(totalVerts * 3);
+  const normalsOct = new Uint32Array(totalVerts);
+  const colorChunks: Uint32Array[] = [];
   const parts: CityPart[] = [];
   let base = 0;
+  let colorBase = 0;
   let radius = 0;
   for (let di = 0; di < dirs.length; di++) {
     const d = dirs[di]!;
@@ -183,29 +167,35 @@ async function loadCity(): Promise<CityScene> {
     }
     {
       const nrmBuf = await fetchBin(`${d}/normals.bin`);
-      normals.set(decodeOct32(new Int32Array(nrmBuf)), base * 3);
+      normalsOct.set(new Uint32Array(nrmBuf), base);
     }
     {
+      // Colors stay RAW C4b, decoupled — parts address them via c0/cn
+      // (cn=1 singletons stay 4 bytes; the heap broadcasts them).
       const colBuf = await fetchBin(`${d}/colors.bin`);
-      const col = new Uint8Array(colBuf);
+      colorChunks.push(new Uint32Array(colBuf));
       for (const kind of KINDS) {
         for (const p of manifest[kind] ?? []) {
-          const c0 = p.c0 ?? p.v0;
-          const cn = p.cn ?? p.vn;
-          for (let i = 0; i < p.vn; i++) {
-            const ci = (c0 + (cn === 1 ? 0 : i)) * 4;
-            const o = (base + p.v0 + i) * 3;
-            colors[o] = col[ci]! / 255; colors[o + 1] = col[ci + 1]! / 255; colors[o + 2] = col[ci + 2]! / 255;
-          }
-          parts.push({ v0: base + p.v0, vn: p.vn, kind, district: DISTRICT_LIST[di]! });
+          parts.push({
+            v0: base + p.v0, vn: p.vn,
+            c0: colorBase + (p.c0 ?? p.v0), cn: p.cn ?? p.vn,
+            kind, district: DISTRICT_LIST[di]!,
+          });
         }
       }
+      colorBase += colBuf.byteLength / 4;
     }
     radius = Math.max(radius, manifest.radius);
     base += districtVerts[di]!;
     setStatus(`  d0${DISTRICT_LIST[di]} loaded (${(districtVerts[di]! / 1e6).toFixed(1)} M verts)`);
   }
-  return { parts, positions, normals, colors, radius };
+  const colorsC4b = new Uint32Array(colorBase);
+  {
+    let o = 0;
+    for (const c of colorChunks) { colorsC4b.set(c, o); o += c.length; }
+    colorChunks.length = 0;
+  }
+  return { parts, positions, normalsOct, colorsC4b, radius };
 }
 
 // ─── scene ──────────────────────────────────────────────────────────────
@@ -239,12 +229,14 @@ function buildScene(city: CityScene, ctl: OrbitController, proj: import("@aardwo
         elementType: ElementType.V3f,
       })
       .add("Normals", {
-        buffer: AVal.constant(IBuffer.fromHost(city.normals.subarray(p.v0 * 3, (p.v0 + p.vn) * 3))),
-        elementType: ElementType.V3f,
+        // raw oct32 — 4 B/vertex, decoded by the heap VS typeId arm
+        buffer: AVal.constant(IBuffer.fromHost(city.normalsOct.subarray(p.v0, p.v0 + p.vn))),
+        elementType: ElementType.Oct32,
       })
       .add("Colors", {
-        buffer: AVal.constant(IBuffer.fromHost(city.colors.subarray(p.v0 * 3, (p.v0 + p.vn) * 3))),
-        elementType: ElementType.V3f,
+        // raw C4b, decoupled: cn=1 = 4-byte singleton broadcast
+        buffer: AVal.constant(IBuffer.fromHost(city.colorsC4b.subarray(p.c0, p.c0 + p.cn))),
+        elementType: ElementType.C4b,
       });
     return (
       <Sg
