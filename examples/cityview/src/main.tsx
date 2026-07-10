@@ -78,10 +78,11 @@ const AO_INTENSITY = P.get("aoi") !== null ? parseFloat(P.get("aoi")!) : 1.4;
 const DISTRICT_LIST: number[] = (() => {
   const s = P.get("districts");
   if (s === null) return [1];
-  if (s.includes(",")) return [...new Set(s.split(",").map(x => Math.min(9, Math.max(1, parseInt(x, 10) | 0))))];
-  const n = Math.min(9, Math.max(1, parseInt(s, 10) | 0));
+  if (s.includes(",")) return [...new Set(s.split(",").map(x => Math.min(23, Math.max(1, parseInt(x, 10) | 0))))];
+  const n = Math.min(23, Math.max(1, parseInt(s, 10) | 0));
   return Array.from({ length: n }, (_, i) => i + 1);
 })();
+const DNAME = (n: number): string => `d${String(n).padStart(2, "0")}`;
 
 // ─── loader (renderbench's loadD19, expanded-f32 path) ─────────────────
 
@@ -145,7 +146,7 @@ interface DistrictData {
 
 async function fetchManifests(): Promise<{ manifests: Manifest[]; totalVerts: number; radius: number }> {
   const manifests: Manifest[] = [];
-  for (const n of DISTRICT_LIST) manifests.push(await fetchJson<Manifest>(`vienna/d0${n}/manifest.json`));
+  for (const n of DISTRICT_LIST) manifests.push(await fetchJson<Manifest>(`vienna/${DNAME(n)}/manifest.json`));
   const totalVerts = manifests
     .map((m) => KINDS.flatMap(k => [...(m[k] ?? [])]).reduce((a, p) => Math.max(a, p.v0 + p.vn), 0))
     .reduce((a, b) => a + b, 0);
@@ -155,7 +156,7 @@ async function fetchManifests(): Promise<{ manifests: Manifest[]; totalVerts: nu
 
 async function fetchDistrict(di: number, manifest: Manifest): Promise<DistrictData> {
   const n = DISTRICT_LIST[di]!;
-  const d = `vienna/d0${n}`;
+  const d = `vienna/${DNAME(n)}`;
   const positions = new Float32Array(await fetchBin(`${d}/positions.bin`));
   const normalsOct = new Uint32Array(await fetchBin(`${d}/normals.bin`));
   const colorsC4b = new Uint32Array(await fetchBin(`${d}/colors.bin`));
@@ -363,7 +364,7 @@ async function main(): Promise<void> {
           };
         });
       }
-      setStatus(`d0${dd.district} in (${fmt.format(leafCount)} parts) — ${di + 1}/${DISTRICT_LIST.length}`);
+      setStatus(`${DNAME(dd.district)} in (${fmt.format(leafCount)} parts) — ${di + 1}/${DISTRICT_LIST.length}`);
       // give GC + staging a breather between districts
       await new Promise((r) => setTimeout(r, 50));
     }
