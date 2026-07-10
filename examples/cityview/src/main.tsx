@@ -44,6 +44,11 @@ window.addEventListener("unhandledrejection", (e) => setStatus("rejected: " + (e
 const P = new URLSearchParams(location.search);
 const PART_CAP = P.get("parts") !== null ? parseInt(P.get("parts")!, 10) | 0 : 0;
 const AO = P.get("ao") !== "0";
+// Mobile renders at dpr=1 (a 3x iPhone framebuffer is 9x the pixels for
+// no perceptible gain in a city view); desktop stays native. ?dpr= overrides.
+const DPR = P.get("dpr") !== null
+  ? Math.max(0.25, parseFloat(P.get("dpr")!))
+  : (typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches ? 1 : (window.devicePixelRatio ?? 1));
 const AO_RADIUS = P.get("aor") !== null ? parseFloat(P.get("aor")!) : 4;
 const AO_INTENSITY = P.get("aoi") !== null ? parseFloat(P.get("aoi")!) : 1.4;
 const DISTRICT_LIST: number[] = (() => {
@@ -330,6 +335,8 @@ async function main(): Promise<void> {
     frames: () => frames,
     center: () => { const c = ctl.state.value.center; return [c.x, c.y, c.z]; },
     radius: () => ctl.state.value.radius,
+    flyTo: (x: number, y: number, z: number) => ctl.flyTo(new V3d(x, y, z)),
+    setRadius: (r: number) => { transact(() => { ctl.state.value = { ...ctl.state.value, radius: r, targetRadius: r }; }); },
     bbox: { min: [mnx, mny, mnz], max: [mxx, mxy, mxz] },
     sceneRadius: city.radius,
     view: () => AVal.force(ctl.view).forward.toString(),
@@ -340,6 +347,7 @@ async function main(): Promise<void> {
       device={device}
       runtime={runtime}
       scene={scene}
+      attach={{ devicePixelRatio: DPR }}
       onRendered={onRendered}
       onReady={({ canvas, time, device, pickAt }) => {
         void device.lost.then((info) => setStatus(`DEVICE LOST: ${info.reason} ${info.message}`, true));
