@@ -208,10 +208,16 @@ function districtLeaves(dd: DistrictData): SgNode[] {
         buffer: AVal.constant(IBuffer.fromHost(dd.colorsC4b.subarray(p.c0, p.c0 + p.cn))),
         elementType: ElementType.C4b,
       });
+    // No hover highlight on the floor/water — a whole grid tile
+    // lighting up is noise. They stay pickable (fly-to and the
+    // pan/rotate anchors need ground hits) and tappable.
+    const hover = p.kind === "ground" || p.kind === "water" ? {} : {
+      OnPointerEnter: (e: SceneEvent) => { transact(() => { selectedPick.value = e.pickId; }); },
+      OnPointerLeave: () => { transact(() => { selectedPick.value = 0; }); },
+    };
     return (
       <Sg
-        OnPointerEnter={(e: SceneEvent) => { transact(() => { selectedPick.value = e.pickId; }); }}
-        OnPointerLeave={() => { transact(() => { selectedPick.value = 0; }); }}
+        {...hover}
         OnTap={(e: SceneEvent) => showInfo(p, e.pickId)}
       >
         {Sg.leaf({ vertexAttributes, drawCall: AVal.constant(dc) })}
