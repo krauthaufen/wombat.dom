@@ -77,6 +77,12 @@ export {
   type PickResolveCompute,
 } from "./pickResolveCompute.js";
 
+export type {
+  IPickSubContext,
+  IRenderPickContext,
+  PortalPickHit,
+} from "./pickContext.js";
+
 export {
   createPickProducer,
   type PickProducer,

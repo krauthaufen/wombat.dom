@@ -70,6 +70,20 @@ export {
 } from "./renderControl.js";
 
 export {
+  renderSceneTo,
+  renderToPickable,
+  type RenderSceneToOptions,
+  type RenderSceneToResult,
+  type RenderToPickableResult,
+} from "./renderTo.js";
+
+export type {
+  IPickSubContext,
+  IRenderPickContext,
+  PortalPickHit,
+} from "./picking/pickContext.js";
+
+export {
   type LookAtOptions,
   type PerspectiveOptions,
   type OrthographicOptions,

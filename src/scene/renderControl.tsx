@@ -541,12 +541,12 @@ export function _tickRenderControlTime(): void { tickGlobalTime(); }
 // RenderControlBuilderState.Append's `tryPick` behaviour.
 // ---------------------------------------------------------------------------
 
-interface SniffResult {
+export interface SniffResult {
   view: aval<Trafo3d> | undefined;
   proj: aval<Trafo3d> | undefined;
 }
 
-function sniffViewProj(node: SgNode): SniffResult {
+export function sniffViewProj(node: SgNode): SniffResult {
   const out: SniffResult = { view: undefined, proj: undefined };
   let cur: SgNode = node;
   // Walk through scope nodes that pass to a single child. `Delay`
