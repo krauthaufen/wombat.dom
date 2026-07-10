@@ -81,6 +81,12 @@ interface CityScene {
   radius: number;
 }
 
+// Data-version cache-buster: the vienna files keep stable URLs, so a
+// redeployed ASSET (same names, new bytes) would otherwise be served
+// from the browser's HTTP cache indefinitely (nginx sends no
+// cache-control). Bump on every data redeploy.
+const DATA_V = "?v=2";
+
 async function gunzipMaybe(r: Response): Promise<ArrayBuffer> {
   const buf = await r.arrayBuffer();
   const u8 = new Uint8Array(buf, 0, 2);
@@ -91,19 +97,19 @@ async function gunzipMaybe(r: Response): Promise<ArrayBuffer> {
   return buf;
 }
 async function fetchBin(url: string): Promise<ArrayBuffer> {
-  const gz = await fetch(`${url}.gz`);
+  const gz = await fetch(`${url}.gz${DATA_V}`);
   if (gz.ok) return gunzipMaybe(gz);
-  const r = await fetch(url);
+  const r = await fetch(`${url}${DATA_V}`);
   if (!r.ok) throw new Error(`fetch ${url}: ${r.status}`);
   return r.arrayBuffer();
 }
 async function fetchJson<T>(url: string): Promise<T> {
-  const gz = await fetch(`${url}.gz`);
+  const gz = await fetch(`${url}.gz${DATA_V}`);
   if (gz.ok) {
     const buf = await gunzipMaybe(gz);
     return JSON.parse(new TextDecoder().decode(buf)) as T;
   }
-  return fetch(url).then(r => r.json()) as Promise<T>;
+  return fetch(`${url}${DATA_V}`).then(r => r.json()) as Promise<T>;
 }
 
 function decodeOct32(packed: Int32Array): Float32Array {
