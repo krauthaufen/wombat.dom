@@ -109,7 +109,7 @@ interface CityScene {
 // redeployed ASSET (same names, new bytes) would otherwise be served
 // from the browser's HTTP cache indefinitely (nginx sends no
 // cache-control). Bump on every data redeploy.
-const DATA_V = "?v=2";
+const DATA_V = "?v=3";
 
 async function gunzipMaybe(r: Response): Promise<ArrayBuffer> {
   const buf = await r.arrayBuffer();
@@ -120,16 +120,19 @@ async function gunzipMaybe(r: Response): Promise<ArrayBuffer> {
   }
   return buf;
 }
+// SPA dev servers answer missing files with index.html (200) — treat
+// an html content-type as a miss so the raw fallback still runs.
+const isReal = (r: Response): boolean => r.ok && !(r.headers.get("content-type") ?? "").includes("html");
 async function fetchBin(url: string): Promise<ArrayBuffer> {
   const gz = await fetch(`${url}.gz${DATA_V}`);
-  if (gz.ok) return gunzipMaybe(gz);
+  if (isReal(gz)) return gunzipMaybe(gz);
   const r = await fetch(`${url}${DATA_V}`);
   if (!r.ok) throw new Error(`fetch ${url}: ${r.status}`);
   return r.arrayBuffer();
 }
 async function fetchJson<T>(url: string): Promise<T> {
   const gz = await fetch(`${url}.gz${DATA_V}`);
-  if (gz.ok) {
+  if (isReal(gz)) {
     const buf = await gunzipMaybe(gz);
     return JSON.parse(new TextDecoder().decode(buf)) as T;
   }
