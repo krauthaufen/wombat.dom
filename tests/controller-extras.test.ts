@@ -121,7 +121,7 @@ describe("FreeFlyController.attach({ virtualSticks })", () => {
 });
 
 describe("OrbitController — pick-anchored navigation", () => {
-  it("rotate-down re-centres the orbit on the picked point WITHOUT moving the eye", async () => {
+  it("rotate drag pivots the rig around the picked point; center only swings, no snap", async () => {
     const ctl = OrbitController.create({ center: V3d.zero, radius: 5, phi: 0.3, theta: 0.4 });
     const target = makeTarget();
     const time = cval(performance.now());
@@ -130,21 +130,29 @@ describe("OrbitController — pick-anchored navigation", () => {
       picker: async () => hit,
     });
 
-    const eyeBefore = deriveView(ctl.state.value).eye;
-    // Rotate-button down (L). The pick anchor resolves on a microtask.
+    const before = ctl.state.value;
+    const eyeBefore = deriveView(before).eye;
+    const pivotDistBefore = eyeBefore.sub(hit).length();
+
+    // Rotate-button down (L). Anchor resolves on a microtask; the DOWN
+    // itself must not touch the state (no snap).
     firePointer(target, "pointerdown", { pointerId: 1, button: 0, clientX: 100, clientY: 50, pointerType: "mouse" });
     for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(ctl.state.value.center.sub(before.center).length()).toBeLessThan(1e-12);
+    expect(deriveView(ctl.state.value).eye.sub(eyeBefore).length()).toBeLessThan(1e-12);
 
+    // Drag: the rig rotates rigidly around the pivot — the eye keeps
+    // its distance to the pivot AND to the center (radius unchanged);
+    // the center swings around the pivot.
+    firePointer(target, "pointermove", { pointerId: 1, button: 0, clientX: 160, clientY: 70, pointerType: "mouse" });
     const s = ctl.state.value;
-    expect(s.center.sub(hit).length()).toBeLessThan(1e-9);
     const eyeAfter = deriveView(s).eye;
-    expect(eyeAfter.sub(eyeBefore).length()).toBeLessThan(1e-9);
-    // radius/angles retargeted consistently (no in-flight animation).
-    expect(s.targetRadius).toBeCloseTo(s.radius, 12);
-    expect(s.targetPhi).toBeCloseTo(s.phi, 12);
-    expect(s.targetTheta).toBeCloseTo(s.theta, 12);
+    expect(Math.abs(eyeAfter.sub(hit).length() - pivotDistBefore)).toBeLessThan(1e-9);
+    expect(Math.abs(s.radius - before.radius)).toBeLessThan(1e-9);
+    expect(s.center.sub(before.center).length()).toBeGreaterThan(1e-3);
+    expect(s.phi).not.toBeCloseTo(before.phi, 6);
 
-    firePointer(target, "pointerup", { pointerId: 1, button: 0, clientX: 100, clientY: 50, pointerType: "mouse" });
+    firePointer(target, "pointerup", { pointerId: 1, button: 0, clientX: 160, clientY: 70, pointerType: "mouse" });
     detach();
   });
 

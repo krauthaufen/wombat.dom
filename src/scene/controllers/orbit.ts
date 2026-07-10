@@ -480,34 +480,12 @@ export class OrbitController {
     // to the orbit radius before the first anchored pan).
     let lastPanDepth = Math.max(this.state.value.radius, 0.3);
 
-    // Re-centre the orbit on `hit` WITHOUT moving the camera: keep the
-    // eye fixed and recompute radius/phi/theta from eye−hit. Subsequent
-    // rotation then pivots around the picked point. (phi/theta are
-    // world-Z spherical coords — matches deriveView's `dir`.)
-    const recenterKeepEye = (hit: V3d): void => {
-      this.update(s => {
-        const v = deriveView(s);
-        const d = v.eye.sub(hit);
-        const radius = Math.hypot(d.x, d.y, d.z);
-        if (!(radius > s.config.radiusRange.x)) return s;
-        const dirN = d.mul(1 / radius);
-        const theta = Math.asin(clamp(-1, 1, dirN.z));
-        const phi = Math.atan2(dirN.y, dirN.x);
-        return {
-          ...s,
-          center: hit,
-          radius, targetRadius: radius,
-          phi, targetPhi: phi,
-          theta: clamp(s.config.thetaRange.x, s.config.thetaRange.y, theta),
-          targetTheta: clamp(s.config.thetaRange.x, s.config.thetaRange.y, theta),
-          shift: new V2d(0, 0),
-          centerAnimation: undefined,
-          panAnimation: undefined,
-          locationAnimation: undefined,
-          userModifiedCenter: true,
-          lastRenderMs: undefined,
-        };
-      });
+    // Rodrigues rotation of `v` about unit axis `a` by `ang`.
+    const rotAxis = (v: V3d, a: V3d, ang: number): V3d => {
+      const c = Math.cos(ang), si = Math.sin(ang);
+      const cross = a.cross(v);
+      const dot = a.dot(v);
+      return v.mul(c).add(cross.mul(si)).add(a.mul(dot * (1 - c)));
     };
 
     // World point on the cursor ray at view-depth `zA` (< 0), using the
@@ -544,18 +522,18 @@ export class OrbitController {
       e.preventDefault();
 
       // Pick-anchored navigation: resolve the world point under the
-      // cursor. Rotate drags re-centre the orbit on it (camera fixed);
-      // pan drags anchor it to the pointer.
+      // cursor and stash it as the drag's anchor. Rotate drags pivot
+      // the whole rig around it (no snap — orientation preserved);
+      // pan drags keep it glued to the pointer. Background grabs
+      // leave the anchor unset → classic center-based behaviour.
       if (opts.picker !== undefined && pointers.size === 1) {
         const id = e.pointerId;
-        const isRotate = !isMouse || e.button === this.state.value.config.rotateButton;
         const isPan = isMouse && e.button === this.state.value.config.panButton;
         void opts.picker(e.clientX, e.clientY).then((hit) => {
           const info = pointers.get(id);
           if (info === undefined || hit === undefined) return;
-          if (isRotate && pointers.size === 1) recenterKeepEye(hit);
-          else if (isPan) {
-            info.anchor = hit;
+          info.anchor = hit;
+          if (isPan) {
             const v = deriveView(this.state.value);
             const vt = Trafo3d.viewTrafoRH(v.eye, v.up, v.forward);
             const zA = vt.forward.transformPos(hit).z;
@@ -600,6 +578,40 @@ export class OrbitController {
             const dtheta = dy * 0.01 * s.config.moveSensitivity;
             if (Math.abs(dphi) < 1e-8 && Math.abs(dtheta) < 1e-8) return s;
             const newStarts = new Map(s.dragStarts).set(e.pointerId, { pos: cur, button: start.button });
+            // Pick-anchored rotate: rigidly rotate the WHOLE rig (eye,
+            // orientation, center) around the grabbed world point — the
+            // center is not re-seated, it just swings along. Applying
+            // the same dphi/dtheta to the angles and rotating `center`
+            // around the pivot by Rz(dphi)·R_right(−dtheta) keeps
+            // eye = center + dir(phi,theta)·radius exact, so there is
+            // no visual snap at any step. (Direct, unsprung — a drag
+            // tracks the pointer.)
+            const pivot = pointers.get(e.pointerId)?.anchor;
+            if (pivot !== undefined) {
+              const newTheta = clamp(s.config.thetaRange.x, s.config.thetaRange.y, s.theta + dtheta);
+              const dthetaEff = newTheta - s.theta;
+              const newPhi = (s.phi + dphi) % TWO_PI;
+              const a = new V3d(-Math.sin(s.phi), Math.cos(s.phi), 0); // right axis
+              const v0 = s.center.sub(pivot);
+              const v1 = rotAxis(v0, a, -dthetaEff);
+              const v2 = new V3d(
+                v1.x * Math.cos(dphi) - v1.y * Math.sin(dphi),
+                v1.x * Math.sin(dphi) + v1.y * Math.cos(dphi),
+                v1.z,
+              );
+              return {
+                ...s,
+                dragStarts: newStarts,
+                userModifiedAngles: true,
+                userModifiedCenter: true,
+                center: pivot.add(v2),
+                phi: newPhi, targetPhi: newPhi,
+                theta: newTheta, targetTheta: newTheta,
+                centerAnimation: undefined,
+                panAnimation: undefined,
+                locationAnimation: undefined,
+              };
+            }
             return {
               ...s,
               dragStarts: newStarts,
