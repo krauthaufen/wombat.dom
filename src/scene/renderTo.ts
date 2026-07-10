@@ -285,7 +285,7 @@ export function renderToPickable(
     registry: producer.registry,
     async pickAt(x: number, y: number): Promise<PortalPickHit | undefined> {
       if (disposed) return undefined;
-      const result = await producer.pickPixel(x, y);
+      const result = await producer.pickPixel(x, y, false);
       if (disposed) return undefined;
       // AVal.force OK: pick-time snapshot — "now" is the caller's tick
       // (same policy as the dispatcher's resolve).

@@ -13,6 +13,7 @@ import {
   FreeFlyController,
   freeFlyIsAnimating,
   OrbitController,
+  deriveView,
 } from "../src/scene/index.js";
 
 function makeTarget(): HTMLElement {
@@ -119,29 +120,56 @@ describe("FreeFlyController.attach({ virtualSticks })", () => {
   });
 });
 
-describe("OrbitController — pick-aware MMB-up snap", () => {
-  it("MMB-up triggers the picker; after the animation settles, center === picked V3d", async () => {
-    const ctl = OrbitController.create({ center: V3d.zero, radius: 5, phi: 0, theta: 0 });
+describe("OrbitController — pick-anchored navigation", () => {
+  it("rotate-down re-centres the orbit on the picked point WITHOUT moving the eye", async () => {
+    const ctl = OrbitController.create({ center: V3d.zero, radius: 5, phi: 0.3, theta: 0.4 });
     const target = makeTarget();
     const time = cval(performance.now());
-    const hit = new V3d(7, 8, 9);
+    const hit = new V3d(1.5, -0.5, 0.25);
     const detach = ctl.attach(target, time, {
       picker: async () => hit,
     });
 
-    // MMB down + up — no movement.
-    firePointer(target, "pointerdown", { pointerId: 1, button: 1, clientX: 100, clientY: 50, pointerType: "mouse" });
-    firePointer(target, "pointerup", { pointerId: 1, button: 1, clientX: 100, clientY: 50, pointerType: "mouse" });
-    // Picker promise resolves on next microtask flush.
+    const eyeBefore = deriveView(ctl.state.value).eye;
+    // Rotate-button down (L). The pick anchor resolves on a microtask.
+    firePointer(target, "pointerdown", { pointerId: 1, button: 0, clientX: 100, clientY: 50, pointerType: "mouse" });
     for (let i = 0; i < 5; i++) await Promise.resolve();
-    expect(ctl.state.value.centerAnimation).not.toBeUndefined();
 
-    // Drive animation past stopTime by ticking with synthetic now-ms.
-    const start = ctl.state.value.centerAnimation!.startTimeMs;
-    for (let t = 0; t <= 400; t += 16) ctl.tick(start + t);
+    const s = ctl.state.value;
+    expect(s.center.sub(hit).length()).toBeLessThan(1e-9);
+    const eyeAfter = deriveView(s).eye;
+    expect(eyeAfter.sub(eyeBefore).length()).toBeLessThan(1e-9);
+    // radius/angles retargeted consistently (no in-flight animation).
+    expect(s.targetRadius).toBeCloseTo(s.radius, 12);
+    expect(s.targetPhi).toBeCloseTo(s.phi, 12);
+    expect(s.targetTheta).toBeCloseTo(s.theta, 12);
 
-    expect(ctl.state.value.centerAnimation).toBeUndefined();
-    expect(ctl.state.value.center.sub(hit).length()).toBeLessThan(1e-3);
+    firePointer(target, "pointerup", { pointerId: 1, button: 0, clientX: 100, clientY: 50, pointerType: "mouse" });
+    detach();
+  });
+
+  it("pan-down anchors without re-centring; background rotate keeps the center", async () => {
+    const ctl = OrbitController.create({ center: new V3d(2, 2, 2), radius: 5, phi: 0, theta: 0.3 });
+    const target = makeTarget();
+    const time = cval(performance.now());
+    let answer: V3d | undefined = new V3d(9, 9, 9);
+    const detach = ctl.attach(target, time, {
+      picker: async () => answer,
+    });
+
+    // Pan-button down (MMB): the hit becomes the pan anchor — the
+    // orbit center must NOT jump.
+    firePointer(target, "pointerdown", { pointerId: 1, button: 1, clientX: 100, clientY: 50, pointerType: "mouse" });
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(ctl.state.value.center.sub(new V3d(2, 2, 2)).length()).toBeLessThan(1e-9);
+    firePointer(target, "pointerup", { pointerId: 1, button: 1, clientX: 100, clientY: 50, pointerType: "mouse" });
+
+    // Background rotate (picker misses): center unchanged.
+    answer = undefined;
+    firePointer(target, "pointerdown", { pointerId: 2, button: 0, clientX: 100, clientY: 50, pointerType: "mouse" });
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(ctl.state.value.center.sub(new V3d(2, 2, 2)).length()).toBeLessThan(1e-9);
+    firePointer(target, "pointerup", { pointerId: 2, button: 0, clientX: 100, clientY: 50, pointerType: "mouse" });
     detach();
   });
 });

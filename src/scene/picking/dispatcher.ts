@@ -100,7 +100,7 @@ export interface TapThresholds {
  * `undefined` when the GPU read fails/was skipped — the dispatcher then
  * falls back to a BVH-only centre-ray resolve.
  */
-export type ResolvePixel = (x: number, y: number) => Promise<PickArgminResult | undefined>;
+export type ResolvePixel = (x: number, y: number, coalesce?: boolean) => Promise<PickArgminResult | undefined>;
 
 /**
  * Snapshot of the most-recent move for synthetic-move replay on
@@ -270,7 +270,11 @@ export class PickDispatcher implements SceneEventDispatch {
       const devX = Math.floor(cssX * sx);
       const devY = Math.floor(cssY * sy);
 
-      void resolvePixel(devX, devY).then(async (result) => {
+      // Moves flood and may be coalesced away; discrete events (down/
+      // up/click) must always resolve — a double-click's first UP
+      // otherwise loses its hit and the tap latch never arms.
+      const coalesce = kind === "OnPointerMove";
+      void resolvePixel(devX, devY, coalesce).then(async (result) => {
         if (seq < this.lastSettledSeq) return;
         const hit = await this.resolve(result, devX, devY);
         // Portal recursion awaited — a newer event may have settled
@@ -747,8 +751,21 @@ export class PickDispatcher implements SceneEventDispatch {
       if (kind === "OnPointerMove") this.applyCursor(undefined);
       if (kind === "OnPointerMove") this.cancelHover();
       // Pointerup with no hit can't synthesise a tap (no scope to
-      // dispatch to) — clear the press so it can't pair later.
-      if (kind === "OnPointerUp") this.cancelPress(pointerId);
+      // dispatch to), but a QUALIFYING hitless up still arms the
+      // double-tap latch — the second tap of a double-click must not
+      // depend on the first one's (possibly dropped) resolution.
+      if (kind === "OnPointerUp") {
+        const press = this.presses.get(pointerId);
+        if (press !== undefined) {
+          const dt = Date.now() - press.downAt;
+          const mdx = cssX - press.downX;
+          const mdy = cssY - press.downY;
+          if (dt <= this.tTapMaxDuration && mdx * mdx + mdy * mdy <= this.tTapMaxMove * this.tTapMaxMove) {
+            this.lastTap = { at: Date.now(), x: press.downX, y: press.downY, pickId: 0 };
+          }
+        }
+        this.cancelPress(pointerId);
+      }
       // A click landing on no scope clears focus.
       if (kind === "OnClick") this.registry.clearFocus();
       return;

@@ -14,7 +14,7 @@ import {
   AVal, cval, transact, avalAddCallback,
   type aval, type ChangeableValue, type IDisposable,
 } from "@aardworx/wombat.adaptive";
-import { Trafo3d, V2d, V3d } from "@aardworx/wombat.base";
+import { Trafo3d, V2d, V3d, V4d } from "@aardworx/wombat.base";
 
 // ---------------------------------------------------------------------------
 // Animation kinds + easings
@@ -117,6 +117,12 @@ export interface OrbitConfig {
    */
   readonly freeMovePan: boolean;
   /**
+   * Wheel behaviour: `"dolly"` (default) moves the rig forward along
+   * the view direction; `"radius"` zooms the camera toward the FIXED
+   * orbit center (classic orbit zoom — the center never moves).
+   */
+  readonly wheelZoom: "dolly" | "radius";
+  /**
    * Per-axis spring constants for the integrator. When undefined, a
    * uniform `speed` is used for every axis (back-compat with pre-port
    * behaviour).
@@ -125,6 +131,7 @@ export interface OrbitConfig {
 }
 
 export const OrbitConfigDefault: OrbitConfig = {
+  wheelZoom: "dolly",
   radiusRange: new V2d(0.1, 40_000_000),
   thetaRange: new V2d(-Math.PI / 2 + 1e-4, Math.PI / 2 - 1e-4),
   moveSensitivity: 0.5,
@@ -340,11 +347,22 @@ export interface OrbitAttachOptions {
   /** Optional pick callback for depth-aware pan. Not currently used by the controller core, kept for API parity. */
   pickDepth?: (clientX: number, clientY: number) => number | undefined;
   /**
-   * Optional world-space picker. When set, releasing the pan-button
-   * (MMB by default) re-centres the orbit on the world-space hit at
-   * the canvas centre. Animated over ~250 ms with QuadInOut easing.
+   * Optional world-space picker — enables pick-anchored navigation:
+   *   - starting a ROTATE drag re-centres the orbit on the world hit
+   *     under the cursor (camera stays put; background keeps the
+   *     current center), so rotation pivots around what you grabbed;
+   *   - starting a PAN drag anchors the hit point to the cursor —
+   *     with `proj` provided the pan is pixel-perfect (the grabbed
+   *     point follows the pointer exactly; background pans at the
+   *     last known pick distance).
    */
   picker?: (clientX: number, clientY: number) => Promise<V3d | undefined>;
+  /**
+   * Projection trafo of the viewport this controller drives. Required
+   * for pixel-perfect pan (unprojecting the cursor at the anchor's
+   * depth); without it pan falls back to the radius-scaled heuristic.
+   */
+  proj?: aval<Trafo3d>;
 }
 
 export class OrbitController {
@@ -354,8 +372,10 @@ export class OrbitController {
   readonly forward: aval<V3d>;
 
   constructor(initial?: OrbitState | OrbitInitial) {
+    // `dragStarts` only exists on a full OrbitState — an OrbitInitial
+    // with a `config` override must NOT be misclassified as one.
     const s0: OrbitState =
-      initial && "phi" in initial && "theta" in initial && "radius" in initial && "config" in initial
+      initial && "dragStarts" in initial
         ? (initial as OrbitState)
         : defaultOrbitState(initial as OrbitInitial | undefined);
     this.state = cval(s0);
@@ -454,8 +474,61 @@ export class OrbitController {
     // Pointer tracking — distinct from F# state because mouse + touch
     // both flow through PointerEvents in the browser. We still feed the
     // F# `dragStarts` map equivalent via the state's MMB/L button hooks.
-    interface PtrInfo { x: number; y: number; type: string; button: number }
+    interface PtrInfo { x: number; y: number; type: string; button: number; anchor?: V3d }
     const pointers = new Map<number, PtrInfo>();
+    // Last known pick distance — background pans reuse it (falls back
+    // to the orbit radius before the first anchored pan).
+    let lastPanDepth = Math.max(this.state.value.radius, 0.3);
+
+    // Re-centre the orbit on `hit` WITHOUT moving the camera: keep the
+    // eye fixed and recompute radius/phi/theta from eye−hit. Subsequent
+    // rotation then pivots around the picked point. (phi/theta are
+    // world-Z spherical coords — matches deriveView's `dir`.)
+    const recenterKeepEye = (hit: V3d): void => {
+      this.update(s => {
+        const v = deriveView(s);
+        const d = v.eye.sub(hit);
+        const radius = Math.hypot(d.x, d.y, d.z);
+        if (!(radius > s.config.radiusRange.x)) return s;
+        const dirN = d.mul(1 / radius);
+        const theta = Math.asin(clamp(-1, 1, dirN.z));
+        const phi = Math.atan2(dirN.y, dirN.x);
+        return {
+          ...s,
+          center: hit,
+          radius, targetRadius: radius,
+          phi, targetPhi: phi,
+          theta: clamp(s.config.thetaRange.x, s.config.thetaRange.y, theta),
+          targetTheta: clamp(s.config.thetaRange.x, s.config.thetaRange.y, theta),
+          shift: new V2d(0, 0),
+          centerAnimation: undefined,
+          panAnimation: undefined,
+          locationAnimation: undefined,
+          userModifiedCenter: true,
+          lastRenderMs: undefined,
+        };
+      });
+    };
+
+    // World point on the cursor ray at view-depth `zA` (< 0), using the
+    // CURRENT camera. Pixel-perfect pan moves the rig by
+    // `at(prev) − at(cur)` so the anchored point follows the pointer.
+    const worldAtDepth = (s: OrbitState, cssX: number, cssY: number, zA: number): V3d | undefined => {
+      if (opts.proj === undefined) return undefined;
+      const rect = target.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return undefined;
+      const v = deriveView(s);
+      const vt = Trafo3d.viewTrafoRH(v.eye, v.up, v.forward);
+      const projInv = AVal.force(opts.proj).backward;
+      const ndcX = 2 * (cssX - rect.left) / rect.width - 1;
+      const ndcY = 1 - 2 * (cssY - rect.top) / rect.height;
+      const v4 = projInv.transform(new V4d(ndcX, ndcY, 0.5, 1));
+      if (v4.w === 0) return undefined;
+      const pv = new V3d(v4.x / v4.w, v4.y / v4.w, v4.z / v4.w);
+      if (pv.z >= -1e-9) return undefined;
+      const t = zA / pv.z;
+      return vt.backward.transformPos(pv.mul(t));
+    };
 
     const onPointerDown = (e: PointerEvent): void => {
       const isMouse = e.pointerType === "mouse";
@@ -469,6 +542,27 @@ export class OrbitController {
       }));
       (target as Element).setPointerCapture?.(e.pointerId);
       e.preventDefault();
+
+      // Pick-anchored navigation: resolve the world point under the
+      // cursor. Rotate drags re-centre the orbit on it (camera fixed);
+      // pan drags anchor it to the pointer.
+      if (opts.picker !== undefined && pointers.size === 1) {
+        const id = e.pointerId;
+        const isRotate = !isMouse || e.button === this.state.value.config.rotateButton;
+        const isPan = isMouse && e.button === this.state.value.config.panButton;
+        void opts.picker(e.clientX, e.clientY).then((hit) => {
+          const info = pointers.get(id);
+          if (info === undefined || hit === undefined) return;
+          if (isRotate && pointers.size === 1) recenterKeepEye(hit);
+          else if (isPan) {
+            info.anchor = hit;
+            const v = deriveView(this.state.value);
+            const vt = Trafo3d.viewTrafoRH(v.eye, v.up, v.forward);
+            const zA = vt.forward.transformPos(hit).z;
+            if (zA < -1e-6) lastPanDepth = -zA;
+          }
+        });
+      }
     };
 
     const onPointerUp = (e: PointerEvent): void => {
@@ -482,31 +576,7 @@ export class OrbitController {
         return { ...s, dragStarts: m, lastRenderMs: undefined };
       });
       (target as Element).releasePointerCapture?.(e.pointerId);
-
-      // Pick-aware MMB-up snap: ask the picker for the world-space hit
-      // at the centre of the canvas; if a hit comes back, animate
-      // `center` to it over 250 ms (QuadInOut).
-      if (wasPan && opts.picker !== undefined) {
-        const rect = target.getBoundingClientRect();
-        const cx = rect.left + rect.width / 2;
-        const cy = rect.top + rect.height / 2;
-        void opts.picker(cx, cy).then((hit) => {
-          if (hit === undefined) return;
-          const now = performance.now();
-          this.update(s => ({
-            ...s,
-            userModifiedCenter: true,
-            centerAnimation: {
-              kind: Anim.QuadInOut,
-              startTimeMs: now,
-              stopTimeMs: now + 250,
-              startValue: s.center,
-              stopValue: hit,
-            },
-            lastRenderMs: undefined,
-          }));
-        });
-      }
+      void wasPan; // pick anchoring happens at pointer-DOWN now
     };
 
     const onPointerMove = (e: PointerEvent): void => {
@@ -538,6 +608,32 @@ export class OrbitController {
               targetTheta: clamp(s.config.thetaRange.x, s.config.thetaRange.y, s.targetTheta + dtheta),
             };
           } else if (isPan) {
+            // Pixel-perfect pan: keep the anchored world point (or the
+            // last known pick distance for background grabs) glued to
+            // the pointer. Falls back to the radius-scaled heuristic
+            // when no `proj` was provided.
+            if (opts.proj !== undefined) {
+              const info = pointers.get(e.pointerId);
+              let zA = -lastPanDepth;
+              if (info?.anchor !== undefined) {
+                const v = deriveView(s);
+                const vt = Trafo3d.viewTrafoRH(v.eye, v.up, v.forward);
+                const az = vt.forward.transformPos(info.anchor).z;
+                if (az < -1e-6) { zA = az; lastPanDepth = -az; }
+              }
+              const wPrev = worldAtDepth(s, start.pos.x, start.pos.y, zA);
+              const wCur = worldAtDepth(s, cur.x, cur.y, zA);
+              if (wPrev !== undefined && wCur !== undefined) {
+                return {
+                  ...s,
+                  dragStarts: new Map(s.dragStarts).set(e.pointerId, { pos: cur, button: start.button }),
+                  userModifiedCenter: false,
+                  centerAnimation: undefined,
+                  center: s.center.add(wPrev.sub(wCur)),
+                  lockedToScene: false,
+                };
+              }
+            }
             const v = deriveView(s);
             const r = Math.max(s.radius, 0.3);
             const dyEff = s.config.freeMovePan ? dy : 0;
@@ -590,7 +686,7 @@ export class OrbitController {
       const delta = e.deltaY / 120;
       const shift = e.shiftKey;
       this.update(s => {
-        if (shift || s.lockedToScene || s.isOrtho) {
+        if (shift || s.lockedToScene || s.isOrtho || s.config.wheelZoom === "radius") {
           const factor = Math.pow(1.1, delta * s.config.zoomSensitivity);
           return {
             ...s,
@@ -599,7 +695,12 @@ export class OrbitController {
           };
         } else {
           const v = deriveView(s);
-          const newCenter = s.center.add(v.forward.mul(-delta * 0.5 * s.config.zoomSensitivity));
+          // Dolly the rig forward proportional to the current radius —
+          // an absolute step is invisible in large scenes (a city at
+          // radius 3000 moved 0.5 units per notch = "zoom stopped
+          // working") and violent in small ones.
+          const stepLen = Math.max(s.radius, 0.3) * 0.15;
+          const newCenter = s.center.add(v.forward.mul(-delta * stepLen * s.config.zoomSensitivity));
           const now = performance.now();
           const anim: Animation<V3d> = {
             kind: Anim.Exp,

@@ -225,7 +225,10 @@ function buildScene(city: CityScene, ctl: OrbitController, proj: import("@aardwo
       Shader={citySurface}
       Uniform={{ SelectedPick: selectedPick.map(x => x) }}
       ForcePixelPicking={AVal.constant(true)}
-      OnDoubleTap={(e: SceneEvent) => ctl.flyTo(e.worldPos)}
+      OnDoubleTap={(e: SceneEvent) => {
+        (window as unknown as { __lastFly: unknown }).__lastFly = { w: [e.worldPos.x, e.worldPos.y, e.worldPos.z], v: [e.viewPos.x, e.viewPos.y, e.viewPos.z] };
+        ctl.flyTo(e.worldPos);
+      }}
       OnTap={() => { /* background tap hides the panel (leaf taps re-show after bubble) */ }}
     >
       {Sg.group(leaves)}
@@ -270,6 +273,8 @@ async function main(): Promise<void> {
     radius: extent * 0.9,
     phi: Math.PI / 4,
     theta: 0.9,
+    // Wheel zooms the camera toward the FIXED orbit center.
+    config: { wheelZoom: "radius" },
   });
 
   const proj = perspective({
@@ -322,8 +327,10 @@ async function main(): Promise<void> {
   // debug hooks for the driver
   (window as unknown as { __dbg: unknown }).__dbg = {
     frames: () => frames,
+    center: () => { const c = ctl.state.value.center; return [c.x, c.y, c.z]; },
+    radius: () => ctl.state.value.radius,
     bbox: { min: [mnx, mny, mnz], max: [mxx, mxy, mxz] },
-    radius: city.radius,
+    sceneRadius: city.radius,
     view: () => AVal.force(ctl.view).forward.toString(),
   };
 
@@ -333,7 +340,7 @@ async function main(): Promise<void> {
       runtime={runtime}
       scene={scene}
       onRendered={onRendered}
-      onReady={({ canvas, time, device }) => {
+      onReady={({ canvas, time, device, pickAt }) => {
         void device.lost.then((info) => setStatus(`DEVICE LOST: ${info.reason} ${info.message}`, true));
         const gpuErrors: string[] = [];
         (window as unknown as { __gpuErrors: string[] }).__gpuErrors = gpuErrors;
@@ -342,7 +349,19 @@ async function main(): Promise<void> {
           gpuErrors.push(msg);
           if (gpuErrors.length === 1) setStatus(`GPU ERROR: ${msg.slice(0, 300)}`, true);
         };
-        ctl.attach(canvas, time);
+        // Pick-anchored navigation: rotate pivots around the point you
+        // grab, pan keeps it glued to the pointer (portal hits come
+        // back in the inner city frame — scope.view is the city view).
+        const picker = async (clientX: number, clientY: number): Promise<V3d | undefined> => {
+          const rect = canvas.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) return undefined;
+          const sx = canvas.width / rect.width, sy = canvas.height / rect.height;
+          const h = await pickAt(Math.floor((clientX - rect.left) * sx), Math.floor((clientY - rect.top) * sy));
+          if (h === undefined) return undefined;
+          const w = AVal.force(h.hit.scope.view).backward.transformPos(h.hit.viewPos);
+          return new V3d(w.x, w.y, w.z);
+        };
+        ctl.attach(canvas, time, { picker, proj });
         setStatus(
           `${fmt.format(leafCount)} parts, ${(city.positions.length / 3e6).toFixed(1)} M verts — ` +
           `load ${(tLoad / 1000).toFixed(1)} s, scene build ${tBuild.toFixed(0)} ms. ` +

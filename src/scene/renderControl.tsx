@@ -24,7 +24,7 @@
 // the first frame appears one rAF after the device is ready.
 
 import { AVal, avalAddCallback, cval, type aval } from "@aardworx/wombat.adaptive";
-import { Trafo3d } from "@aardworx/wombat.base";
+import { Trafo3d, V2i } from "@aardworx/wombat.base";
 import {
   Runtime, attachCanvas, runFrame,
   type AttachCanvasOptions,
@@ -42,6 +42,8 @@ import type { SgNode } from "./sg.js";
 import { TraversalState } from "./traversalState.js";
 import { PickDispatcher, type TapThresholds } from "./picking/dispatcher.js";
 import type { PickRegistry } from "./picking/registry.js";
+import { arbitratePick, resolveThroughPortals } from "./picking/pickArbitrate.js";
+import type { PortalPickHit } from "./picking/pickContext.js";
 import { createPickProducer } from "./picking/pickProducer.js";
 import { setAmbient, clearAmbient } from "./ambient.js";
 
@@ -209,6 +211,14 @@ export interface RenderControlReadyInfo {
    * Aardvark.Dom's `IEventHandler` surface.
    */
   readonly picking: PickRegistry;
+  /**
+   * Programmatic pick at device-pixel coords — the same resolution
+   * pointer events get (argmin + portal recursion), so hits inside
+   * offscreen `PickContext` scenes come back in THEIR frame. Useful
+   * for pick-anchored camera controllers
+   * (`OrbitController.attach(..., { picker })`).
+   */
+  readonly pickAt: (x: number, y: number) => Promise<PortalPickHit | undefined>;
 }
 
 // ---------------------------------------------------------------------------
@@ -406,6 +416,23 @@ async function initialise(
   );
   const detach = dispatcher.attach(canvas, producer.pickPixel);
   scope.onDispose(detach);
+
+  // Programmatic pick — same path as pointer events (arbitrate +
+  // portal recursion), exposed via onReady for camera controllers etc.
+  const pickAt = async (x: number, y: number): Promise<PortalPickHit | undefined> => {
+    if (scope.isDisposed) return undefined;
+    const result = await producer.pickPixel(x, y, false);
+    if (scope.isDisposed) return undefined;
+    // AVal.force OK: pick-time snapshot at an API boundary.
+    const v = AVal.force(view);
+    const p = AVal.force(proj);
+    const sz = AVal.force(attachment.size);
+    const hit = await resolveThroughPortals(
+      arbitratePick(result, { devX: x, devY: y }, registry, v, p, new V2i(sz.width, sz.height)),
+    );
+    if (hit === undefined) return undefined;
+    return { hit, registry: hit.registry ?? registry };
+  };
   // Frame statistics for the onBeforeRender/onRendered/onResize hooks.
   let frameIndex = 0;
   let loopStart = -1;
@@ -500,6 +527,7 @@ async function initialise(
     view, proj,
     time: getGlobalTime(),
     picking: registry,
+    pickAt,
   });
 }
 

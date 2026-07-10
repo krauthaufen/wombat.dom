@@ -21,20 +21,27 @@ declare module "@aardworx/wombat.shader/uniforms" {
 }
 
 // World-space geometry (no per-part model trafo) → one VP transform.
+// The normal is carried in VIEW space for the headlight shading (and
+// as a bonus the pick chain sees a user-provided `ViewSpaceNormal` —
+// no injection needed).
 // NOTE the inter-stage color rides as `VtxColor` — the pick-chain
 // finals type the `Colors` port as V4f (the FS output), so a V3f
 // varying under the same name would clash in the fused effect.
-const cityVS = vertex((v: { Positions: V4f; Normals: V3f; Colors: V3f }) => ({
-  gl_Position: uniform.ViewProjTrafo.mul(v.Positions),
-  Normals: v.Normals,
-  VtxColor: v.Colors,
-}));
+const cityVS = vertex((v: { Positions: V4f; Normals: V3f; Colors: V3f }) => {
+  const t = uniform.ModelViewTrafoInv.transpose();
+  const n4 = t.mul(new V4f(v.Normals.x, v.Normals.y, v.Normals.z, 0.0));
+  return {
+    gl_Position: uniform.ViewProjTrafo.mul(v.Positions),
+    ViewSpaceNormal: new V3f(n4.x, n4.y, n4.z),
+    VtxColor: v.Colors,
+  };
+});
 
-// Renderbench lit FS: fixed light dir (1,2,3), d = 0.25 + 0.75·max(0, n̂·l).
-const cityFS = fragment((v: { Normals: V3f; VtxColor: V3f }) => {
-  const n = v.Normals.normalize();
-  const l = new V3f(0.26726, 0.53452, 0.80178); // normalize(1,2,3)
-  const d = 0.25 + 0.75 * max(0.0, n.dot(l));
+// Headlight: the CAMERA is the light source — in view space the light
+// direction is +Z, so d = 0.25 + 0.75·max(0, n̂.z).
+const cityFS = fragment((v: { ViewSpaceNormal: V3f; VtxColor: V3f }) => {
+  const n = v.ViewSpaceNormal.normalize();
+  const d = 0.25 + 0.75 * max(0.0, n.z);
   const hot = (uniform.PickId as number) === uniform.SelectedPick && uniform.SelectedPick > 0.0 ? 1.0 : 0.0;
   const r = v.VtxColor.x * d * (1.0 - hot) + (v.VtxColor.x * 0.4 + 0.6) * hot;
   const g = v.VtxColor.y * d * (1.0 - hot) + (v.VtxColor.y * 0.4 + 0.45) * hot;

@@ -74,11 +74,14 @@ export interface PickProducer {
   run(token: AdaptiveToken): void;
   /**
    * Resolve the single nearest valid pick pixel at device coords
-   * (x, y) via the GPU argmin kernel. Coalesced: at most one dispatch +
-   * readback in flight; a request arriving while one is pending
-   * replaces any prior pending one (which resolves `undefined`).
+   * (x, y) via the GPU argmin kernel. At most one dispatch + readback
+   * is in flight; further requests queue. `coalesce: true` (the
+   * default, for pointer-move flooding) marks the request replaceable
+   * — a newer request replaces a queued coalescable one, which
+   * resolves `undefined`. Pass `false` for discrete events
+   * (down/up/click): they always get a real resolution, in order.
    */
-  pickPixel(x: number, y: number): Promise<PickArgminResult | undefined>;
+  pickPixel(x: number, y: number, coalesce?: boolean): Promise<PickArgminResult | undefined>;
   dispose(): void;
 }
 
@@ -147,38 +150,53 @@ export function createPickProducer(
   registry.attachObserver(pickMetadata);
   const argmin = createPickArgminCompute(device);
 
-  // Coalescing wrapper: at most one argmin dispatch+readback in flight
+  // Serialized argmin queue: at most one dispatch+readback in flight
   // (the readback buffer is reused, so concurrent reads would clash).
+  // Coalescable requests (pointer moves) get REPLACED by newer
+  // coalescable ones — the replaced caller resolves `undefined`.
+  // Non-coalescable requests (down/up/click, portal recursion) queue
+  // FIFO so rapid event bursts (double-click!) never lose their
+  // resolution.
+  interface PickReq { x: number; y: number; coalesce: boolean; resolve: (r: PickArgminResult | undefined) => void }
   let pickInFlight = false;
-  let pickPending: { x: number; y: number; resolve: (r: PickArgminResult | undefined) => void } | undefined;
-  const runArgmin = async (x: number, y: number, resolve: (r: PickArgminResult | undefined) => void): Promise<void> => {
+  const pickQueue: PickReq[] = [];
+  const runArgmin = async (req: PickReq): Promise<void> => {
     pickInFlight = true;
     try {
-      if (disposed) { resolve(undefined); return; }
+      if (disposed) { req.resolve(undefined); return; }
       pickMetadata.flush();
       const tex = AVal.force(pickFb.readbackPickTexture);
       const view = tex.createView({ label: "pick.argmin.src" });
       const enc = device.createCommandEncoder({ label: "pick.argmin.frame" });
-      argmin.compute(enc, view, pickMetadata.buffer, x, y, tex.width, tex.height);
+      argmin.compute(enc, view, pickMetadata.buffer, req.x, req.y, tex.width, tex.height);
       argmin.copyResult(enc);
       device.queue.submit([enc.finish()]);
-      resolve(await argmin.read());
+      req.resolve(await argmin.read());
     } catch {
-      resolve(undefined);
+      req.resolve(undefined);
     } finally {
       pickInFlight = false;
-      const next = pickPending;
-      pickPending = undefined;
-      if (next !== undefined) void runArgmin(next.x, next.y, next.resolve);
+      const next = pickQueue.shift();
+      if (next !== undefined) void runArgmin(next);
     }
   };
-  const pickPixel = (x: number, y: number): Promise<PickArgminResult | undefined> => {
+  const pickPixel = (x: number, y: number, coalesce = true): Promise<PickArgminResult | undefined> => {
     if (disposed) return Promise.resolve(undefined);
-    if (pickInFlight) {
-      if (pickPending !== undefined) pickPending.resolve(undefined);
-      return new Promise((resolve) => { pickPending = { x, y, resolve }; });
-    }
-    return new Promise((resolve) => { void runArgmin(x, y, resolve); });
+    return new Promise((resolve) => {
+      const req: PickReq = { x, y, coalesce, resolve };
+      if (!pickInFlight) { void runArgmin(req); return; }
+      if (coalesce) {
+        // Replace the newest queued coalescable request, if any.
+        for (let i = pickQueue.length - 1; i >= 0; i--) {
+          if (pickQueue[i]!.coalesce) {
+            pickQueue[i]!.resolve(undefined);
+            pickQueue[i] = req;
+            return;
+          }
+        }
+      }
+      pickQueue.push(req);
+    });
   };
 
   // For MSAA picking a custom compute resolve must run after the render
