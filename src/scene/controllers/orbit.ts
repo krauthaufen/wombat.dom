@@ -735,12 +735,28 @@ export class OrbitController {
       this.update(s => step(s, now));
     });
 
+    // Native pinch suppression. `touch-action: none` handles Android/
+    // Chrome, but iOS Safari still page-zooms on pinch (it ignores
+    // touch-action and `user-scalable=no` for multi-touch): the
+    // WebKit-proprietary `gesture*` events plus a non-passive
+    // multi-touch touchmove preventDefault are the reliable guards —
+    // the controller's own 2-pointer pinch then gets the events.
+    const onTouchGuard = (e: TouchEvent): void => {
+      if (e.touches.length > 1) e.preventDefault();
+    };
+    const onGesture = (e: Event): void => e.preventDefault();
+
     target.addEventListener("pointerdown", onPointerDown as EventListener);
     target.addEventListener("pointermove", onPointerMove as EventListener);
     target.addEventListener("pointerup", onPointerUp as EventListener);
     target.addEventListener("pointercancel", onPointerUp as EventListener);
     target.addEventListener("wheel", onWheel, { passive: false });
     target.addEventListener("contextmenu", onContextMenu);
+    target.addEventListener("touchstart", onTouchGuard as EventListener, { passive: false });
+    target.addEventListener("touchmove", onTouchGuard as EventListener, { passive: false });
+    target.addEventListener("gesturestart", onGesture);
+    target.addEventListener("gesturechange", onGesture);
+    target.addEventListener("gestureend", onGesture);
 
     return () => {
       cb.dispose();
@@ -750,6 +766,11 @@ export class OrbitController {
       target.removeEventListener("pointercancel", onPointerUp as EventListener);
       target.removeEventListener("wheel", onWheel);
       target.removeEventListener("contextmenu", onContextMenu);
+      target.removeEventListener("touchstart", onTouchGuard as EventListener);
+      target.removeEventListener("touchmove", onTouchGuard as EventListener);
+      target.removeEventListener("gesturestart", onGesture);
+      target.removeEventListener("gesturechange", onGesture);
+      target.removeEventListener("gestureend", onGesture);
     };
   }
 }
