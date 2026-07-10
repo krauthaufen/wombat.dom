@@ -23,7 +23,7 @@ import {
 } from "@aardworx/wombat.dom/scene";
 import { Runtime } from "@aardworx/wombat.rendering";
 import { Trafo3d } from "@aardworx/wombat.base";
-import { AVal, HashMap, cval, transact } from "@aardworx/wombat.adaptive";
+import { AVal, HashMap, cset, cval, transact } from "@aardworx/wombat.adaptive";
 import { V3d } from "@aardworx/wombat.base";
 import type { BufferView, DrawCall } from "@aardworx/wombat.rendering/core";
 import { ElementType, IBuffer } from "@aardworx/wombat.rendering/core";
@@ -97,15 +97,6 @@ const KINDS = ["buildings", "trees", "ground", "water"] as const;
 type Kind = typeof KINDS[number];
 
 interface CityPart { v0: number; vn: number; c0: number; cn: number; kind: Kind; district: number }
-interface CityScene {
-  parts: CityPart[];
-  positions: Float32Array;
-  /** Raw oct32 normals (one u32 per vertex) — decoded by the heap VS. */
-  normalsOct: Uint32Array;
-  /** Raw decoupled C4b colors — parts slice via c0/cn (cn=1 = singleton). */
-  colorsC4b: Uint32Array;
-  radius: number;
-}
 
 // Data-version cache-buster: the vienna files keep stable URLs, so a
 // redeployed ASSET (same names, new bytes) would otherwise be served
@@ -141,61 +132,40 @@ async function fetchJson<T>(url: string): Promise<T> {
   return fetch(`${url}${DATA_V}`).then(r => r.json()) as Promise<T>;
 }
 
-async function loadCity(): Promise<CityScene> {
-  // Relative to the page URL so the bundle works under any prefix.
-  const dirs = DISTRICT_LIST.map((n) => `vienna/d0${n}`);
-  const manifests: Manifest[] = [];
-  for (const d of dirs) manifests.push(await fetchJson<Manifest>(`${d}/manifest.json`));
-  const districtVerts = manifests.map((m) =>
-    KINDS.flatMap(k => [...(m[k] ?? [])]).reduce((a, p) => Math.max(a, p.v0 + p.vn), 0));
-  const totalVerts = districtVerts.reduce((a, b) => a + b, 0);
-  setStatus(`loading districts ${DISTRICT_LIST.join(",")} — ${(totalVerts / 1e6).toFixed(1)} M verts…`);
+/** One district's payload — arrays are district-LOCAL (parts index into
+ *  them via v0/c0). They become the leaf BufferViews' backing directly:
+ *  no merged copies, so the load peak is ONE district's temporaries. */
+interface DistrictData {
+  district: number;
+  parts: CityPart[];
+  positions: Float32Array;
+  normalsOct: Uint32Array;
+  colorsC4b: Uint32Array;
+}
 
-  const positions = new Float32Array(totalVerts * 3);
-  const normalsOct = new Uint32Array(totalVerts);
-  const colorChunks: Uint32Array[] = [];
+async function fetchManifests(): Promise<{ manifests: Manifest[]; totalVerts: number; radius: number }> {
+  const manifests: Manifest[] = [];
+  for (const n of DISTRICT_LIST) manifests.push(await fetchJson<Manifest>(`vienna/d0${n}/manifest.json`));
+  const totalVerts = manifests
+    .map((m) => KINDS.flatMap(k => [...(m[k] ?? [])]).reduce((a, p) => Math.max(a, p.v0 + p.vn), 0))
+    .reduce((a, b) => a + b, 0);
+  const radius = manifests.reduce((a, m) => Math.max(a, m.radius), 0);
+  return { manifests, totalVerts, radius };
+}
+
+async function fetchDistrict(di: number, manifest: Manifest): Promise<DistrictData> {
+  const n = DISTRICT_LIST[di]!;
+  const d = `vienna/d0${n}`;
+  const positions = new Float32Array(await fetchBin(`${d}/positions.bin`));
+  const normalsOct = new Uint32Array(await fetchBin(`${d}/normals.bin`));
+  const colorsC4b = new Uint32Array(await fetchBin(`${d}/colors.bin`));
   const parts: CityPart[] = [];
-  let base = 0;
-  let colorBase = 0;
-  let radius = 0;
-  for (let di = 0; di < dirs.length; di++) {
-    const d = dirs[di]!;
-    const manifest = manifests[di]!;
-    {
-      const posBuf = await fetchBin(`${d}/positions.bin`);
-      positions.set(new Float32Array(posBuf), base * 3);
+  for (const kind of KINDS) {
+    for (const p of manifest[kind] ?? []) {
+      parts.push({ v0: p.v0, vn: p.vn, c0: p.c0 ?? p.v0, cn: p.cn ?? p.vn, kind, district: n });
     }
-    {
-      const nrmBuf = await fetchBin(`${d}/normals.bin`);
-      normalsOct.set(new Uint32Array(nrmBuf), base);
-    }
-    {
-      // Colors stay RAW C4b, decoupled — parts address them via c0/cn
-      // (cn=1 singletons stay 4 bytes; the heap broadcasts them).
-      const colBuf = await fetchBin(`${d}/colors.bin`);
-      colorChunks.push(new Uint32Array(colBuf));
-      for (const kind of KINDS) {
-        for (const p of manifest[kind] ?? []) {
-          parts.push({
-            v0: base + p.v0, vn: p.vn,
-            c0: colorBase + (p.c0 ?? p.v0), cn: p.cn ?? p.vn,
-            kind, district: DISTRICT_LIST[di]!,
-          });
-        }
-      }
-      colorBase += colBuf.byteLength / 4;
-    }
-    radius = Math.max(radius, manifest.radius);
-    base += districtVerts[di]!;
-    setStatus(`  d0${DISTRICT_LIST[di]} loaded (${(districtVerts[di]! / 1e6).toFixed(1)} M verts)`);
   }
-  const colorsC4b = new Uint32Array(colorBase);
-  {
-    let o = 0;
-    for (const c of colorChunks) { colorsC4b.set(c, o); o += c.length; }
-    colorChunks.length = 0;
-  }
-  return { parts, positions, normalsOct, colorsC4b, radius };
+  return { district: n, parts, positions, normalsOct, colorsC4b };
 }
 
 // ─── scene ──────────────────────────────────────────────────────────────
@@ -203,11 +173,11 @@ async function loadCity(): Promise<CityScene> {
 const selectedPick = cval(0);
 const fmt = new Intl.NumberFormat("en-US");
 
-function buildScene(city: CityScene, ctl: OrbitController, proj: import("@aardworx/wombat.adaptive").aval<Trafo3d>): { scene: SgNode; leafCount: number } {
-  // Per-part attribute slices (subarray views over the big arrays;
-  // zero copies host-side). firstVertex stays 0 so every leaf is
-  // heap-ELIGIBLE — the heap stages each part once into the arena and
-  // the megacall collapses all draws into one indirect call.
+function districtLeaves(dd: DistrictData): SgNode[] {
+  // Per-part attribute slices (subarray views over the district
+  // arrays; zero copies host-side). firstVertex stays 0 so every leaf
+  // is heap-ELIGIBLE — the heap stages each part once into the arena
+  // and the megacall collapses all draws into one indirect call.
   const showInfo = (p: CityPart, pickId: number): void => {
     infoEl.style.display = "block";
     infoEl.textContent =
@@ -216,8 +186,8 @@ function buildScene(city: CityScene, ctl: OrbitController, proj: import("@aardwo
       `pickId    ${pickId}`;
   };
 
-  const useParts = PART_CAP > 0 ? city.parts.slice(0, PART_CAP) : city.parts;
-  const leaves: SgNode[] = useParts.map((p) => {
+  const useParts = PART_CAP > 0 ? dd.parts.slice(0, PART_CAP) : dd.parts;
+  return useParts.map((p) => {
     const dc: DrawCall = {
       kind: "non-indexed",
       vertexCount: p.vn, instanceCount: 1,
@@ -225,17 +195,17 @@ function buildScene(city: CityScene, ctl: OrbitController, proj: import("@aardwo
     };
     const vertexAttributes = HashMap.empty<string, BufferView>()
       .add("Positions", {
-        buffer: AVal.constant(IBuffer.fromHost(city.positions.subarray(p.v0 * 3, (p.v0 + p.vn) * 3))),
+        buffer: AVal.constant(IBuffer.fromHost(dd.positions.subarray(p.v0 * 3, (p.v0 + p.vn) * 3))),
         elementType: ElementType.V3f,
       })
       .add("Normals", {
         // raw oct32 — 4 B/vertex, decoded by the heap VS typeId arm
-        buffer: AVal.constant(IBuffer.fromHost(city.normalsOct.subarray(p.v0, p.v0 + p.vn))),
+        buffer: AVal.constant(IBuffer.fromHost(dd.normalsOct.subarray(p.v0, p.v0 + p.vn))),
         elementType: ElementType.Oct32,
       })
       .add("Colors", {
         // raw C4b, decoupled: cn=1 = 4-byte singleton broadcast
-        buffer: AVal.constant(IBuffer.fromHost(city.colorsC4b.subarray(p.c0, p.c0 + p.cn))),
+        buffer: AVal.constant(IBuffer.fromHost(dd.colorsC4b.subarray(p.c0, p.c0 + p.cn))),
         elementType: ElementType.C4b,
       });
     return (
@@ -248,25 +218,22 @@ function buildScene(city: CityScene, ctl: OrbitController, proj: import("@aardwo
       </Sg>
     ) as SgNode;
   });
+}
 
-  const scene = (
+function cityRoot(leafSet: import("@aardworx/wombat.adaptive").aset<SgNode>, ctl: OrbitController, proj: import("@aardworx/wombat.adaptive").aval<Trafo3d>): SgNode {
+  return (
     <Sg
       View={ctl.view}
       Proj={proj}
       Shader={citySurface}
       Uniform={{ SelectedPick: selectedPick.map(x => x) }}
       ForcePixelPicking={AVal.constant(true)}
-      OnDoubleTap={(e: SceneEvent) => {
-        (window as unknown as { __lastFly: unknown }).__lastFly = { w: [e.worldPos.x, e.worldPos.y, e.worldPos.z], v: [e.viewPos.x, e.viewPos.y, e.viewPos.z] };
-        ctl.flyTo(e.worldPos);
-      }}
-      OnTap={() => { /* background tap hides the panel (leaf taps re-show after bubble) */ }}
+      OnDoubleTap={(e: SceneEvent) => ctl.flyTo(e.worldPos)}
+      OnTap={() => { /* background tap: no panel change */ }}
     >
-      {Sg.group(leaves)}
+      {Sg.unordered(leafSet)}
     </Sg>
   ) as SgNode;
-
-  return { scene, leafCount: leaves.length };
 }
 
 // ─── boot ───────────────────────────────────────────────────────────────
@@ -282,26 +249,14 @@ async function main(): Promise<void> {
   const runtime = new Runtime({ device, enableDerivedUniforms: true });
 
   const t0 = performance.now();
-  const city = await loadCity();
-  const tLoad = performance.now() - t0;
+  const { manifests, totalVerts, radius } = await fetchManifests();
+  setStatus(`streaming districts ${DISTRICT_LIST.join(",")} — ${(totalVerts / 1e6).toFixed(1)} M verts…`);
 
-  // Orbit around the data's actual center (the districts are not
-  // origin-centered).
-  let mnx = Infinity, mny = Infinity, mnz = Infinity, mxx = -Infinity, mxy = -Infinity, mxz = -Infinity;
-  {
-    const ps = city.positions;
-    for (let i = 0; i < ps.length; i += 3) {
-      const x = ps[i]!, y = ps[i + 1]!, z = ps[i + 2]!;
-      if (x < mnx) mnx = x; if (x > mxx) mxx = x;
-      if (y < mny) mny = y; if (y > mxy) mxy = y;
-      if (z < mnz) mnz = z; if (z > mxz) mxz = z;
-    }
-  }
-  const center = new V3d((mnx + mxx) / 2, (mny + mxy) / 2, (mnz + mxz) / 2);
-  const extent = Math.hypot(mxx - mnx, mxy - mny, mxz - mnz);
+  // The camera can't know the data bbox before the geometry streams
+  // in; seed it from the first district's manifest radius and refine
+  // once the first district's positions arrive.
   const ctl = OrbitController.create({
-    center,
-    radius: extent * 0.9,
+    radius: radius * 1.6,
     phi: Math.PI / 4,
     theta: 0.9,
     // Wheel zooms the camera toward the FIXED orbit center.
@@ -311,13 +266,13 @@ async function main(): Promise<void> {
   const proj = perspective({
     fovInRadians: Math.PI / 3,
     aspect: aspectFromViewport(RenderControl.viewport),
-    near: Math.max(0.5, city.radius * 1e-3),
-    far: city.radius * 8,
+    near: Math.max(0.5, radius * 1e-3),
+    far: radius * 8,
   });
 
-  const t1 = performance.now();
-  const { scene: cityScene, leafCount } = buildScene(city, ctl, proj);
-  const tBuild = performance.now() - t1;
+  const leafSet = cset<SgNode>();
+  const cityScene = cityRoot(leafSet, ctl, proj);
+  let leafCount = 0;
 
   // AO path: render the city offscreen through renderToPickable — the
   // pick attachment doubles as the AO G-buffer (oct24 normal + NDC
@@ -362,9 +317,55 @@ async function main(): Promise<void> {
     radius: () => ctl.state.value.radius,
     flyTo: (x: number, y: number, z: number) => ctl.flyTo(new V3d(x, y, z)),
     setRadius: (r: number) => { transact(() => { ctl.state.value = { ...ctl.state.value, radius: r, targetRadius: r }; }); },
-    bbox: { min: [mnx, mny, mnz], max: [mxx, mxy, mxz] },
-    sceneRadius: city.radius,
+    sceneRadius: radius,
     view: () => AVal.force(ctl.view).forward.toString(),
+  };
+
+  // ── streaming ingest — one district at a time (renderbench recipe):
+  // fetch → build leaves → add to the live set → yield a few frames so
+  // the heap stages this batch before the next district's temporaries
+  // exist. Host peak ≈ ONE district's decode buffers.
+  const ingest = async (): Promise<void> => {
+    const tStart = performance.now();
+    let firstCentered = false;
+    for (let di = 0; di < DISTRICT_LIST.length; di++) {
+      const dd = await fetchDistrict(di, manifests[di]!);
+      const leaves = districtLeaves(dd);
+      leafCount += leaves.length;
+      // add in slices so a huge district doesn't stall one frame
+      const SLICE = 4096;
+      for (let o = 0; o < leaves.length; o += SLICE) {
+        const batch = leaves.slice(o, o + SLICE);
+        transact(() => { for (const l of batch) leafSet.add(l); });
+        await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+      }
+      if (!firstCentered) {
+        // center the orbit on the first district's bbox
+        firstCentered = true;
+        let mnx = Infinity, mny = Infinity, mnz = Infinity, mxx = -Infinity, mxy = -Infinity, mxz = -Infinity;
+        const ps = dd.positions;
+        for (let i = 0; i < ps.length; i += 3) {
+          const x = ps[i]!, y = ps[i + 1]!, z = ps[i + 2]!;
+          if (x < mnx) mnx = x; if (x > mxx) mxx = x;
+          if (y < mny) mny = y; if (y > mxy) mxy = y;
+          if (z < mnz) mnz = z; if (z > mxz) mxz = z;
+        }
+        transact(() => {
+          ctl.state.value = {
+            ...ctl.state.value,
+            center: new V3d((mnx + mxx) / 2, (mny + mxy) / 2, (mnz + mxz) / 2),
+          };
+        });
+      }
+      setStatus(`d0${dd.district} in (${fmt.format(leafCount)} parts) — ${di + 1}/${DISTRICT_LIST.length}`);
+      // give GC + staging a breather between districts
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    setStatus(
+      `${fmt.format(leafCount)} parts, ${(totalVerts / 1e6).toFixed(1)} M verts — streamed in ${((performance.now() - tStart) / 1000).toFixed(1)} s. ` +
+      `${AO ? "GTAO on (?ao=0 to disable)" : "GTAO off"} · drag orbit · wheel/pinch zoom · double-tap fly-to · tap = part info`,
+    );
+    (window as unknown as { __ready: boolean }).__ready = true;
   };
 
   mount(document.getElementById("app")!, (
@@ -396,12 +397,7 @@ async function main(): Promise<void> {
           return new V3d(w.x, w.y, w.z);
         };
         ctl.attach(canvas, time, { picker, proj });
-        setStatus(
-          `${fmt.format(leafCount)} parts, ${(city.positions.length / 3e6).toFixed(1)} M verts — ` +
-          `load ${(tLoad / 1000).toFixed(1)} s, scene build ${tBuild.toFixed(0)} ms. ` +
-          `${AO ? "GTAO on (?ao=0 to disable)" : "GTAO off"} · drag orbit · wheel/pinch zoom · double-tap fly-to · tap = part info`,
-        );
-        (window as unknown as { __ready: boolean }).__ready = true;
+        void ingest().catch((e) => setStatus(`ingest failed: ${e}`, true));
       }}
     />
   ));
