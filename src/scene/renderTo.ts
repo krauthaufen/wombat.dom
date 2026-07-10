@@ -98,6 +98,14 @@ export interface RenderSceneToResult {
 export interface RenderToPickableResult extends RenderSceneToResult {
   /** The pick half — recursion handle + camera avals + registry. */
   readonly pick: IRenderPickContext;
+  /**
+   * The single-sample rgba32float pick attachment — doubles as a free
+   * G-buffer: slot 0 pickId, slot 1 oct24 view-space normal, slot 2
+   * NDC depth (Mode-A pixels; cleared pixels are 0). Sample with
+   * `textureLoad` (unfilterable float). Pull it AFTER this frame's
+   * `framebuffer` so the inner render has run.
+   */
+  readonly pickTexture: aval<GPUTexture>;
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +309,7 @@ export function renderToPickable(
     framebuffer: base,
     ...textureAccessors(base, baseSignature, colorName),
     pick,
+    pickTexture: producer.readbackPickTexture,
     dispose(): void {
       if (disposed) return;
       disposed = true;

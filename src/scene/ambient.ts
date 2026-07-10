@@ -60,14 +60,18 @@ const fallback: AmbientContext = {
 
 const current = new ChangeableValue<AmbientContext>(fallback);
 
-/** Set the ambient context. Called by `<RenderControl>` on mount. */
+/** Set the ambient context. Called by `<RenderControl>` on mount.
+ *  Transacted — consumers may have subscribed to the ambient avals
+ *  BEFORE the control mounts (e.g. an offscreen `renderToPickable`
+ *  sized by `RenderControl.viewport`), and marking with dependents
+ *  requires a transaction. */
 export function setAmbient(ctx: AmbientContext): void {
-  current.value = ctx;
+  transact(() => { current.value = ctx; });
 }
 
 /** Restore fallback. Called on `<RenderControl>` unmount. */
 export function clearAmbient(): void {
-  current.value = fallback;
+  transact(() => { current.value = fallback; });
 }
 
 /** Ambient viewport size — tracks the active control. */

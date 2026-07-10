@@ -1,5 +1,8 @@
 import { defineConfig } from "vite";
 import { fileURLToPath } from "node:url";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { wombatShader } from "@aardworx/wombat.shader-vite";
 import { adaptiveMemoPlugin } from "@aardworx/wombat.adaptive/plugin";
 
@@ -23,6 +26,15 @@ export default defineConfig({
     port: 5178,
     host: true,
     allowedHosts: [".ts.net", "localhost"],
+    // Tailscale cert (same provisioning as heap-demo/renderbench) —
+    // WebGPU needs a secure context on non-localhost origins.
+    ...((): { https?: { cert: Buffer; key: Buffer } } => {
+      const dir = join(homedir(), ".local/share/heap-demo-cert");
+      const cert = join(dir, "airtop.crt"), key = join(dir, "airtop.key");
+      return existsSync(cert) && existsSync(key)
+        ? { https: { cert: readFileSync(cert), key: readFileSync(key) } }
+        : {};
+    })(),
   },
   optimizeDeps: {
     exclude: [

@@ -6,9 +6,9 @@
 
 import { effect, fragment, vertex } from "@aardworx/wombat.shader";
 import { uniform } from "@aardworx/wombat.shader/uniforms";
-import { max } from "@aardworx/wombat.shader/types";
+import { max, texture, type Sampler2D } from "@aardworx/wombat.shader/types";
 import type { u32 } from "@aardworx/wombat.shader/types";
-import { V3f, V4f } from "@aardworx/wombat.base";
+import { V2f, V3f, V4f } from "@aardworx/wombat.base";
 void (null as unknown as u32);
 
 declare module "@aardworx/wombat.shader/uniforms" {
@@ -43,3 +43,29 @@ const cityFS = fragment((v: { Normals: V3f; VtxColor: V3f }) => {
 });
 
 export const citySurface = effect(cityVS, cityFS);
+
+// ─── AO composite (portal quad) ─────────────────────────────────────────
+// Fullscreen quad sampling the offscreen city color × the AO texture.
+// Writes `PickContextCoord` (bottom-left-origin uv) so ALL picking
+// recurses into the offscreen city — hover/tap/fly-to ride the portal.
+
+const SceneTex: Sampler2D = null as unknown as Sampler2D;
+const AoTex: Sampler2D = null as unknown as Sampler2D;
+
+const compositeVS = vertex((v: { Positions: V4f }) => ({
+  gl_Position: new V4f(v.Positions.x, v.Positions.y, 0.5, 1.0),
+  RawPos: new V2f(v.Positions.x, v.Positions.y),
+}));
+
+const compositeFS = fragment((v: { RawPos: V2f }) => {
+  const uv0 = new V2f(v.RawPos.x * 0.5 + 0.5, v.RawPos.y * 0.5 + 0.5);
+  const uvS = new V2f(uv0.x, 1.0 - uv0.y);
+  const c = texture(SceneTex, uvS);
+  const ao = texture(AoTex, uvS);
+  return {
+    Colors: new V4f(c.x * ao.x, c.y * ao.x, c.z * ao.x, 1.0),
+    PickContextCoord: uv0,
+  };
+});
+
+export const compositeSurface = effect(compositeVS, compositeFS);

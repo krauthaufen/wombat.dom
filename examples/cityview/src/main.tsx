@@ -16,15 +16,20 @@ import {
   Sg,
   aspectFromViewport,
   perspective,
+  quad,
+  renderToPickable,
   type SceneEvent,
   type SgNode,
 } from "@aardworx/wombat.dom/scene";
+import { Runtime } from "@aardworx/wombat.rendering";
+import { Trafo3d } from "@aardworx/wombat.base";
 import { AVal, HashMap, cval, transact } from "@aardworx/wombat.adaptive";
 import { V3d } from "@aardworx/wombat.base";
 import type { BufferView, DrawCall } from "@aardworx/wombat.rendering/core";
 import { ElementType, IBuffer } from "@aardworx/wombat.rendering/core";
 
-import { citySurface } from "./effects.js";
+import { citySurface, compositeSurface } from "./effects.js";
+import { GtaoResource } from "./gtao.js";
 
 const statusEl = document.getElementById("status")!;
 const fpsEl = document.getElementById("fps")!;
@@ -38,6 +43,9 @@ window.addEventListener("unhandledrejection", (e) => setStatus("rejected: " + (e
 
 const P = new URLSearchParams(location.search);
 const PART_CAP = P.get("parts") !== null ? parseInt(P.get("parts")!, 10) | 0 : 0;
+const AO = P.get("ao") !== "0";
+const AO_RADIUS = P.get("aor") !== null ? parseFloat(P.get("aor")!) : 4;
+const AO_INTENSITY = P.get("aoi") !== null ? parseFloat(P.get("aoi")!) : 1.4;
 const DISTRICT_LIST: number[] = (() => {
   const s = P.get("districts");
   if (s === null) return [1];
@@ -166,7 +174,7 @@ async function loadCity(): Promise<CityScene> {
 const selectedPick = cval(0);
 const fmt = new Intl.NumberFormat("en-US");
 
-function buildScene(city: CityScene, ctl: OrbitController): { scene: SgNode; leafCount: number } {
+function buildScene(city: CityScene, ctl: OrbitController, proj: import("@aardworx/wombat.adaptive").aval<Trafo3d>): { scene: SgNode; leafCount: number } {
   // Per-part attribute slices (subarray views over the big arrays;
   // zero copies host-side). firstVertex stays 0 so every leaf is
   // heap-ELIGIBLE — the heap stages each part once into the arena and
@@ -213,12 +221,7 @@ function buildScene(city: CityScene, ctl: OrbitController): { scene: SgNode; lea
   const scene = (
     <Sg
       View={ctl.view}
-      Proj={perspective({
-        fovInRadians: Math.PI / 3,
-        aspect: aspectFromViewport(RenderControl.viewport),
-        near: Math.max(0.5, city.radius * 1e-3),
-        far: city.radius * 8,
-      })}
+      Proj={proj}
       Shader={citySurface}
       Uniform={{ SelectedPick: selectedPick.map(x => x) }}
       ForcePixelPicking={AVal.constant(true)}
@@ -235,8 +238,15 @@ function buildScene(city: CityScene, ctl: OrbitController): { scene: SgNode; lea
 // ─── boot ───────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  // Hold the adapter for the page lifetime (see RenderControl's
-  // adapter-pinning note — GC'ing it loses the device).
+  if (!("gpu" in navigator)) throw new Error("WebGPU unavailable");
+  const adapter = await navigator.gpu.requestAdapter();
+  if (adapter === null) throw new Error("no GPU adapter");
+  const device = await adapter.requestDevice();
+  // Pin the adapter — Chrome loses the device when the last adapter
+  // reference is GC'd ("external Instance reference no longer exists").
+  (device as unknown as { __adapter: GPUAdapter }).__adapter = adapter;
+  const runtime = new Runtime({ device, enableDerivedUniforms: true });
+
   const t0 = performance.now();
   const city = await loadCity();
   const tLoad = performance.now() - t0;
@@ -262,9 +272,44 @@ async function main(): Promise<void> {
     theta: 0.9,
   });
 
+  const proj = perspective({
+    fovInRadians: Math.PI / 3,
+    aspect: aspectFromViewport(RenderControl.viewport),
+    near: Math.max(0.5, city.radius * 1e-3),
+    far: city.radius * 8,
+  });
+
   const t1 = performance.now();
-  const { scene, leafCount } = buildScene(city, ctl);
+  const { scene: cityScene, leafCount } = buildScene(city, ctl, proj);
   const tBuild = performance.now() - t1;
+
+  // AO path: render the city offscreen through renderToPickable — the
+  // pick attachment doubles as the AO G-buffer (oct24 normal + NDC
+  // depth), and ALL picking rides the portal quad's PickContext into
+  // the offscreen scene.
+  let scene: SgNode = cityScene;
+  if (AO) {
+    const pickable = renderToPickable(runtime, device, cityScene, {
+      size: RenderControl.viewport,
+      view: ctl.view,
+      proj,
+      label: "city",
+    });
+    const ao = new GtaoResource(device, pickable.framebuffer, pickable.pickTexture, proj, {
+      radius: AO_RADIUS, intensity: AO_INTENSITY,
+    });
+    scene = (
+      <Sg View={AVal.constant(Trafo3d.identity)} Proj={AVal.constant(Trafo3d.identity)}>
+        <Sg
+          Shader={compositeSurface}
+          Uniform={{ SceneTex: pickable.color(), AoTex: ao }}
+          PickContext={pickable.pick}
+        >
+          {quad()}
+        </Sg>
+      </Sg>
+    ) as SgNode;
+  }
 
   // fps: exponential moving average over onRendered frame times.
   let ema = 0;
@@ -284,6 +329,8 @@ async function main(): Promise<void> {
 
   mount(document.getElementById("app")!, (
     <RenderControl
+      device={device}
+      runtime={runtime}
       scene={scene}
       onRendered={onRendered}
       onReady={({ canvas, time, device }) => {
@@ -299,7 +346,7 @@ async function main(): Promise<void> {
         setStatus(
           `${fmt.format(leafCount)} parts, ${(city.positions.length / 3e6).toFixed(1)} M verts — ` +
           `load ${(tLoad / 1000).toFixed(1)} s, scene build ${tBuild.toFixed(0)} ms. ` +
-          `Drag orbit · wheel/pinch zoom · double-tap fly-to · tap = part info`,
+          `${AO ? "GTAO on (?ao=0 to disable)" : "GTAO off"} · drag orbit · wheel/pinch zoom · double-tap fly-to · tap = part info`,
         );
         (window as unknown as { __ready: boolean }).__ready = true;
       }}
