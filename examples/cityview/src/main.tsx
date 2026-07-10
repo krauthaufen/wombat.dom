@@ -65,11 +65,14 @@ document.addEventListener("wheel", (e) => { if (e.ctrlKey) e.preventDefault(); }
 const P = new URLSearchParams(location.search);
 const PART_CAP = P.get("parts") !== null ? parseInt(P.get("parts")!, 10) | 0 : 0;
 const AO = P.get("ao") !== "0";
-// Mobile renders at dpr=1 (a 3x iPhone framebuffer is 9x the pixels for
-// no perceptible gain in a city view); desktop stays native. ?dpr= overrides.
+// Mobile caps at dpr=2 (native 3x is 2.25x the pixels of 2x for barely
+// visible gain; dpr=1 is noticeably soft) — desktop stays native.
+// ?dpr= overrides either way.
 const DPR = P.get("dpr") !== null
   ? Math.max(0.25, parseFloat(P.get("dpr")!))
-  : (typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches ? 1 : (window.devicePixelRatio ?? 1));
+  : (typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches
+      ? Math.min(window.devicePixelRatio ?? 1, 2)
+      : (window.devicePixelRatio ?? 1));
 const AO_RADIUS = P.get("aor") !== null ? parseFloat(P.get("aor")!) : 4;
 const AO_INTENSITY = P.get("aoi") !== null ? parseFloat(P.get("aoi")!) : 1.4;
 const DISTRICT_LIST: number[] = (() => {
