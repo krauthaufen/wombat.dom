@@ -327,6 +327,13 @@ async function initialise(
     if (scope.isDisposed) return;
     device = await adapter.requestDevice();
     if (scope.isDisposed) { device.destroy(); return; }
+    // Pin the adapter to the device: Chrome/Dawn drops the wgpu
+    // instance when the LAST JS reference to the GPUAdapter is
+    // GC'd, losing the device with "A valid external Instance
+    // reference no longer exists". Small demos never notice; the
+    // first big allocation burst triggers a GC and kills the
+    // device one frame in.
+    (device as unknown as { __adapter?: GPUAdapter }).__adapter = adapter;
     ownsDevice = true;
   }
 
