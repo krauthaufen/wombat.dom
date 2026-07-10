@@ -18,7 +18,7 @@ export default defineConfig({
   // `NO_PUBLIC=1 vite build` skips copying public/ (the vienna symlink
   // points at ~2 GB of districts — data is deployed separately).
   ...(process.env.NO_PUBLIC ? { publicDir: false as const } : {}),
-  plugins: [adaptiveMemoPlugin(), wombatShader({ rootDir: repo })],
+  plugins: [...(process.env.NO_MEMO ? [] : [adaptiveMemoPlugin()]), wombatShader({ rootDir: repo })],
   resolve: {
     alias: [
       { find: "@aardworx/wombat.shader/types", replacement: fileURLToPath(new URL("./shader-types-shim.js", import.meta.url)) },

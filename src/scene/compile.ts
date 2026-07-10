@@ -517,20 +517,35 @@ interface LoweredChild {
   readonly tree: RenderTree;
   readonly dispose: () => void;
 }
+const _NOOP_DISPOSE = (): void => {};
+// One shared child-options object per (opts) — the old code spread the
+// full CompileSceneOptions + picking objects PER CHILD, which at heap
+// scale (hundreds of thousands of leaves) was measurable JS memory.
+// The shared onAcquire pushes into whichever ids array is currently on
+// the sink stack (lowering is synchronous, so plain save/restore keeps
+// nested collections correct with the same replace-semantics).
+let _idSink: number[] | undefined;
+const _childOptsCache = new WeakMap<CompileSceneOptions, CompileSceneOptions>();
 function lowerWithCleanup(
   child: SgNode,
   state: TraversalState,
   opts: CompileSceneOptions,
 ): LoweredChild {
   if (opts.picking === undefined) {
-    return { tree: lowerInsideInstancing(child, state, opts), dispose: () => {} };
+    return { tree: lowerInsideInstancing(child, state, opts), dispose: _NOOP_DISPOSE };
+  }
+  let shared = _childOptsCache.get(opts);
+  if (shared === undefined) {
+    shared = { ...opts, picking: { ...opts.picking, onAcquire: (pid) => { _idSink?.push(pid); } } };
+    _childOptsCache.set(opts, shared);
   }
   const ids: number[] = [];
-  const childOpts: CompileSceneOptions = {
-    ...opts,
-    picking: { ...opts.picking, onAcquire: (pid) => ids.push(pid) },
-  };
-  const tree = lowerInsideInstancing(child, state, childOpts);
+  const prev = _idSink;
+  _idSink = ids;
+  let tree: RenderTree;
+  try { tree = lowerInsideInstancing(child, state, shared); }
+  finally { _idSink = prev; }
+  if (ids.length === 0) return { tree, dispose: _NOOP_DISPOSE };
   const registry = opts.picking.registry;
   return { tree, dispose: () => { for (const id of ids) registry.release(id); } };
 }
@@ -729,26 +744,45 @@ function buildRenderObject(
   // `<Sg Uniform={…}>` scope entries, split into scalars vs textures/
   // samplers — memoised on the (shared) scope uniform map, so a whole
   // subtree under one `<Sg.Uniform>` scope splits it once, not per leaf.
-  const { uniforms: scopeScalars, textures, samplers } = getSplitScopeUniforms(state.uniforms);
+  const { uniforms: scopeScalars, textures, samplers, scalarProvider } = getSplitScopeUniforms(state.uniforms);
   // The only genuinely per-leaf uniform is `PickId`; everything else
   // (scope scalars + the auto-injected derived trafos) is resolved by
-  // `state` itself (it's an `IUniformProvider`). So the per-leaf cost is
-  // a single tiny overlay map + a `union` — no merge, no per-leaf
-  // texture split, no per-leaf lazy-provider closure/Map. The overlay
-  // wins on key conflict, matching "user uniform shadows the default".
+  // `state` itself (it's an `IUniformProvider`). The per-leaf cost is a
+  // single 3-field provider object + one aval — NOT a per-leaf HAMT
+  // overlay + union pair: at heap scale (hundreds of thousands of
+  // leaves) those were a top JS-memory item. The provider resolves
+  // PickId first, then scope scalars, then state — same shadowing as
+  // the old overlay-union.
   let leafScalars = scopeScalars;
-  if (pickId !== undefined) leafScalars = leafScalars.add("PickId", AVal.constant(pickId));
   if (opts.injectUniforms !== undefined) {
     for (const [k, v] of opts.injectUniforms) {
       if (leafScalars.tryFind(k) === undefined) leafScalars = leafScalars.add(k, v);
     }
   }
-  const uniforms: IUniformProvider =
-    (opts.autoUniforms ?? true)
-      ? (leafScalars.count === 0
-          ? state
-          : UniformProvider.union(UniformProvider.ofMap(leafScalars), state))
-      : UniformProvider.ofMap(leafScalars);
+  // PickId is a FIRST-CLASS RenderObject field (`ro.pickId`) — the
+  // heap writes it inline into the drawHeader, the classic path
+  // synthesizes the uniform. It must NOT ride the uniform provider: a
+  // unique per-leaf aval/provider measured ~6.5 KB of JS heap PER LEAF
+  // at scale (see ~/claude/pickid-inline-plan.md).
+  const injected = leafScalars !== scopeScalars;
+  let uniforms: IUniformProvider;
+  if ((opts.autoUniforms ?? true) && !injected) {
+    // fast path: scope scalars are memoised per scope map — the
+    // provider is SHARED across every leaf under the same scopes.
+    uniforms =
+      scopeScalars.count === 0
+        ? state
+        : (scalarProvider !== undefined
+            ? new UnionOf2(scalarProvider, state)
+            : new UnionOf2(UniformProvider.ofMap(scopeScalars), state));
+  } else {
+    uniforms =
+      (opts.autoUniforms ?? true)
+        ? (leafScalars.count === 0
+            ? state
+            : UniformProvider.union(UniformProvider.ofMap(leafScalars), state))
+        : UniformProvider.ofMap(leafScalars);
+  }
   // Use the `PipelineState` the traversal already derived for this
   // subtree (shared across all leaves under the same render-state
   // scopes); only fall back to deriving here when there isn't one
@@ -770,6 +804,7 @@ function buildRenderObject(
   // undefined case to a "draw nothing"-style sentinel only if needed).
   const obj: RenderObject = {
     effect,
+    ...(pickId !== undefined ? { pickId } : {}),
     pipelineState,
     vertexAttributes: AttributeProvider.ofMap(leaf.vertexAttributes),
     ...(leaf.instanceAttributes !== undefined
@@ -915,12 +950,36 @@ function splitTexturesFromUniforms(
 // classification (which forces each entry) runs once per scope, not once
 // per leaf. (For a scene with no `<Sg.Uniform>` scope the map is the
 // shared `HashMap.empty()` carried by `TraversalState.empty` — one entry.)
-type SplitUniforms = ReturnType<typeof splitTexturesFromUniforms>;
+type SplitUniforms = ReturnType<typeof splitTexturesFromUniforms> & {
+  /** Memoised `UniformProvider.ofMap(uniforms)` (set when non-empty). */
+  scalarProvider?: IUniformProvider;
+};
 const _splitScopeUniformsCache = new WeakMap<HashMap<string, aval<unknown>>, SplitUniforms>();
 function getSplitScopeUniforms(scopeUniforms: HashMap<string, aval<unknown>>): SplitUniforms {
   let r = _splitScopeUniformsCache.get(scopeUniforms);
-  if (r === undefined) { r = splitTexturesFromUniforms(scopeUniforms); _splitScopeUniformsCache.set(scopeUniforms, r); }
+  if (r === undefined) {
+    r = splitTexturesFromUniforms(scopeUniforms);
+    if (r.uniforms.count > 0) {
+      (r as { scalarProvider?: IUniformProvider }).scalarProvider = UniformProvider.ofMap(r.uniforms);
+    }
+    _splitScopeUniformsCache.set(scopeUniforms, r);
+  }
   return r;
+}
+
+/** Two-provider union without the general variadic machinery. */
+class UnionOf2 implements IUniformProvider {
+  constructor(
+    private readonly a: IUniformProvider,
+    private readonly b: IUniformProvider,
+  ) {}
+  tryGet(name: string): aval<unknown> | undefined {
+    return this.a.tryGet(name) ?? this.b.tryGet(name);
+  }
+  *names(): Iterable<string> {
+    yield* this.a.names();
+    yield* this.b.names();
+  }
 }
 
 // ---------------------------------------------------------------------------

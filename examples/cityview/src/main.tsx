@@ -65,6 +65,10 @@ document.addEventListener("wheel", (e) => { if (e.ctrlKey) e.preventDefault(); }
 const P = new URLSearchParams(location.search);
 const PART_CAP = P.get("parts") !== null ? parseInt(P.get("parts")!, 10) | 0 : 0;
 const AO = P.get("ao") !== "0";
+// memory-profiling strip flags (temporary diagnostics)
+const LEAN = P.get("lean") === "1";     // no per-part event scope
+const NOPICK = P.get("nopick") === "1"; // NoEvents on the city root
+const SYNTH = P.get("synth") !== null ? parseInt(P.get("synth")!, 10) | 0 : 0; // synthetic N-part scene (memory diagnostics)
 // Mobile caps at dpr=2 (native 3x is 2.25x the pixels of 2x for barely
 // visible gain; dpr=1 is noticeably soft) — desktop stays native.
 // ?dpr= overrides either way.
@@ -212,6 +216,8 @@ function districtLeaves(dd: DistrictData): SgNode[] {
     // No hover highlight on the floor/water — a whole grid tile
     // lighting up is noise. They stay pickable (fly-to and the
     // pan/rotate anchors need ground hits) and tappable.
+    const leafNode = Sg.leaf({ vertexAttributes, drawCall: AVal.constant(dc) });
+    if (LEAN) return leafNode as SgNode;
     const hover = p.kind === "ground" || p.kind === "water" ? {} : {
       OnPointerEnter: (e: SceneEvent) => { transact(() => { selectedPick.value = e.pickId; }); },
       OnPointerLeave: () => { transact(() => { selectedPick.value = 0; }); },
@@ -221,7 +227,7 @@ function districtLeaves(dd: DistrictData): SgNode[] {
         {...hover}
         OnTap={(e: SceneEvent) => showInfo(p, e.pickId)}
       >
-        {Sg.leaf({ vertexAttributes, drawCall: AVal.constant(dc) })}
+        {leafNode}
       </Sg>
     ) as SgNode;
   });
@@ -235,6 +241,7 @@ function cityRoot(leafSet: import("@aardworx/wombat.adaptive").aset<SgNode>, ctl
       Shader={citySurface}
       Uniform={{ SelectedPick: selectedPick.map(x => x) }}
       ForcePixelPicking={AVal.constant(true)}
+      NoEvents={NOPICK ? AVal.constant(true) : undefined}
       OnDoubleTap={(e: SceneEvent) => ctl.flyTo(e.worldPos)}
       OnTap={() => { /* background tap: no panel change */ }}
     >
@@ -244,6 +251,18 @@ function cityRoot(leafSet: import("@aardworx/wombat.adaptive").aset<SgNode>, ctl
 }
 
 // ─── boot ───────────────────────────────────────────────────────────────
+
+function synthDistrict(n: number): DistrictData {
+  const VPP = 30;
+  const positions = new Float32Array(n * VPP * 3);
+  const normalsOct = new Uint32Array(n * VPP);
+  const colorsC4b = new Uint32Array(n);
+  const parts: CityPart[] = [];
+  for (let i = 0; i < n; i++) {
+    parts.push({ v0: i * VPP, vn: VPP, c0: i, cn: 1, kind: "buildings", district: 1 });
+  }
+  return { district: 1, parts, positions, normalsOct, colorsC4b };
+}
 
 async function main(): Promise<void> {
   if (!("gpu" in navigator)) throw new Error("WebGPU unavailable");
@@ -256,7 +275,9 @@ async function main(): Promise<void> {
   const runtime = new Runtime({ device, enableDerivedUniforms: true });
 
   const t0 = performance.now();
-  const { manifests, totalVerts, radius } = await fetchManifests();
+  const { manifests, totalVerts, radius } = SYNTH > 0
+    ? { manifests: [], totalVerts: SYNTH * 30, radius: 1000 }
+    : await fetchManifests();
   setStatus(`streaming districts ${DISTRICT_LIST.join(",")} — ${(totalVerts / 1e6).toFixed(1)} M verts…`);
 
   // The camera can't know the data bbox before the geometry streams
@@ -335,8 +356,9 @@ async function main(): Promise<void> {
   const ingest = async (): Promise<void> => {
     const tStart = performance.now();
     let firstCentered = false;
-    for (let di = 0; di < DISTRICT_LIST.length; di++) {
-      const dd = await fetchDistrict(di, manifests[di]!);
+    const nDistricts = SYNTH > 0 ? 1 : DISTRICT_LIST.length;
+    for (let di = 0; di < nDistricts; di++) {
+      const dd = SYNTH > 0 ? synthDistrict(SYNTH) : await fetchDistrict(di, manifests[di]!);
       const leaves = districtLeaves(dd);
       leafCount += leaves.length;
       // add in slices so a huge district doesn't stall one frame
@@ -364,7 +386,7 @@ async function main(): Promise<void> {
           };
         });
       }
-      setStatus(`${DNAME(dd.district)} in (${fmt.format(leafCount)} parts) — ${di + 1}/${DISTRICT_LIST.length}`);
+      setStatus(`${DNAME(dd.district)} in (${fmt.format(leafCount)} parts) — ${di + 1}/${nDistricts}`);
       // give GC + staging a breather between districts
       await new Promise((r) => setTimeout(r, 50));
     }
