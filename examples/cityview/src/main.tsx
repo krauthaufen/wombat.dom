@@ -41,6 +41,27 @@ const setStatus = (m: string, err = false): void => {
 window.addEventListener("error", (e) => setStatus("error: " + (e.error?.message ?? e.message), true));
 window.addEventListener("unhandledrejection", (e) => setStatus("rejected: " + (e.reason?.message ?? String(e.reason)), true));
 
+// ─── page-zoom suppression (iOS Safari) ────────────────────────────────
+// The controller already guards the canvas, but Safari page-zooms when a
+// pinch STARTS partly outside it (or via its proprietary gesture events,
+// which fire on the ancestor). The app is a fullscreen canvas with no
+// scrolling, so kill every browser zoom/scroll gesture document-wide:
+//   - gesture* events: Safari's pinch pipeline (preventDefault = no zoom)
+//   - multi-touch / scale!=1 touchmove: pinch fallback path
+//   - dblclick: double-tap zoom remnants
+//   - ctrl+wheel: desktop pinch-to-zoom trackpad gesture
+for (const ev of ["gesturestart", "gesturechange", "gestureend"]) {
+  document.addEventListener(ev, (e) => e.preventDefault(), { passive: false });
+}
+document.addEventListener("touchstart", (e) => {
+  if (e.touches.length > 1) e.preventDefault();
+}, { passive: false });
+document.addEventListener("touchmove", (e) => {
+  if (e.touches.length > 1 || ((e as unknown as { scale?: number }).scale ?? 1) !== 1) e.preventDefault();
+}, { passive: false });
+document.addEventListener("dblclick", (e) => e.preventDefault(), { passive: false });
+document.addEventListener("wheel", (e) => { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
+
 const P = new URLSearchParams(location.search);
 const PART_CAP = P.get("parts") !== null ? parseInt(P.get("parts")!, 10) | 0 : 0;
 const AO = P.get("ao") !== "0";
