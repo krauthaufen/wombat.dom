@@ -224,6 +224,7 @@ function sceneUsesPassStatic(node: SgNode): boolean {
     case "BlendConstant": case "ColorMask": case "StencilMode":
     case "VertexAttributes": case "InstanceAttributes": case "Index": case "Mode":
     case "NoEvents": case "ForcePixelPicking": case "CanFocus":
+    case "PickContext":
       return sceneUsesPassStatic(node.child);
     case "Delay":
       try { return sceneUsesPassStatic(node.create(TraversalState.empty)); }
@@ -325,6 +326,7 @@ function collectByPass(
     case "Index": collectByPass(node.child, state.pushIndex(node.index), opts, buckets); return;
     case "Mode": collectByPass(node.child, state.pushMode(node.mode), opts, buckets); return;
     case "NoEvents": collectByPass(node.child, state.pushNoEvents(node.value), opts, buckets); return;
+    case "PickContext": collectByPass(node.child, state.pushPickContext(node.value), opts, buckets); return;
     case "ForcePixelPicking": collectByPass(node.child, state.pushForcePixelPicking(node.value), opts, buckets); return;
     case "CanFocus": collectByPass(node.child, state.pushCanFocus(node.value), opts, buckets); return;
     case "Instanced":
@@ -476,6 +478,8 @@ function lower(
       return lower(node.child, state.pushForcePixelPicking(node.value), opts);
     case "CanFocus":
       return lower(node.child, state.pushCanFocus(node.value), opts);
+    case "PickContext":
+      return lower(node.child, state.pushPickContext(node.value), opts);
     case "Instanced":
       // Validate the subtree once at scene-compile (no nested
       // SgInstanced, no leaves with `instanceCount > 1`, no indirect
@@ -625,7 +629,14 @@ function lowerLeaf(
     const geom = opts.picking.geomHas !== undefined
       ? { has: opts.picking.geomHas, key: opts.picking.geomKey ?? "__user" }
       : defaultGeomHas(merged);
-    const composed = composePickChainWithChoiceCached(userEffect, geom.key, geom.has);
+    // Portal leaves (under `<Sg PickContext=…>`) compose the portal
+    // final — pick slots carry the sampled source-uv so the resolver
+    // can recurse into the offscreen scene. Only attach the sub-
+    // context to the scope when the portal final was actually chosen
+    // (fallback finals write normal/depth in slots 1-2, which must
+    // NOT be decoded as uv).
+    const portal = state.pickSubContext !== undefined;
+    const composed = composePickChainWithChoiceCached(userEffect, geom.key, geom.has, portal);
     effect = composed.effect;
     const mode = composed.choice.final === "FinalB" ? "B" : "A";
     const pid = opts.picking.registry.acquire({
@@ -640,6 +651,8 @@ function lowerLeaf(
       canFocus: state.canFocus,
       pickPath,
       ...(state.intersectable !== undefined ? { intersectable: state.intersectable } : {}),
+      ...(composed.choice.final === "FinalPortal" && state.pickSubContext !== undefined
+        ? { pickSubContext: state.pickSubContext } : {}),
     }, mode);
     pickId = pid;
     if (opts.picking.onAcquire !== undefined) opts.picking.onAcquire(pid);

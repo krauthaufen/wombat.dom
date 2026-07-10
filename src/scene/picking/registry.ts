@@ -112,6 +112,13 @@ export interface LeafPickScope {
   /** When true, this scope can receive keyboard / focus events. */
   readonly canFocus?: aval<boolean>;
   /**
+   * Portal recursion handle — set when the leaf sits under an
+   * `<Sg PickContext={…}>` scope AND the portal pick-final was
+   * composed (slots 1-2 carry uv). The resolver recurses `pickAt`
+   * into it; an inner miss falls through to this scope itself.
+   */
+  readonly pickSubContext?: import("./pickContext.js").IPickSubContext;
+  /**
    * When true, the dispatcher SKIPS this scope's events entirely —
    * the leaf was registered (so its pickId is allocated and the BVH
    * can still see it for fall-through), but no handlers fire and no

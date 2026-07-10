@@ -81,6 +81,7 @@ export type SgNode =
   | SgIndex
   | SgMode
   // Phase 3 — misc scopes
+  | SgPickContext
   | SgNoEvents
   | SgForcePixelPicking
   | SgCanFocus
@@ -491,6 +492,15 @@ export interface SgMode {
 // ---------------------------------------------------------------------------
 // Phase 3 — misc scopes
 // ---------------------------------------------------------------------------
+
+export interface SgPickContext {
+  readonly kind: "PickContext";
+  /** The offscreen render's pick recursion handle
+   *  (`renderToPickable(...).pick`). Plain value — the handle is a
+   *  stable object for the offscreen render's lifetime. */
+  readonly value: import("./picking/pickContext.js").IPickSubContext;
+  readonly child: SgNode;
+}
 
 export interface SgNoEvents {
   readonly kind: "NoEvents";

@@ -18,6 +18,7 @@ export {
   pickFinalANoNormalEffect,
   pickFinalANoNormalNoPiEffect,
   pickFinalBEffect,
+  pickFinalPortalEffect,
 } from "./pickShaders.js";
 
 export {
@@ -26,6 +27,8 @@ export {
   type PickFinalTag,
   type PickChainChoice,
 } from "./pickChain.js";
+
+export { arbitratePick, resolveThroughPortals } from "./pickArbitrate.js";
 
 export {
   PickRegistry,

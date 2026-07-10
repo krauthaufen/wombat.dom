@@ -575,6 +575,7 @@ export function sniffViewProj(node: SgNode): SniffResult {
       case "On":
       case "Active":
       case "NoEvents":
+      case "PickContext":
       case "ForcePixelPicking":
       case "CanFocus":
       case "DepthTest":

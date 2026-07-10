@@ -286,6 +286,11 @@ export class TraversalState implements IUniformProvider {
   readonly forcePixelPicking: aval<boolean>;
   /** When true, this scope is a focus target. */
   readonly canFocus: aval<boolean>;
+  /** Pick recursion handle of the innermost offscreen ("portal")
+   *  scope — set by `<Sg PickContext={…}>`. Leaves under it compose
+   *  the portal pick-final and the resolver recurses `pickAt` into
+   *  the referenced offscreen scene. */
+  readonly pickSubContext: import("./picking/pickContext.js").IPickSubContext | undefined;
   /** Per-frame time clock (Phase 7). Defaults to a constant initial-load timestamp. */
   readonly time: aval<number>;
 
@@ -363,6 +368,7 @@ export class TraversalState implements IUniformProvider {
     this.noEvents = spec.noEvents;
     this.forcePixelPicking = spec.forcePixelPicking;
     this.canFocus = spec.canFocus;
+    this.pickSubContext = spec.pickSubContext;
     this.time = spec.time;
     this.instancing = spec.instancing;
     this.instancingParentModel = spec.instancingParentModel;
@@ -408,6 +414,7 @@ export class TraversalState implements IUniformProvider {
     noEvents: AVal.constant(false),
     forcePixelPicking: AVal.constant(false),
     canFocus: AVal.constant(false),
+    pickSubContext: undefined,
     time: AVal.constant(0),
     instancing: undefined,
     instancingParentModel: undefined,
@@ -657,6 +664,8 @@ export class TraversalState implements IUniformProvider {
   pushNoEvents(value: aval<boolean>): TraversalState { return this.with({ noEvents: value }); }
   pushForcePixelPicking(value: aval<boolean>): TraversalState { return this.with({ forcePixelPicking: value }); }
   pushCanFocus(value: aval<boolean>): TraversalState { return this.with({ canFocus: value }); }
+  /** Push a portal pick context — see `picking/pickContext.ts`. */
+  pushPickContext(value: import("./picking/pickContext.js").IPickSubContext): TraversalState { return this.with({ pickSubContext: value }); }
   /** Push an `Sg.Instanced` scope. Validation is the caller's job —
    *  `compile.ts` runs `validateInstancingSubtree` before pushing.
    *  Stashes the current `model` as `instancingParentModel` and
@@ -727,6 +736,7 @@ export class TraversalState implements IUniformProvider {
       noEvents: patch.noEvents ?? this.noEvents,
       forcePixelPicking: patch.forcePixelPicking ?? this.forcePixelPicking,
       canFocus: patch.canFocus ?? this.canFocus,
+      pickSubContext: "pickSubContext" in patch ? patch.pickSubContext : this.pickSubContext,
       time: patch.time ?? this.time,
       instancing: "instancing" in patch ? patch.instancing : this.instancing,
       instancingParentModel: "instancingParentModel" in patch ? patch.instancingParentModel : this.instancingParentModel,
@@ -862,5 +872,6 @@ interface TraversalSpec {
   noEvents: aval<boolean>;
   forcePixelPicking: aval<boolean>;
   canFocus: aval<boolean>;
+  pickSubContext: import("./picking/pickContext.js").IPickSubContext | undefined;
   time: aval<number>;
 }

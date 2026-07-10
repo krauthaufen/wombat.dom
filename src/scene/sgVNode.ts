@@ -23,7 +23,7 @@ export const SG_KINDS: ReadonlySet<string> = new Set<string>([
   // Phase 2
   "VertexAttributes", "InstanceAttributes", "Index", "Mode",
   // Phase 3
-  "NoEvents", "ForcePixelPicking", "CanFocus",
+  "NoEvents", "ForcePixelPicking", "CanFocus", "PickContext",
   // Auto-instancing
   "Instanced",
 ]);

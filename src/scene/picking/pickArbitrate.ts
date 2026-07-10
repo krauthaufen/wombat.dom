@@ -89,13 +89,26 @@ export function arbitratePick(
   let pixN = V3d.zero;
   let pixPi = 0;
   let pixDepth = 0;
+  let portalUv: { x: number; y: number } | undefined;
   const pixCentered = result !== undefined && result.found && result.dist2 === 0;
   if (result !== undefined && result.found) {
     const s0 = result.slot0;
     const absId = Math.abs(s0) | 0;
     const scope = registry.lookup(absId);
     if (scope !== undefined) {
-      if (s0 > 0) {
+      if (s0 > 0 && scope.pickSubContext !== undefined) {
+        // Portal: slots 1-2 = the sampled source-uv, slot 3 = the
+        // portal GEOMETRY's own NDC depth (so pixel-vs-BVH arbitration
+        // below still compares real depths).
+        const ndcZ = result.slot3;
+        pixDepth = ndcZ;
+        const ndcX = 2 * ((result.px + 0.5) / sX) - 1;
+        const ndcY = 1 - 2 * ((result.py + 0.5) / sY);
+        pixVp = transformPosProj(pBwd, ndcX, ndcY, ndcZ);
+        pixN = V3d.zero;
+        pixPi = 0;
+        portalUv = { x: result.slot1, y: result.slot2 };
+      } else if (s0 > 0) {
         // Mode A: slot1 = encoded normal, slot2 = NDC depth, slot3 = part.
         const ndcZ = result.slot2;
         pixDepth = ndcZ;
@@ -138,7 +151,11 @@ export function arbitratePick(
       // eslint-disable-next-line no-console
       console.warn("[picking] cannot pick-through pixel-picked objects");
     }
-    return { scope: pixScope, viewPos: pixVp, viewNormal: pixN, partIndex: pixPi, isPixel: true, hoverPickId };
+    return {
+      scope: pixScope, viewPos: pixVp, viewNormal: pixN, partIndex: pixPi,
+      isPixel: true, hoverPickId,
+      ...(portalUv !== undefined ? { portalUv } : {}),
+    };
   }
 
   if (bvh !== undefined) {
@@ -257,4 +274,43 @@ function normalize(v: V3d): V3d {
   const l = Math.hypot(v.x, v.y, v.z);
   if (l === 0) return v;
   return new V3d(v.x / l, v.y / l, v.z / l);
+}
+
+// ---------------------------------------------------------------------------
+// Portal recursion — shared by the dispatcher and by nested
+// `IPickSubContext.pickAt` implementations, so arbitrary nesting works
+// through ONE code path.
+// ---------------------------------------------------------------------------
+
+/**
+ * If `hit` landed on a portal scope (a `pickSubContext`-bearing leaf
+ * whose pick pixel carried the sampled source-uv), forward the pick
+ * into the inner scene and return the INNERMOST hit; an inner miss
+ * falls through to the portal scope itself (hover the "window
+ * background" — its own cursor / handlers apply). Non-portal hits
+ * pass through unchanged.
+ *
+ * uv → pixel mapping Y-FLIPS: texture coordinates have their origin
+ * bottom-left, the pick buffer's pixel space is top-left (F# parity:
+ * SceneHandler's portal resolve).
+ *
+ * The returned hit's `registry` identifies the id space it belongs to
+ * (`undefined` = the caller's own registry).
+ */
+export async function resolveThroughPortals(
+  hit: ResolvedHit | undefined,
+): Promise<ResolvedHit | undefined> {
+  if (hit === undefined) return undefined;
+  const sub = hit.scope.pickSubContext;
+  if (sub === undefined || hit.portalUv === undefined || !hit.isPixel) return hit;
+  // AVal.force OK: pick-time snapshot in event/pick context.
+  const sz = AVal.force(sub.size);
+  const ix = Math.floor(hit.portalUv.x * sz.width);
+  const iy = Math.floor((1 - hit.portalUv.y) * sz.height);
+  if (ix < 0 || iy < 0 || ix >= sz.width || iy >= sz.height) return hit;
+  const inner = await sub.pickAt(ix, iy);
+  if (inner === undefined) return hit;
+  // Keep the OUTER hover latch — the outer pick buffer is what the
+  // dispatcher's hover diff reads centre pixels from.
+  return { ...inner.hit, registry: inner.registry, hoverPickId: hit.hoverPickId };
 }

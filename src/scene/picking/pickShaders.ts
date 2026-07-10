@@ -11,7 +11,7 @@ import { effect, fragment, vertex } from "@aardworx/wombat.shader";
 import { uniform } from "@aardworx/wombat.shader/uniforms";
 import { abs, clamp, floor } from "@aardworx/wombat.shader/types";
 import type { f32, i32, u32, FragmentBuiltinIn } from "@aardworx/wombat.shader/types";
-import { V3f, V4f } from "@aardworx/wombat.base";
+import { V3f, V4f, type V2f } from "@aardworx/wombat.base";
 // Silence TS "imported but unused" — these only show up inside marker
 // bodies, which the inline plugin replaces at build time.
 void (null as unknown as f32 | i32 | u32 | FragmentBuiltinIn);
@@ -183,6 +183,40 @@ export function pickFinalANoNormalNoPiEffect(): Effect {
   });
   pickFinalANoNormalNoPiCache = effect(fs);
   return pickFinalANoNormalNoPiCache;
+}
+
+// ---------------------------------------------------------------------------
+// pickFinalPortal — portal ("offscreen pick context") variant.
+//
+// Chosen when the leaf sits under `<Sg PickContext=…>` and the user
+// effect produces `PickContextCoord` — the SOURCE UV the composite's
+// fragment sampled from the offscreen color texture. Because the
+// rasterizer interpolates whatever uv the surface emits, portal
+// picking is correct for ANY tilt / scale / warp of the host geometry.
+//
+// Packs `{ +PickId, uv.x, uv.y, quadOwnDepth }`: +id passes the
+// mode-A sign gate untouched; slots 1-2 are uv (NOT normal/depth);
+// slot 3 carries the PORTAL GEOMETRY's own depth so pixel-vs-BVH
+// arbitration still has a real depth to compare.
+// ---------------------------------------------------------------------------
+
+let pickFinalPortalCache: Effect | undefined;
+
+export function pickFinalPortalEffect(): Effect {
+  if (pickFinalPortalCache !== undefined) return pickFinalPortalCache;
+  const fs = fragment((input: {
+    Colors: V4f;
+    PickContextCoord: V2f;
+  }, b: FragmentBuiltinIn) => {
+    const id = new V4f(
+      (uniform.PickId as number) as f32,
+      input.PickContextCoord.x, input.PickContextCoord.y,
+      b.fragCoord.z,
+    );
+    return { Colors: input.Colors, pickId: id, Depth: b.fragCoord.z };
+  });
+  pickFinalPortalCache = effect(fs);
+  return pickFinalPortalCache;
 }
 
 // ---------------------------------------------------------------------------

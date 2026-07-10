@@ -164,6 +164,8 @@ export {
   pickFinalANoNormalEffect,
   pickFinalANoNormalNoPiEffect,
   pickFinalBEffect,
+  pickFinalPortalEffect,
+  resolveThroughPortals,
   chooseChain,
   composePickChain,
   type PickFinalTag,

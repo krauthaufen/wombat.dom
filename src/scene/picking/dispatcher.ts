@@ -39,7 +39,7 @@
 import { AVal, avalAddCallback, cval } from "@aardworx/wombat.adaptive";
 import { Box2d, Trafo3d, V2d, V2i, V3d, V4d } from "@aardworx/wombat.base";
 
-import { arbitratePick } from "./pickArbitrate.js";
+import { arbitratePick, resolveThroughPortals } from "./pickArbitrate.js";
 import type { PickArgminResult } from "./pickArgminCompute.js";
 import type { LeafPickEntry, LeafPickScope, PickRegistry } from "./registry.js";
 import {
@@ -148,6 +148,9 @@ interface LastTapInfo {
 
 export class PickDispatcher implements SceneEventDispatch {
   private lastHit: number = 0;
+  /** Registry `lastHit` belongs to (portal hits come from inner
+   *  producers with independent id spaces). `undefined` while no hit. */
+  private lastHitReg: PickRegistry | undefined;
   private lastPath: ReadonlyArray<LeafPickEntry> = [];
   private seq: number = 0;
   private lastSettledSeq: number = 0;
@@ -267,10 +270,13 @@ export class PickDispatcher implements SceneEventDispatch {
       const devX = Math.floor(cssX * sx);
       const devY = Math.floor(cssY * sy);
 
-      void resolvePixel(devX, devY).then((result) => {
+      void resolvePixel(devX, devY).then(async (result) => {
+        if (seq < this.lastSettledSeq) return;
+        const hit = await this.resolve(result, devX, devY);
+        // Portal recursion awaited — a newer event may have settled
+        // meanwhile; drop stale results (same seq policy as above).
         if (seq < this.lastSettledSeq) return;
         this.lastSettledSeq = seq;
-        const hit = this.resolve(result, devX, devY);
         this.dispatch(ev, kind, cssX, cssY, hit, rect, sx, sy);
       });
     };
@@ -331,10 +337,11 @@ export class PickDispatcher implements SceneEventDispatch {
       const sy = rect.height > 0 ? canvas.height / rect.height : 1;
       const devX = Math.floor(cssX * sx);
       const devY = Math.floor(cssY * sy);
-      void resolvePixel(devX, devY).then((result) => {
+      void resolvePixel(devX, devY).then(async (result) => {
+        if (seq < this.lastSettledSeq) return;
+        const hit = await this.resolve(result, devX, devY);
         if (seq < this.lastSettledSeq) return;
         this.lastSettledSeq = seq;
-        const hit = this.resolve(result, devX, devY);
         this.dispatchWheel(ev, cssX, cssY, hit, rect, sx, sy);
       });
     };
@@ -546,16 +553,35 @@ export class PickDispatcher implements SceneEventDispatch {
    * Merge the GPU argmin winner (`result`) with one BVH centre ray into
    * a single `ResolvedHit` (see `pickArbitrate`). `result === undefined`
    * (GPU read failed/skipped) falls back to a BVH-only resolve.
+   *
+   * Async because a winner on a PORTAL scope recurses `pickAt` into
+   * the offscreen scene (one readback await per nesting level). The
+   * returned hit may then belong to an INNER producer's registry —
+   * see `regOf`.
    */
-  private resolve(result: PickArgminResult | undefined, centerX: number, centerY: number): ResolvedHit | undefined {
-    return arbitratePick(
+  private resolve(result: PickArgminResult | undefined, centerX: number, centerY: number): Promise<ResolvedHit | undefined> {
+    return resolveThroughPortals(arbitratePick(
       result,
       { devX: centerX, devY: centerY },
       this.registry,
       this._getView(),
       this._getProj(),
       this.canvasSize(),
-    );
+    ));
+  }
+
+  /** Registry the hit's pickId belongs to — inner (portal) producers
+   *  have their own id spaces; `undefined` means our own. */
+  private regOf(hit: ResolvedHit | undefined): PickRegistry {
+    return hit?.registry ?? this.registry;
+  }
+
+  /** True when the hit came from an INNER (portal) producer. Presses /
+   *  drags / long-presses / focus track ids against OUR registry only;
+   *  foreign hits still dispatch normally (handlers, hover, cursor,
+   *  tap) but skip the id-keyed state machines (v1 portal scope). */
+  private isForeign(hit: ResolvedHit | undefined): boolean {
+    return hit?.registry !== undefined && hit.registry !== this.registry;
   }
 
   // --- core dispatch -------------------------------------------------------
@@ -677,14 +703,20 @@ export class PickDispatcher implements SceneEventDispatch {
       // Replace any stale press for this pointer (extremely rare: a
       // missed pointerup / cancel).
       this.cancelPress(pointerId);
+      // Foreign (portal-inner) hits: presses re-resolve their scope
+      // by pickId against OUR registry at fire time — an inner id
+      // would collide with an unrelated outer scope. Store 0 so
+      // long-press / drag simply don't arm on inner scopes (v1 portal
+      // scope); tap works (it uses the live hit at pointerup).
+      const ownId = this.isForeign(hit) ? 0 : (hitScope?.pickId ?? 0);
       const press: PressState = {
         downAt: Date.now(),
         downX: cssX,
         downY: cssY,
-        hitPickId: hitScope?.pickId ?? 0,
+        hitPickId: ownId,
         longPressTimer: undefined,
         dragging: false,
-        dragScopeId: hitScope?.pickId ?? 0,
+        dragScopeId: ownId,
       };
       press.longPressTimer = setTimeout(() => {
         const cur = this.presses.get(pointerId);
@@ -726,7 +758,7 @@ export class PickDispatcher implements SceneEventDispatch {
     const viewNormal = hit?.viewNormal;
     const partIndex = hit?.partIndex ?? 0;
     const modeB = hit !== undefined && hit.isPixel
-      ? this.registry.modeOf(hitScope.pickId) === "B"
+      ? this.regOf(hit).modeOf(hitScope.pickId) === "B"
       : false;
     const sceneEv = this.makeEvent(kind, ev, cssX, cssY, hitScope, hitScope.pickId, modeB, viewPos, viewNormal, partIndex);
     this.runCaptureBubble(hitScope.handlers, sceneEv);
@@ -747,7 +779,7 @@ export class PickDispatcher implements SceneEventDispatch {
     // the existing tap/double-tap logic. CanFocus=true scopes win
     // focus; clicks outside any focusable scope clear it.
     if (kind === "OnClick") {
-      if (hitScope.canFocus !== undefined && AVal.force(hitScope.canFocus)) {
+      if (!this.isForeign(hit) && hitScope.canFocus !== undefined && AVal.force(hitScope.canFocus)) {
         this.registry.setFocus(hitScope.pickId);
       } else {
         this.registry.clearFocus();
@@ -872,12 +904,15 @@ export class PickDispatcher implements SceneEventDispatch {
   private updateHover(ev: PointerEvent, cssX: number, cssY: number, hit: ResolvedHit | undefined): void {
     const hitScope = hit?.scope;
     const hitId = hitScope?.pickId ?? 0;
-    if (hitId === this.lastHit) return;
+    // Identity is (registry, id) — a portal-inner id can numerically
+    // collide with an outer one.
+    const hitReg = hitScope !== undefined ? this.regOf(hit) : undefined;
+    if (hitId === this.lastHit && (hitId === 0 || hitReg === this.lastHitReg)) return;
     const newPath = hitScope?.handlers ?? [];
     const prefix = sharedPrefixLength(this.lastPath, newPath);
 
     if (this.lastHit !== 0) {
-      const oldScope = this.registry.lookup(this.lastHit);
+      const oldScope = (this.lastHitReg ?? this.registry).lookup(this.lastHit);
       if (oldScope !== undefined && !oldScope.pickThrough && AVal.force(oldScope.active)) {
         const leaveEv = this.makeEvent("OnPointerLeave", ev, cssX, cssY, oldScope, oldScope.pickId, false, undefined);
         this.runUpAll(this.lastPath, this.lastPath.slice(0, prefix), leaveEv);
@@ -885,12 +920,13 @@ export class PickDispatcher implements SceneEventDispatch {
     }
 
     if (hitScope !== undefined && hit !== undefined) {
-      const modeB = !hit.isPixel ? false : (this.registry.modeOf(hitScope.pickId) === "B");
+      const modeB = !hit.isPixel ? false : (this.regOf(hit).modeOf(hitScope.pickId) === "B");
       const enterEv = this.makeEvent("OnPointerEnter", ev, cssX, cssY, hitScope, hitScope.pickId, modeB, hit.viewPos, hit.viewNormal, hit.partIndex);
       this.runDownAll(newPath, newPath.slice(0, prefix), enterEv);
     }
 
     this.lastHit = hitId;
+    this.lastHitReg = hitReg;
     this.lastPath = newPath;
   }
 

@@ -50,6 +50,21 @@ export interface ResolvedHit {
    * symmetry; the dispatcher only needs the resolved `scope`.
    */
   readonly nextScope?: LeafPickScope;
+  /**
+   * Portal ("offscreen pick context") support. When the winning
+   * pixel belongs to a scope carrying a `pickSubContext`, the pick
+   * attachment's slots 1-2 hold the SOURCE UV the composite sampled
+   * (not normal/depth) — recorded here so the resolver can recurse
+   * into the inner scene (`resolveThroughPortals`).
+   */
+  readonly portalUv?: { readonly x: number; readonly y: number };
+  /**
+   * The registry the winning scope's pickId belongs to. `undefined`
+   * means the dispatcher's own registry; set to the INNER producer's
+   * registry when the hit came through a portal recursion — pickIds
+   * from different producers live in independent id spaces.
+   */
+  readonly registry?: PickRegistry;
 }
 
 interface PointerLoc {

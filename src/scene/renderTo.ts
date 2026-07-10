@@ -46,7 +46,7 @@ import type { SgNode } from "./sg.js";
 import { TraversalState } from "./traversalState.js";
 import type { OitMode } from "./transparency.js";
 import { globalTime } from "./ambient.js";
-import { arbitratePick } from "./picking/pickArbitrate.js";
+import { arbitratePick, resolveThroughPortals } from "./picking/pickArbitrate.js";
 import type { IRenderPickContext, PortalPickHit } from "./picking/pickContext.js";
 import { createPickProducer, type PickProducer } from "./picking/pickProducer.js";
 
@@ -285,9 +285,13 @@ export function renderToPickable(
       const p = AVal.force(proj);
       const sz = AVal.force(opts.size);
       const viewportSize = new V2i(sz.width, sz.height);
-      const hit = arbitratePick(result, { devX: x, devY: y }, producer.registry, v, p, viewportSize);
-      if (hit === undefined) return undefined;
-      return { hit, view: v, proj: p, viewportSize, registry: producer.registry };
+      // Arbitrate in THIS scene, then recurse — the inner scene may
+      // itself contain portals (arbitrary nesting, F# parity).
+      const hit = await resolveThroughPortals(
+        arbitratePick(result, { devX: x, devY: y }, producer.registry, v, p, viewportSize),
+      );
+      if (hit === undefined || disposed) return undefined;
+      return { hit, registry: hit.registry ?? producer.registry };
     },
   };
 

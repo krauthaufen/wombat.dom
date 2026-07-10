@@ -130,6 +130,8 @@ export function forEachLeaf(
       forEachLeaf(node.child, state.pushForcePixelPicking(node.value), visit); return;
     case "CanFocus":
       forEachLeaf(node.child, state.pushCanFocus(node.value), visit); return;
+    case "PickContext":
+      forEachLeaf(node.child, state.pushPickContext(node.value), visit); return;
     case "Instanced":
       // Walk through; instancing is materialized at compile time, not
       // during plain leaf enumeration.

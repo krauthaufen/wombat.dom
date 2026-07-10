@@ -444,6 +444,9 @@ function forcePixelPicking(value: boolean | aval<boolean>, child: SgNode): SgNod
 function canFocus(value: boolean | aval<boolean>, child: SgNode): SgNode {
   return { kind: "CanFocus", value: liftAval(value), child };
 }
+function pickContext(value: import("./picking/pickContext.js").IPickSubContext, child: SgNode): SgNode {
+  return { kind: "PickContext", value, child };
+}
 
 // ---------------------------------------------------------------------------
 // Trafo helpers — return Trafo3d (or aval<Trafo3d>) for use in arrays
@@ -548,6 +551,10 @@ export interface SgScopeProps {
   NoEvents?: boolean | aval<boolean>;
   ForcePixelPicking?: boolean | aval<boolean>;
   CanFocus?: boolean | aval<boolean>;
+  /** Portal pick recursion handle (`renderToPickable(...).pick`) —
+   *  Sg.onClick etc. inside the referenced offscreen scene resolve
+   *  through leaves under this scope. */
+  PickContext?: import("./picking/pickContext.js").IPickSubContext;
 
   // Event handlers — appended to the chain at this scope. Each
   // pair is `On<Kind>` (bubble) and `OnCapture<Kind>` (capture);
@@ -623,6 +630,7 @@ function applyScopeAttrs(node: SgNode, props: SgScopeProps): SgNode {
   if (props.NoEvents !== undefined)        n = noEvents(props.NoEvents, n);
   if (props.ForcePixelPicking !== undefined) n = forcePixelPicking(props.ForcePixelPicking, n);
   if (props.CanFocus !== undefined)        n = canFocus(props.CanFocus, n);
+  if (props.PickContext !== undefined)     n = pickContext(props.PickContext, n);
   // Phase 2 — geometry
   if (props.VertexAttributes !== undefined)   n = vertexAttributes(props.VertexAttributes)(n);
   if (props.InstanceAttributes !== undefined) n = instanceAttributes(props.InstanceAttributes)(n);
@@ -1220,6 +1228,7 @@ export interface SgNamespace {
   noEvents:          typeof noEvents;
   forcePixelPicking: typeof forcePixelPicking;
   canFocus:          typeof canFocus;
+  pickContext:       typeof pickContext;
 
   // Auto-instancing
   instanced:         typeof instanced;
@@ -1313,6 +1322,7 @@ export const Sg: SgNamespace = (() => {
   fn.noEvents          = noEvents;
   fn.forcePixelPicking = forcePixelPicking;
   fn.canFocus          = canFocus;
+  fn.pickContext       = pickContext;
   fn.instanced         = instanced;
   fn.instancedTrafos   = instancedTrafos;
   // Flag the JSX function-components so the jsx-runtime calls them

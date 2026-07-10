@@ -13,27 +13,20 @@
 // same compile-order motivation as the F# original.
 
 import type { aval } from "@aardworx/wombat.adaptive";
-import type { Trafo3d, V2i } from "@aardworx/wombat.base";
+import type { Trafo3d } from "@aardworx/wombat.base";
 
 import type { PickRegistry } from "./registry.js";
 import type { ResolvedHit } from "./spiralHitTest.js";
 
 /**
  * A fully-resolved pick inside (possibly nested) offscreen scenes.
- * Everything is snapshotted AT PICK TIME in the INNERMOST scene's
- * frame — a world position is meaningless without the view/proj that
- * produced it (F# parity: PickResult forces Model/View/Proj on
- * construction).
+ * `hit` is the INNERMOST winner; its scope carries the view / proj /
+ * model of the scene it lives in (captured at lowering), so event
+ * locations built from it are automatically in the inner frame.
  */
 export interface PortalPickHit {
   /** The innermost resolved hit (scope + view-space pos/normal/part). */
   readonly hit: ResolvedHit;
-  /** View trafo of the scene the hit lives in, forced at pick time. */
-  readonly view: Trafo3d;
-  /** Projection trafo of that scene, forced at pick time. */
-  readonly proj: Trafo3d;
-  /** Render-target size of that scene (device pixels). */
-  readonly viewportSize: V2i;
   /** The registry the hit's pickId belongs to. Ids are per-producer —
    *  never decode them against any other registry. */
   readonly registry: PickRegistry;
