@@ -12,6 +12,12 @@ import { adaptiveMemoPlugin } from "@aardworx/wombat.adaptive/plugin";
 const repo = fileURLToPath(new URL("../..", import.meta.url));
 
 export default defineConfig({
+  // Relative base so the built bundle works under any URL prefix
+  // (e.g. https://georg.haaser.net/vienna_demo/).
+  base: "./",
+  // `NO_PUBLIC=1 vite build` skips copying public/ (the vienna symlink
+  // points at ~2 GB of districts — data is deployed separately).
+  ...(process.env.NO_PUBLIC ? { publicDir: false as const } : {}),
   plugins: [adaptiveMemoPlugin(), wombatShader({ rootDir: repo })],
   resolve: {
     alias: [

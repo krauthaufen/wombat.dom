@@ -121,7 +121,8 @@ function decodeOct32(packed: Int32Array): Float32Array {
 }
 
 async function loadCity(): Promise<CityScene> {
-  const dirs = DISTRICT_LIST.map((n) => `/vienna/d0${n}`);
+  // Relative to the page URL so the bundle works under any prefix.
+  const dirs = DISTRICT_LIST.map((n) => `vienna/d0${n}`);
   const manifests: Manifest[] = [];
   for (const d of dirs) manifests.push(await fetchJson<Manifest>(`${d}/manifest.json`));
   const districtVerts = manifests.map((m) =>
