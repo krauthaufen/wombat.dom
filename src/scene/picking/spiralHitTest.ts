@@ -113,6 +113,9 @@ export function pointHitTest(
   const vBwd = view.backward;
   const pBwd = proj.backward;
   const pFwd = proj.forward;
+  // Reversed-Z projections (M22 >= 0: n/(f-n) finite, 0 infinite) flip the
+  // meaning of "closer" in NDC depth — arbitration must follow.
+  const revZ = pFwd.M22 >= 0;
   const pxX = pointer.devX;
   const pxY = pointer.devY;
   const lx = pxX - region.originX;
@@ -207,7 +210,7 @@ export function pointHitTest(
     }
   }
 
-  if (pixOk && pixScope !== undefined && (!bvhOk || pixDepth <= bvhDepth)) {
+  if (pixOk && pixScope !== undefined && (!bvhOk || (revZ ? pixDepth >= bvhDepth : pixDepth <= bvhDepth))) {
     return { scope: pixScope, viewPos: pixVp, viewNormal: pixN, partIndex: pixPi, isPixel: true };
   }
   if (bvhOk && bvhScope !== undefined) {
@@ -248,6 +251,9 @@ export function spiralHitTest(
   const vBwd = view.backward;
   const pBwd = proj.backward;
   const pFwd = proj.forward;
+  // Reversed-Z projections (M22 >= 0: n/(f-n) finite, 0 infinite) flip the
+  // meaning of "closer" in NDC depth — arbitration must follow.
+  const revZ = pFwd.M22 >= 0;
   const rayFor = (pxX: number, pxY: number): Ray3d => {
     const ndcX = (2 * (pxX + 0.5) / sX) - 1;
     const ndcY = 1 - (2 * (pxY + 0.5) / sY);
@@ -452,7 +458,7 @@ export function spiralHitTest(
     }
 
     // ---- Decide winner for this offset ----
-    const pickPixel = pixOk && (!bvhOk || pixDepth <= bvhDepth);
+    const pickPixel = pixOk && (!bvhOk || (revZ ? pixDepth >= bvhDepth : pixDepth <= bvhDepth));
     if (pickPixel && pixScope !== undefined) {
       winnerHoverIdValue = pixScope.pickId;
       return finalizeWinner({
