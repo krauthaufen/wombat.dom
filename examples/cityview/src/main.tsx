@@ -109,6 +109,13 @@ interface CityPart { v0: number; vn: number; c0: number; cn: number; kind: Kind;
 // cache-control). Bump on every data redeploy.
 const DATA_V = "?v=3";
 
+// ?floor=real — load the vienna_hd dataset variant: the original
+// land-use polygon floor (streets, sidewalks, parks; ~9.6k ground
+// patches in d01 alone, 176 M ground verts city-wide) instead of the
+// lightweight 12 m DGM grid. Needs a beefy GPU for many districts.
+const FLOOR_REAL = P.get("floor") === "real";
+const DATA_BASE = FLOOR_REAL ? "vienna_hd" : "vienna";
+
 async function gunzipMaybe(r: Response): Promise<ArrayBuffer> {
   const buf = await r.arrayBuffer();
   const u8 = new Uint8Array(buf, 0, 2);
@@ -150,7 +157,7 @@ interface DistrictData {
 
 async function fetchManifests(): Promise<{ manifests: Manifest[]; totalVerts: number; radius: number }> {
   const manifests: Manifest[] = [];
-  for (const n of DISTRICT_LIST) manifests.push(await fetchJson<Manifest>(`vienna/${DNAME(n)}/manifest.json`));
+  for (const n of DISTRICT_LIST) manifests.push(await fetchJson<Manifest>(`${DATA_BASE}/${DNAME(n)}/manifest.json`));
   const totalVerts = manifests
     .map((m) => KINDS.flatMap(k => [...(m[k] ?? [])]).reduce((a, p) => Math.max(a, p.v0 + p.vn), 0))
     .reduce((a, b) => a + b, 0);
@@ -160,7 +167,7 @@ async function fetchManifests(): Promise<{ manifests: Manifest[]; totalVerts: nu
 
 async function fetchDistrict(di: number, manifest: Manifest): Promise<DistrictData> {
   const n = DISTRICT_LIST[di]!;
-  const d = `vienna/${DNAME(n)}`;
+  const d = `${DATA_BASE}/${DNAME(n)}`;
   const positions = new Float32Array(await fetchBin(`${d}/positions.bin`));
   const normalsOct = new Uint32Array(await fetchBin(`${d}/normals.bin`));
   const colorsC4b = new Uint32Array(await fetchBin(`${d}/colors.bin`));
