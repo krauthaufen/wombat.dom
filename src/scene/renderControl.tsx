@@ -23,7 +23,7 @@
 // runs in a `ref` callback on canvas mount and is asynchronous —
 // the first frame appears one rAF after the device is ready.
 
-import { AVal, avalAddCallback, cval, type aval } from "@aardworx/wombat.adaptive";
+import { AVal, avalAddCallback, cval, transact, type aval } from "@aardworx/wombat.adaptive";
 import { Trafo3d, V2i } from "@aardworx/wombat.base";
 import {
   Runtime, attachCanvas, runFrame,
@@ -515,7 +515,12 @@ async function initialise(
   const ro = new ResizeObserver(() => {
     const w = canvas.clientWidth, h = canvas.clientHeight;
     const cur = AVal.force(clientSize as aval<{ width: number; height: number }>);
-    if (cur.width !== w || cur.height !== h) clientSize.value = { width: w, height: h };
+    // transact: ResizeObserver fires outside any adaptive scope; a bare cval
+    // write throws "cannot mark object without transaction". Phones hit this
+    // constantly (URL-bar collapse / overlay layout resize the canvas).
+    if (cur.width !== w || cur.height !== h) {
+      transact(() => { clientSize.value = { width: w, height: h }; });
+    }
   });
   ro.observe(canvas);
   scope.onDispose(() => ro.disconnect());
