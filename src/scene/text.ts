@@ -35,6 +35,7 @@
 //                        to opt into MSAA, TODO).
 
 import { AVal, HashMap, type aval } from "@aardworx/wombat.adaptive";
+import { proj as ambProj } from "./ambient.js";
 import { V2d, V2f, V3d, V4f, Trafo3d } from "@aardworx/wombat.base";
 import {
   Font, GlyphCache, GLYPH_FLOATS_PER_VERTEX, layoutText,
@@ -499,7 +500,10 @@ export function SgText(
       Mode: "line-list" as const,
     } : aa === "alpha-blending" ? {
       BlendMode: alphaOverBlendState(),
-      DepthTest: "less-equal" as const,
+      // reversed-Z aware (see text-sdf.ts): hardcoded less-equal inverts
+      // the test under a reversed projection and text disappears.
+      DepthTest: ambProj.map((p) =>
+        (p.forward.M22 >= 0 ? "greater-equal" : "less-equal") as GPUCompareFunction),
     } : {}),
     ...(alignTrafo !== undefined ? { Trafo: alignTrafo } : {}),
     children: leafChildren,

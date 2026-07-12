@@ -63,7 +63,7 @@ import type { VNode } from "../vnode.js";
 import { Sg } from "./constructors.js";
 import type { SgNode } from "./sg.js";
 import type { SgScopeProps } from "./constructors.js";
-import { viewport as ambViewport } from "./ambient.js";
+import { viewport as ambViewport, proj as ambProj } from "./ambient.js";
 
 // `DebugMode` lives only in this file; PathColor/Viewport/AaWidthPx
 // are augmented in text.ts and shared.
@@ -476,11 +476,17 @@ export function buildSdfTextScene(args: SdfTextArgs): SgNode {
     // feeds the inner polyline straight into libtess; only the
     // Clipper-inflated outer side is quantized). Body+band share
     // their boundary bit-for-bit, so depth writes can stay on with
-    // less-equal — no z-fight on the seam. The remaining overlap is
-    // the Loop-Blinn lens triangles for outward-bulging beziers
-    // (band overlaps lens; lens already paints α=1 so the band's
-    // SDF result there is harmlessly covered by the lens fragment).
-    DepthTest: "less-equal",
+    // an EQUAL-inclusive compare — no z-fight on the seam. The
+    // remaining overlap is the Loop-Blinn lens triangles for
+    // outward-bulging beziers (band overlaps lens; lens already
+    // paints α=1 so the band's SDF result there is harmlessly
+    // covered by the lens fragment).
+    // Direction follows the ambient projection: reversed-Z (M22 >= 0,
+    // e.g. the infinite-far reversed perspective) needs greater-equal —
+    // a hardcoded less-equal silently inverts the test there and text
+    // only shows THROUGH nearer geometry.
+    DepthTest: ambProj.map((p) =>
+      (p.forward.M22 >= 0 ? "greater-equal" : "less-equal") as GPUCompareFunction),
     DepthMask: true,
     ...(alignTrafo !== undefined ? { Trafo: alignTrafo } : {}),
     children: leafChildren,
