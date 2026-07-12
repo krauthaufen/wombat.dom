@@ -107,13 +107,18 @@ const vsBare = vertex((input: {
   // Flip detection: project ±x baseline probes through MVP and
   // compare their screen-x. If +x lands LEFT of -x in screen space,
   // the text is viewed from behind → mirror around x=0.
-  const pPlus  = uniform.ProjTrafo.mul(uniform.ViewTrafo.mul(uniform.ModelTrafo.mul(new V4f( 1.0, 0.0, 0.0, 1.0))));
-  const pMinus = uniform.ProjTrafo.mul(uniform.ViewTrafo.mul(uniform.ModelTrafo.mul(new V4f(-1.0, 0.0, 0.0, 1.0))));
+  // NB: positions go through the DERIVED `ModelViewTrafo` (composed CPU-side
+  // through the df32 chain), never `ViewTrafo.mul(ModelTrafo.mul(x))` — the
+  // separate f32 multiply cancels two planet-scale translations per vertex
+  // and the residual quantization makes labels visibly wobble as the camera
+  // moves. ProjTrafo stays separate (small view-space numbers are safe).
+  const pPlus  = uniform.ProjTrafo.mul(uniform.ModelViewTrafo.mul(new V4f( 1.0, 0.0, 0.0, 1.0)));
+  const pMinus = uniform.ProjTrafo.mul(uniform.ModelViewTrafo.mul(new V4f(-1.0, 0.0, 0.0, 1.0)));
   const sx = (pPlus.x / pPlus.w) < (pMinus.x / pMinus.w) ? -1.0 : 1.0;
   const ofsX = input.a_instOffset.x * sx;
   const locX = input.a_localPos.x * sx;
   const text = new V4f(ofsX + locX, input.a_instOffset.y + input.a_localPos.y, 0.0, 1.0);
-  const clip = uniform.ProjTrafo.mul(uniform.ViewTrafo.mul(uniform.ModelTrafo.mul(text)));
+  const clip = uniform.ProjTrafo.mul(uniform.ModelViewTrafo.mul(text));
   return { gl_Position: clip, v_klmKind: input.a_klmKind };
 });
 
@@ -126,18 +131,18 @@ const vsRibbon = vertex((input: {
   a_klmKind:    V4f;
   a_instOffset: V2f;
 }) => {
-  const pPlus  = uniform.ProjTrafo.mul(uniform.ViewTrafo.mul(uniform.ModelTrafo.mul(new V4f( 1.0, 0.0, 0.0, 1.0))));
-  const pMinus = uniform.ProjTrafo.mul(uniform.ViewTrafo.mul(uniform.ModelTrafo.mul(new V4f(-1.0, 0.0, 0.0, 1.0))));
+  const pPlus  = uniform.ProjTrafo.mul(uniform.ModelViewTrafo.mul(new V4f( 1.0, 0.0, 0.0, 1.0)));
+  const pMinus = uniform.ProjTrafo.mul(uniform.ModelViewTrafo.mul(new V4f(-1.0, 0.0, 0.0, 1.0)));
   const sx = (pPlus.x / pPlus.w) < (pMinus.x / pMinus.w) ? -1.0 : 1.0;
   const ofsX = input.a_instOffset.x * sx;
   const locX = input.a_localPos.x * sx;
   const text = new V4f(ofsX + locX, input.a_instOffset.y + input.a_localPos.y, 0.0, 1.0);
-  let clip = uniform.ProjTrafo.mul(uniform.ViewTrafo.mul(uniform.ModelTrafo.mul(text)));
+  let clip = uniform.ProjTrafo.mul(uniform.ModelViewTrafo.mul(text));
   if (input.a_klmKind.w > 2.5) {
     const outX  = input.a_klmKind.x * sx;
     const outY  = input.a_klmKind.y;
     const isOut = input.a_klmKind.z;
-    const outClip = uniform.ProjTrafo.mul(uniform.ViewTrafo.mul(uniform.ModelTrafo.mul(new V4f(outX, outY, 0.0, 0.0))));
+    const outClip = uniform.ProjTrafo.mul(uniform.ModelViewTrafo.mul(new V4f(outX, outY, 0.0, 0.0)));
     const outNdc = new V2f(outClip.x, outClip.y).div(max(clip.w, 1e-8));
     const outPx  = new V2f(outNdc.x * uniform.Viewport.x, outNdc.y * uniform.Viewport.y);
     const len    = max(outPx.length(), 1e-8);

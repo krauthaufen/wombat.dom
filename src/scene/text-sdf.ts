@@ -114,8 +114,13 @@ function processCand(
   const c: V4f = tris[base + TWO_U] as V4f;
   const cT0 = new V4f((vInstX + a.x) * sx, vInstY + a.y, 0.0, 1.0);
   const cT2 = new V4f((vInstX + c.x) * sx, vInstY + c.y, 0.0, 1.0);
-  const cC0 = uniform.ProjTrafo.mul(uniform.ViewTrafo.mul(uniform.ModelTrafo.mul(cT0)));
-  const cC2 = uniform.ProjTrafo.mul(uniform.ViewTrafo.mul(uniform.ModelTrafo.mul(cT2)));
+  // NB: positions go through the DERIVED `ModelViewTrafo` (composed CPU-side
+  // through the df32 chain), never `ViewTrafo.mul(ModelTrafo.mul(x))` — the
+  // separate f32 multiply cancels two planet-scale translations per vertex
+  // and the residual quantization makes labels visibly wobble as the camera
+  // moves. ProjTrafo stays separate (small view-space numbers are safe).
+  const cC0 = uniform.ProjTrafo.mul(uniform.ModelViewTrafo.mul(cT0));
+  const cC2 = uniform.ProjTrafo.mul(uniform.ModelViewTrafo.mul(cT2));
   const e0px = (cC0.x / cC0.w + 1.0) * 0.5 * uniform.Viewport.x;
   const e0py = (cC0.y / cC0.w + 1.0) * 0.5 * uniform.Viewport.y;
   const e2px = (cC2.x / cC2.w + 1.0) * 0.5 * uniform.Viewport.x;
@@ -134,7 +139,7 @@ function processCand(
     bestPx2 = cx * cx + cy * cy;
   } else {
     const cT1 = new V4f((vInstX + b.x) * sx, vInstY + b.y, 0.0, 1.0);
-    const cC1 = uniform.ProjTrafo.mul(uniform.ViewTrafo.mul(uniform.ModelTrafo.mul(cT1)));
+    const cC1 = uniform.ProjTrafo.mul(uniform.ModelViewTrafo.mul(cT1));
     for (let s: u32 = ZERO_U; s < SEEDS_U; s = s + ONE_U) {
       // u32 → f32 cast for the seed multiplier.
       const sNum: number = s as number;
@@ -205,13 +210,13 @@ function buildSdfTextEffect(): Effect {
     a_lensCands:  V3f;
     a_instOffset: V2f;
   }) => {
-    const pPlus  = uniform.ProjTrafo.mul(uniform.ViewTrafo.mul(uniform.ModelTrafo.mul(new V4f( 1.0, 0.0, 0.0, 1.0))));
-    const pMinus = uniform.ProjTrafo.mul(uniform.ViewTrafo.mul(uniform.ModelTrafo.mul(new V4f(-1.0, 0.0, 0.0, 1.0))));
+    const pPlus  = uniform.ProjTrafo.mul(uniform.ModelViewTrafo.mul(new V4f( 1.0, 0.0, 0.0, 1.0)));
+    const pMinus = uniform.ProjTrafo.mul(uniform.ModelViewTrafo.mul(new V4f(-1.0, 0.0, 0.0, 1.0)));
     const sx = (pPlus.x / pPlus.w) < (pMinus.x / pMinus.w) ? -1.0 : 1.0;
     const wx = (input.a_instOffset.x + input.a_pos.x) * sx;
     const wy = input.a_instOffset.y + input.a_pos.y;
     const text = new V4f(wx, wy, 0.0, 1.0);
-    const clip = uniform.ProjTrafo.mul(uniform.ViewTrafo.mul(uniform.ModelTrafo.mul(text)));
+    const clip = uniform.ProjTrafo.mul(uniform.ModelViewTrafo.mul(text));
     return {
       gl_Position: clip,
       v_kind:      input.a_klmKind.w,
@@ -272,7 +277,7 @@ function buildSdfTextEffect(): Effect {
         input.v_inst.y + input.v_pos.y,
         0.0, 1.0,
       );
-      const fragClip = uniform.ProjTrafo.mul(uniform.ViewTrafo.mul(uniform.ModelTrafo.mul(fragText)));
+      const fragClip = uniform.ProjTrafo.mul(uniform.ModelViewTrafo.mul(fragText));
       const fragPxX = (fragClip.x / fragClip.w + 1.0) * 0.5 * uniform.Viewport.x;
       const fragPxY = (fragClip.y / fragClip.w + 1.0) * 0.5 * uniform.Viewport.y;
 
