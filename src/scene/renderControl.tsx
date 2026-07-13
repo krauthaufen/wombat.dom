@@ -335,7 +335,19 @@ async function initialise(
     const adapter = await navigator.gpu.requestAdapter();
     if (adapter === null) throw new Error("RenderControl: no GPU adapter available");
     if (scope.isDisposed) return;
-    device = await adapter.requestDevice();
+    // Raise the storage-buffer limits toward what the adapter supports.
+    // The heap binds 4 arena views (+3 megacall, vertex-only) per stage,
+    // so the WebGPU default of 8 leaves only 4 for user storage — an OIT
+    // A-buffer alone wants 5. Ask for the adapter's max (typically 16);
+    // adapters that only offer the default are unchanged.
+    const wantStorage = adapter.limits.maxStorageBuffersPerShaderStage;
+    const requiredLimits: Record<string, number> = {};
+    if (typeof wantStorage === "number" && wantStorage > 8) {
+      requiredLimits.maxStorageBuffersPerShaderStage = wantStorage;
+    }
+    device = await adapter.requestDevice(
+      Object.keys(requiredLimits).length > 0 ? { requiredLimits } : {},
+    );
     if (scope.isDisposed) { device.destroy(); return; }
     // Pin the adapter to the device: Chrome/Dawn drops the wgpu
     // instance when the LAST JS reference to the GPUAdapter is

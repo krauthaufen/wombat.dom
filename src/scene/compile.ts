@@ -723,17 +723,6 @@ function lowerLeaf(
   return RenderTree.leaf(obj);
 }
 
-// Merge injected storage buffers (the OIT node pool) with a leaf's own;
-// the leaf wins on key conflict.
-function mergeStorageBuffers(
-  inject: HashMap<string, aval<IBuffer>> | undefined,
-  leaf: HashMap<string, aval<IBuffer>> | undefined,
-): HashMap<string, aval<IBuffer>> {
-  let m = inject ?? HashMap.empty<string, aval<IBuffer>>();
-  if (leaf !== undefined) for (const [k, v] of leaf) m = m.add(k, v);
-  return m;
-}
-
 function buildRenderObject(
   leaf: SgLeaf,
   state: TraversalState,
@@ -813,9 +802,11 @@ function buildRenderObject(
     uniforms,
     textures,
     samplers,
-    ...((leaf.storageBuffers !== undefined || opts.injectStorage !== undefined)
-      ? { storageBuffers: mergeStorageBuffers(opts.injectStorage, leaf.storageBuffers) }
-      : {}),
+    // Leaf-own storage stays `storageBuffers` (heap-disqualifying);
+    // scene-level injections (the OIT node pool) ride `injectedStorage`,
+    // which the heap binds at bucket level instead.
+    ...(leaf.storageBuffers !== undefined ? { storageBuffers: leaf.storageBuffers } : {}),
+    ...(opts.injectStorage !== undefined ? { injectedStorage: opts.injectStorage } : {}),
     ...(leaf.indices !== undefined ? { indices: leaf.indices } : {}),
     drawCall: leaf.drawCall,
     // GPU transform propagation: hand the heap the Model ancestor chain so it
