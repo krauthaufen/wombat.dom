@@ -64,6 +64,14 @@ export {
 } from "./transparency.js";
 
 export {
+  createGtaoPass,
+  gtaoConfig,
+  type GtaoOption,
+  type GtaoPass,
+  type GtaoSettings,
+} from "./gtao.js";
+
+export {
   RenderControl,
   type RenderControlProps,
   type RenderControlReadyInfo,

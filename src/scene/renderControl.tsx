@@ -38,6 +38,7 @@ import type { Child } from "../vnode.js";
 import { useScope } from "../scope.js";
 import { Sg, collectSgChildren } from "./constructors.js";
 import type { OitMode } from "./transparency.js";
+import { createGtaoPass, gtaoConfig, type GtaoOption, type GtaoPass } from "./gtao.js";
 import type { SgNode } from "./sg.js";
 import { TraversalState } from "./traversalState.js";
 import { PickDispatcher, type TapThresholds } from "./picking/dispatcher.js";
@@ -78,6 +79,18 @@ export interface RenderControlProps {
    * pickable. Default off (single forward pass, unchanged behaviour).
    */
   readonly transparency?: boolean | OitMode;
+
+  /**
+   * Screen-space ambient occlusion (GTAO-style horizon search), applied as a
+   * post-pass over the rendered frame. Costs no extra geometry pass — it reads
+   * the view-space normal + depth the pick attachment already carries — and
+   * multiplies the result into the canvas colour.
+   *
+   * `true` / an `aval<boolean>` (so it can be toggled live) turn it on with the
+   * defaults; an object supplies `radius` / `intensity` as well. Default off.
+   * Ignored under MSAA (`sampleCount > 1`).
+   */
+  readonly ambientOcclusion?: GtaoOption;
 
   /**
    * View trafo (world → view). When unset, the scene's outermost
@@ -419,6 +432,29 @@ async function initialise(
   const registry = producer.registry;
   scope.onDispose(() => producer.dispose());
 
+  // Ambient occlusion (opt-in). The pipelines are built on first ENABLED frame
+  // — a control that never turns AO on pays nothing. MSAA would need the pass
+  // to render into the multisampled colour target; not worth it, so skip.
+  let ao: { readonly enabled: aval<boolean>; readonly pass: () => GtaoPass } | undefined;
+  if (props.ambientOcclusion !== undefined && props.ambientOcclusion !== false) {
+    const cfg = gtaoConfig(props.ambientOcclusion);
+    if (attachment.signature.sampleCount > 1) {
+      console.warn("[RenderControl] ambientOcclusion is ignored under MSAA (sampleCount > 1)");
+    } else {
+      let pass: GtaoPass | undefined;
+      ao = {
+        enabled: cfg.enabled,
+        pass: () => {
+          if (pass === undefined) {
+            pass = createGtaoPass(device, attachment.signature.colors.get("Colors"), cfg.settings);
+          }
+          return pass;
+        },
+      };
+      scope.onDispose(() => pass?.dispose());
+    }
+  }
+
   const dispatcher = new PickDispatcher(
     registry,
     () => AVal.force(view),
@@ -463,6 +499,17 @@ async function initialise(
       ? frameInfo(now) : undefined;
     if (info !== undefined) props.onBeforeRender?.(info);
     producer.run(token);
+    // AO post-pass. Reads the pick attachment the frame just wrote (normal +
+    // depth) and multiplies the occlusion into the canvas colour. `enabled` is
+    // pulled through the token, so flipping the toggle marks the frame loop.
+    if (ao !== undefined && ao.enabled.getValue(token)) {
+      ao.pass().run(
+        producer.framebuffer.getValue(token),
+        producer.readbackPickTexture.getValue(token),
+        producer.proj.getValue(token),
+        "Colors",
+      );
+    }
     // onRendered handlers may transact() (the Aardvark.Dom pattern of a
     // camera controller stepping physics per frame). Marks fired inside
     // this frame eval would race the wrapper aval's outOfDate reset and
