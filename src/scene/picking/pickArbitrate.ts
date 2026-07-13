@@ -37,6 +37,7 @@ import type { IIntersectHit, M44d } from "@aardworx/wombat.base";
 import { n24DecodeF32 } from "./normal24.js";
 import type { PickArgminResult } from "./pickArgminCompute.js";
 import type { LeafPickScope, PickRegistry } from "./registry.js";
+import { isReversedZ } from "./spiralHitTest.js";
 import type { ResolvedHit } from "./spiralHitTest.js";
 
 interface PointerLoc {
@@ -139,7 +140,10 @@ export function arbitratePick(
   let winnerIsPixel: boolean;
   if (bvh !== undefined) {
     // Pixel wins only when it's exactly under the cursor AND in front.
-    winnerIsPixel = pixScope !== undefined && pixCentered && pixDepth <= bvhDepth;
+    // "In front" flips under a reversed-Z projection (near = 1, far = 0).
+    const revZ = isReversedZ(pBwd);
+    winnerIsPixel = pixScope !== undefined && pixCentered
+      && (revZ ? pixDepth >= bvhDepth : pixDepth <= bvhDepth);
   } else {
     winnerIsPixel = pixScope !== undefined;
   }

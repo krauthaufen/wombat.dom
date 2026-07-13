@@ -113,9 +113,9 @@ export function pointHitTest(
   const vBwd = view.backward;
   const pBwd = proj.backward;
   const pFwd = proj.forward;
-  // Reversed-Z projections (M22 >= 0: n/(f-n) finite, 0 infinite) flip the
-  // meaning of "closer" in NDC depth — arbitration must follow.
-  const revZ = pFwd.M22 >= 0;
+  // Reversed-Z projections flip the meaning of "closer" in NDC depth —
+  // arbitration must follow.
+  const revZ = isReversedZ(pBwd);
   const pxX = pointer.devX;
   const pxY = pointer.devY;
   const lx = pxX - region.originX;
@@ -251,9 +251,9 @@ export function spiralHitTest(
   const vBwd = view.backward;
   const pBwd = proj.backward;
   const pFwd = proj.forward;
-  // Reversed-Z projections (M22 >= 0: n/(f-n) finite, 0 infinite) flip the
-  // meaning of "closer" in NDC depth — arbitration must follow.
-  const revZ = pFwd.M22 >= 0;
+  // Reversed-Z projections flip the meaning of "closer" in NDC depth —
+  // arbitration must follow.
+  const revZ = isReversedZ(pBwd);
   const rayFor = (pxX: number, pxY: number): Ray3d => {
     const ndcX = (2 * (pxX + 0.5) / sX) - 1;
     const ndcY = 1 - (2 * (pxY + 0.5) / sY);
@@ -595,6 +595,29 @@ function finalizeWinner(
 // ---------------------------------------------------------------------------
 // Math helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Does this projection map SMALLER NDC depth to points FARTHER from the
+ * camera (reversed-Z)? Pixel-vs-BVH arbitration has to know, because
+ * `pixDepth`/`bvhDepth` are NDC depths and "closer" flips sign.
+ *
+ * Probed, not sniffed off a matrix element: unproject two depths well
+ * inside the valid NDC range and compare their distance from the camera
+ * (which is the origin of view space — an invariant of any view trafo).
+ * The old test `pFwd.M22 >= 0` matched the real reversed perspectives
+ * but also fired on degenerate projections (identity has M22 = 1), which
+ * inverted arbitration for orthonormal / test projections where +z is
+ * genuinely farther. Both probe points sit on the same side of the
+ * projection's pole (w = 0), so the depth→distance map is monotone
+ * between them and one comparison settles the direction.
+ */
+export function isReversedZ(pBwd: import("@aardworx/wombat.base").M44d): boolean {
+  const a = transformPosProj(pBwd, 0, 0, 0.25);
+  const b = transformPosProj(pBwd, 0, 0, 0.75);
+  const da = a.x * a.x + a.y * a.y + a.z * a.z;
+  const db = b.x * b.x + b.y * b.y + b.z * b.z;
+  return da > db;
+}
 
 function unprojClipToWorld(
   ndcX: number, ndcY: number, ndcZ: number,

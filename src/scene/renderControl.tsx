@@ -271,11 +271,35 @@ export function RenderControl(props: RenderControlProps): import("../jsx-runtime
   // stays mounted but never receives frames. Tests under happy-dom
   // hit this path on purpose.
   const onCanvasMount = (canvas: Element): void => {
-    initialise(canvas as HTMLCanvasElement, sceneTree, props, scope).catch((err) => {
-      if (!scope.isDisposed) {
-        console.error("[RenderControl] init failed:", err);
-      }
-    });
+    // Each DEVICE GENERATION lives in its own child scope. A lost device
+    // (mobile Safari drops it under memory pressure, Chrome recycles the GPU
+    // process) makes `Runtime` dispose every render task — but the render loop
+    // knew nothing about that and kept running them, throwing
+    // "RenderTask: run after dispose" forever: a permanently frozen viewer on a
+    // page that otherwise still responds. Recovery is to tear the generation
+    // down and build a fresh one (device, runtime, attachment, producer, loop);
+    // the scene and every user cval are device-agnostic and survive untouched.
+    let generation = 0;
+    const start = (): void => {
+      if (scope.isDisposed) return;
+      const gen = ++generation;
+      const genScope = scope.child();
+      // Generations after the first must build their own device/runtime — any
+      // that were handed in via props died with the original.
+      initialise(canvas as HTMLCanvasElement, sceneTree, props, genScope, () => {
+        // device lost — rebuild, unless this generation is already superseded
+        // or the control went away.
+        if (scope.isDisposed || gen !== generation) return;
+        console.warn("[RenderControl] device lost — rebuilding");
+        genScope.dispose();
+        start();
+      }, gen > 1).catch((err) => {
+        if (!scope.isDisposed) {
+          console.error("[RenderControl] init failed:", err);
+        }
+      });
+    };
+    start();
   };
 
   // Build the canvas VNode. The `ref` is consumed by mount.ts's
@@ -333,13 +357,17 @@ async function initialise(
   sceneTree: SgNode,
   props: RenderControlProps,
   scope: import("../scope.js").Scope,
+  onDeviceLost?: () => void,
+  /** Rebuild after a device loss: the caller-supplied device (if any) is dead,
+   *  so this generation must request its own. */
+  ignoreProvidedDevice = false,
 ): Promise<void> {
   if (scope.isDisposed) return;
 
   // Acquire a device — either supplied or freshly requested.
   let device: GPUDevice;
   let ownsDevice = false;
-  if (props.device !== undefined) {
+  if (props.device !== undefined && !ignoreProvidedDevice) {
     device = props.device;
   } else {
     if (!("gpu" in navigator)) {
@@ -372,14 +400,16 @@ async function initialise(
     ownsDevice = true;
   }
 
-  // Runtime — supplied or constructed.
+  // Runtime — supplied or constructed. A supplied runtime is bound to the
+  // supplied (now dead) device, so a rebuild always constructs its own.
   const derivedUniforms = props.enableDerivedUniforms ?? true;
-  const runtime = props.runtime ?? new Runtime({
+  const useProvidedRuntime = props.runtime !== undefined && !ignoreProvidedDevice;
+  const runtime = useProvidedRuntime ? props.runtime! : new Runtime({
     device,
     ...(derivedUniforms ? { enableDerivedUniforms: true } : {}),
     ...(props.maxChunkBytes !== undefined ? { maxChunkBytes: props.maxChunkBytes } : {}),
   });
-  const ownsRuntime = props.runtime === undefined;
+  const ownsRuntime = !useProvidedRuntime;
 
   // Canvas attachment — picks the right format + sample count;
   // exposes `framebuffer: aval<IFramebuffer>` and `size:
@@ -549,6 +579,19 @@ async function initialise(
   if (ownsRuntime) scope.onDispose(() => runtime.disposeAll());
   if (ownsDevice)  scope.onDispose(() => device.destroy());
 
+  // DEVICE LOSS. `Runtime` reacts by disposing every task it compiled, so the
+  // very next frame would encode against dead tasks ("RenderTask: run after
+  // dispose"). Stop the loop FIRST — before anything can run them — then hand
+  // control back so the caller can rebuild this generation from scratch. A
+  // control given a device/runtime from outside doesn't own the recovery: it
+  // just stops, and its owner decides what to do.
+  runtime.deviceLost.then((info) => {
+    if (scope.isDisposed) return;
+    loop.stop();
+    console.warn(`[RenderControl] GPU device lost (${info?.reason ?? "unknown"}): ${info?.message ?? ""}`);
+    onDeviceLost?.();
+  }, () => { /* never rejects */ });
+
   // Publish this control's avals as the ambient context so callers
   // can read `viewport` / `view` / `proj` / `time` from
   // `@aardworx/wombat.dom/scene/ambient` without threading state.
@@ -583,6 +626,11 @@ async function initialise(
   });
   ro.observe(canvas);
   scope.onDispose(() => ro.disconnect());
+
+  // Debug handle for the CURRENT device generation. The device-loss/rebuild
+  // path is otherwise only reachable by starving a real GPU; a harness can
+  // `__wombatDevice.destroy()` to exercise it.
+  (globalThis as Record<string, unknown>).__wombatDevice = device;
 
   props.onReady?.({
     canvas, device, runtime,
