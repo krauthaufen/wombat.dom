@@ -213,8 +213,8 @@ const abResolveRev: Effect = effect(fsVS, fragment((_in: {}, b: FragmentBuiltinI
   return { Colors: new V4f(outRGB.add(opaque.xyz.mul(T)), 1.0 - (1.0 - opaque.w) * T), pickId: new V4f(0.0, 0.0, 0.0, 0.0) };
 }));
 const abResolveEffectFor = (reversedZ: boolean): Effect => (reversedZ ? abResolveRev : abResolveStd);
-
 function abBuildPipelineOverride(ps: PipelineState): PipelineState {
+
   const off = (): BlendComponentState => ({ operation: AVal.constant<GPUBlendOperation>("add"), srcFactor: AVal.constant<GPUBlendFactor>("one"), dstFactor: AVal.constant<GPUBlendFactor>("zero") });
   const masked: BlendState = { color: off(), alpha: off(), writeMask: AVal.constant(0) };
   const blends: aval<HashMap<string, BlendState>> = AVal.constant(
@@ -307,7 +307,10 @@ export function transparencyTask(
     const hasPick = signature.colorNames.includes("pickId");
     // accum/reveal at the output's sample count; for MSAA they resolve to single
     // sample (colorTextures) which the composite samples and blends per output sample.
-    const oitSig = createFramebufferSignature({ colors: { accum: "rgba16float", reveal: "r16float" }, depthStencil: { format: "depth32float" }, sampleCount });
+    // depth format must match the USER depth attachment — run() reuses it
+    // (declaring a fixed depth32float breaks pass/pipeline compatibility on
+    // canvases with a different depth format)
+    const oitSig = createFramebufferSignature({ colors: { accum: "rgba16float", reveal: "r16float" }, ...(signature.depthStencil !== undefined ? { depthStencil: { format: signature.depthStencil.format } } : {}), sampleCount });
     // Bounded LRU (aardvark's TransparencyRenderTask pattern) of accum/reveal
     // bundles keyed by size — sample count is fixed per task. Alternating between
     // a few sizes reuses bundles instead of dispose+rebuild thrash; the
