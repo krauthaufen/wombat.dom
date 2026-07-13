@@ -50,6 +50,17 @@ export function installTapEvents(): void {
 
   const down = new Map<number, PointerEvent>();
 
+  // GHOST SUPPRESSION. After a touch, Safari/WebKit (and Chrome for
+  // touch-emulating mice) replay the interaction as compatibility MOUSE
+  // events, which surface here as a SECOND tap with pointerType "mouse" a
+  // few hundred ms later, at the same spot. A consumer that branches on
+  // pointerType (touch → open a menu, mouse → dismiss it) then sees the menu
+  // open and instantly close again. Swallow mouse taps that shadow a recent
+  // touch tap — the standard ghost-click guard, at the layer that owns tap.
+  const GHOST_WINDOW_MS = 700;
+  const GHOST_MOVE_PX = 30;
+  let lastTouch: { t: number; x: number; y: number } | null = null;
+
   const dispatch = (
     type: "tap" | "dbltap", source: PointerEvent, target: EventTarget,
     dx: number, dy: number, dt: number,
@@ -82,9 +93,16 @@ export function installTapEvents(): void {
     const dt = e.timeStamp - start.timeStamp;
     const dx = e.clientX - start.clientX;
     const dy = e.clientY - start.clientY;
-    if (dt <= TAP_MAX_DURATION_MS && Math.hypot(dx, dy) <= TAP_MAX_MOVE_PX) {
-      dispatch("tap", start, e.target ?? window, dx, dy, dt);
+    if (dt > TAP_MAX_DURATION_MS || Math.hypot(dx, dy) > TAP_MAX_MOVE_PX) return;
+    if (start.pointerType === "touch") {
+      lastTouch = { t: e.timeStamp, x: e.clientX, y: e.clientY };
+    } else if (lastTouch !== null) {
+      const ghost =
+        e.timeStamp - lastTouch.t < GHOST_WINDOW_MS &&
+        Math.hypot(e.clientX - lastTouch.x, e.clientY - lastTouch.y) < GHOST_MOVE_PX;
+      if (ghost) return; // compatibility-mouse replay of the touch tap
     }
+    dispatch("tap", start, e.target ?? window, dx, dy, dt);
   }, true);
 
   window.addEventListener("pointercancel", (e: PointerEvent) => {
