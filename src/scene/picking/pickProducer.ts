@@ -128,6 +128,10 @@ export function createPickProducer(
   const task = opts.transparency
     ? transparencyTask(runtime, device, pickFb.signature, target.size, sceneTree, {
         ...(typeof opts.transparency === "string" ? { mode: opts.transparency } : {}),
+        // thread the user clear + depth convention: depth 0 = reversed-Z
+        // (same signal the RenderControl's scene-root depthTest keys on)
+        clearColor: colorsWithDefaults.get(colorName) as V4f, // always present (defaulted above)
+        reversedZ: (userClear?.depth ?? 1.0) === 0,
         compile: {
           initialState: initial,
           autoUniforms: true,

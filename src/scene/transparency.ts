@@ -44,7 +44,16 @@ const FS_QUAD = new Float32Array([-1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, 1]);
 const fsVS = vertex((v: { a_pos: V2f }) => ({ gl_Position: new V4f(v.a_pos.x, v.a_pos.y, 0.0, 1.0) }));
 
 // ---------------------------------------------------------------- WBOIT shaders
-const wboitWriter: Effect = effect(fragment((i: { Colors: V4f }, b: FragmentBuiltinIn) => {
+// Depth conventions are parameterized on `reversedZ` (near = 1, far = 0,
+// `greater` depth test — the reversed-Z rendering the RenderControl sets up
+// via `clear.depth === 0`): the depth-weight heuristic, the transparent
+// passes' depth compare, the opaque clear value and the A-buffer resolve's
+// sort direction / occlusion comparison all flip together.
+// NB: two statically-defined variants instead of one factory capturing a
+// boolean — closure holes resolve on the classic Effect.compile path but NOT
+// in the heap renderer's shader assembly ("unresolved value" at pipeline
+// compile), and the effect compile cache is keyed on content hash anyway.
+const wboitWriterStd: Effect = effect(fragment((i: { Colors: V4f }, b: FragmentBuiltinIn) => {
   const c = i.Colors;
   const alpha = c.w;
   const a = alpha * 8.0 + 0.01;
@@ -52,6 +61,15 @@ const wboitWriter: Effect = effect(fragment((i: { Colors: V4f }, b: FragmentBuil
   const w = clamp(a * a * a * 1e8 * (bz * bz * bz), 1e-2, 3e2);
   return { accum: new V4f(c.xyz.mul(alpha), alpha).mul(w), reveal: alpha };
 }));
+const wboitWriterRev: Effect = effect(fragment((i: { Colors: V4f }, b: FragmentBuiltinIn) => {
+  const c = i.Colors;
+  const alpha = c.w;
+  const a = alpha * 8.0 + 0.01;
+  const bz = b.fragCoord.z * 0.95 + 0.05; // reversed z: near = 1
+  const w = clamp(a * a * a * 1e8 * (bz * bz * bz), 1e-2, 3e2);
+  return { accum: new V4f(c.xyz.mul(alpha), alpha).mul(w), reveal: alpha };
+}));
+const wboitWriterFor = (reversedZ: boolean): Effect => (reversedZ ? wboitWriterRev : wboitWriterStd);
 
 const tAccum: Sampler2D = null as unknown as Sampler2D;
 const tReveal: Sampler2D = null as unknown as Sampler2D;
@@ -75,7 +93,7 @@ const wboitCompositePick: Effect = effect(fsVS, fragment((_in: {}, b: FragmentBu
   return { Colors: new V4f(avg, 1.0 - reveal), pickId: new V4f(0.0, 0.0, 0.0, 0.0) };
 }));
 
-function wboitPipelineOverride(ps: PipelineState): PipelineState {
+const wboitPipelineOverride = (reversedZ: boolean) => (ps: PipelineState): PipelineState => {
   const bc = (s: GPUBlendFactor, d: GPUBlendFactor): BlendComponentState => ({
     operation: AVal.constant<GPUBlendOperation>("add"), srcFactor: AVal.constant(s), dstFactor: AVal.constant(d),
   });
@@ -85,18 +103,18 @@ function wboitPipelineOverride(ps: PipelineState): PipelineState {
       .add("accum", { color: bc("one", "one"), alpha: bc("one", "one"), writeMask: AVal.constant(0xf) })
       .add("reveal", { color: bc("zero", "one-minus-src"), alpha: bc("zero", "one-minus-src"), writeMask: AVal.constant(0xf) }),
   );
-  return { ...ps, depth: { write: AVal.constant(false), compare: AVal.constant<GPUCompareFunction>("less"), clamp: ps.depth?.clamp ?? AVal.constant(false) }, blends };
-}
+  return { ...ps, depth: { write: AVal.constant(false), compare: AVal.constant<GPUCompareFunction>(reversedZ ? "greater" : "less"), clamp: ps.depth?.clamp ?? AVal.constant(false) }, blends };
+};
 
 // Transparent pick pass: depth-test + write ON (nearest transparent wins), color
 // masked (write-mask-only — leaves the composited Colors alone), pickId (and
 // depth) written. Mirrors aardvark's transformTransparentPick.
-function wboitPickOverride(ps: PipelineState): PipelineState {
+const wboitPickOverride = (reversedZ: boolean) => (ps: PipelineState): PipelineState => {
   const blends: aval<HashMap<string, BlendState>> = AVal.constant(
     HashMap.empty<string, BlendState>().add("Colors", { writeMask: AVal.constant(0) }),
   );
-  return { ...ps, depth: { write: AVal.constant(true), compare: AVal.constant<GPUCompareFunction>("less"), clamp: ps.depth?.clamp ?? AVal.constant(false) }, blends };
-}
+  return { ...ps, depth: { write: AVal.constant(true), compare: AVal.constant<GPUCompareFunction>(reversedZ ? "greater" : "less"), clamp: ps.depth?.clamp ?? AVal.constant(false) }, blends };
+};
 
 // ------------------------------------------------------------- A-buffer shaders
 // Opaque pass also writes its window-space depth into `odepth` so the resolve can
@@ -126,7 +144,11 @@ declare const headBufR: Storage<u32[], "read">;
 declare const nodeDepthR: Storage<u32[], "read">;
 declare const nodeColorR: Storage<V4f[], "read">;
 declare const nodeNextR: Storage<u32[], "read">;
-const abResolveEffect: Effect = effect(fsVS, fragment((_in: {}, b: FragmentBuiltinIn) => {
+// Resolve comes in two statically-defined variants (same reason as the WBOIT
+// writers — no closure holes): standard z sorts ascending (small = near) and
+// occludes with `d < odepth`; reversed z sorts descending (large = near) and
+// occludes with `d > odepth`.
+const abResolveStd: Effect = effect(fsVS, fragment((_in: {}, b: FragmentBuiltinIn) => {
   const uv = b.fragCoord.xy.mul(uniform.u_invSize);
   const opaque = texture(tOpaque, uv);
   const odepthQ = (texture(tODepth, uv).x * DEPTH_Q) as u32;
@@ -135,7 +157,7 @@ const abResolveEffect: Effect = effect(fsVS, fragment((_in: {}, b: FragmentBuilt
   let T = 1.0;
   let lastD: u32 = 0 as u32;
   for (let layer = 0; layer < 16; layer = layer + 1) {
-    // nearest node with depth strictly > lastD and in front of the opaque surface
+    // nearest node strictly beyond lastD and in front of the opaque surface
     let bestD: u32 = NULLU as u32;
     let bestI: u32 = 0 as u32;
     let found = 0.0;
@@ -156,8 +178,41 @@ const abResolveEffect: Effect = effect(fsVS, fragment((_in: {}, b: FragmentBuilt
   }
   // pickId is emitted (dummy) so the pipeline matches a {Colors, pickId}
   // output; it's masked write-mask-only when present, and dropped otherwise.
-  return { Colors: new V4f(outRGB.add(opaque.xyz.mul(T)), 1.0), pickId: new V4f(0.0, 0.0, 0.0, 0.0) };
+  // Alpha composites the opaque pass's coverage under the transparent
+  // layers (1 - (1-a_opaque)*T) instead of forcing 1.0 — a transparent
+  // clear (canvas over a styled DOM background) survives the resolve.
+  return { Colors: new V4f(outRGB.add(opaque.xyz.mul(T)), 1.0 - (1.0 - opaque.w) * T), pickId: new V4f(0.0, 0.0, 0.0, 0.0) };
 }));
+const abResolveRev: Effect = effect(fsVS, fragment((_in: {}, b: FragmentBuiltinIn) => {
+  const uv = b.fragCoord.xy.mul(uniform.u_invSize);
+  const opaque = texture(tOpaque, uv);
+  const odepthQ = (texture(tODepth, uv).x * DEPTH_Q) as u32;
+  const px = ((b.fragCoord.y as u32) * uniform.u_width + (b.fragCoord.x as u32)) as u32;
+  let outRGB = new V3f(0.0, 0.0, 0.0);
+  let T = 1.0;
+  let lastD: u32 = NULLU as u32;
+  for (let layer = 0; layer < 16; layer = layer + 1) {
+    let bestD: u32 = 0 as u32;
+    let bestI: u32 = 0 as u32;
+    let found = 0.0;
+    let it: u32 = headBufR[px] as u32;
+    for (let step = 0; step < 32; step = step + 1) {
+      if (it !== (NULLU as u32)) {
+        const d = nodeDepthR[it] as u32;
+        if (d < lastD && d > bestD && d > odepthQ) { bestD = d; bestI = it; found = 1.0; }
+        it = nodeNextR[it] as u32;
+      }
+    }
+    if (found > 0.5) {
+      const src = nodeColorR[bestI] as V4f;
+      outRGB = outRGB.add(src.xyz.mul(src.w).mul(T));
+      T = T * (1.0 - src.w);
+      lastD = bestD;
+    }
+  }
+  return { Colors: new V4f(outRGB.add(opaque.xyz.mul(T)), 1.0 - (1.0 - opaque.w) * T), pickId: new V4f(0.0, 0.0, 0.0, 0.0) };
+}));
+const abResolveEffectFor = (reversedZ: boolean): Effect => (reversedZ ? abResolveRev : abResolveStd);
 
 function abBuildPipelineOverride(ps: PipelineState): PipelineState {
   const off = (): BlendComponentState => ({ operation: AVal.constant<GPUBlendOperation>("add"), srcFactor: AVal.constant<GPUBlendFactor>("one"), dstFactor: AVal.constant<GPUBlendFactor>("zero") });
@@ -198,6 +253,14 @@ export interface TransparencyTaskOptions {
    *  samples the resolve; the output framebuffer stays single-sample. (WBOIT
    *  only; picking is not produced in the MSAA path.) */
   readonly sampleCount?: number;
+  /** Reversed-Z depth convention (near = 1, far = 0, `greater` test — what the
+   *  RenderControl sets up for `clear.depth === 0`): flips the opaque clear,
+   *  the transparent passes' depth compare, the WBOIT depth weight and the
+   *  A-buffer sort/occlusion directions. Default false (standard z).
+   *  NB: the two conventions specialize shaders via closure holes that share
+   *  a content hash — a process mixing reversed and standard transparency
+   *  tasks would hit a stale shader-compile cache. One convention per app. */
+  readonly reversedZ?: boolean;
 }
 
 /**
@@ -213,6 +276,8 @@ export function transparencyTask(
   opts: TransparencyTaskOptions = {},
 ): IRenderTask {
   const mode = opts.mode ?? defaultOitMode;
+  const rz = opts.reversedZ ?? false;
+  const farDepth = rz ? 0.0 : 1.0;
   // `picking` (the pick registry / chain) is threaded only to the opaque + pick
   // passes — NOT the WBOIT/build pass (which composes its own writer). `base`
   // therefore excludes it; opaque/pick passes spread `withPicking` back in.
@@ -276,10 +341,10 @@ export function transparencyTask(
     let opaqueClear = HashMap.empty<string, V4f>().add("Colors", black);
     if (hasPick) opaqueClear = opaqueClear.add("pickId", new V4f(0, 0, 0, 0));
     const opaqueTask = runtime.compile(signature, compileScene(scene, {
-      ...base, ...withPicking, passFilter: isOpaque, clear: { colors: opaqueClear, depth: 1.0 },
+      ...base, ...withPicking, passFilter: isOpaque, clear: { colors: opaqueClear, depth: farDepth },
     }));
     const wboitTask = runtime.compile(oitSig, compileScene(scene, {
-      ...base, passFilter: isTransparent, composeEffect: (e) => effect(e, wboitWriter), pipelineOverride: wboitPipelineOverride,
+      ...base, passFilter: isTransparent, composeEffect: (e) => effect(e, wboitWriterFor(rz)), pipelineOverride: wboitPipelineOverride(rz),
       clear: { colors: HashMap.empty<string, V4f>().add("accum", new V4f(0, 0, 0, 0)).add("reveal", new V4f(1, 1, 1, 1)) },
     }));
 
@@ -301,7 +366,7 @@ export function transparencyTask(
     };
     const compositeTask = runtime.compile(signature, AList.ofArray<Command>([{ kind: "Render", tree: RenderTree.leaf(compRO) }]));
     const pickTask = hasPick
-      ? runtime.compile(signature, compileScene(scene, { ...base, ...withPicking, passFilter: isTransparent, pipelineOverride: wboitPickOverride }))
+      ? runtime.compile(signature, compileScene(scene, { ...base, ...withPicking, passFilter: isTransparent, pipelineOverride: wboitPickOverride(rz) }))
       : undefined;
 
     return {
@@ -382,7 +447,7 @@ export function transparencyTask(
 
   const opaqueTask = runtime.compile(interSig, compileScene(scene, {
     ...base, passFilter: isOpaque, composeEffect: (e) => effect(e, odepthWriter),
-    clear: { colors: HashMap.empty<string, V4f>().add("Colors", black).add("odepth", new V4f(1, 1, 1, 1)), depth: 1.0 },
+    clear: { colors: HashMap.empty<string, V4f>().add("Colors", black).add("odepth", new V4f(farDepth, farDepth, farDepth, farDepth)), depth: farDepth },
   }));
   const buildTask = runtime.compile(interSig, compileScene(scene, {
     ...base, passFilter: isTransparent, composeEffect: (e) => effect(e, abBuildWriter),
@@ -399,7 +464,7 @@ export function transparencyTask(
     ? HashMap.empty<string, PlainBlendState>().add("pickId", { writeMask: 0 })
     : undefined;
   const resolveRO: RenderObject = {
-    effect: abResolveEffect,
+    effect: abResolveEffectFor(rz),
     pipelineState: PipelineState.constant({ rasterizer: RAST, ...(resolveDepth !== undefined ? { depth: resolveDepth } : {}), ...(resolveBlends !== undefined ? { blends: resolveBlends } : {}) }),
     vertexAttributes: quadAttrs,
     uniforms: provider(HashMap.empty<string, aval<unknown>>().add("u_invSize", invSize).add("u_width", widthU)) as RenderObject["uniforms"],
@@ -414,10 +479,10 @@ export function transparencyTask(
   // pick passes (only when the output carries pickId)
   let opaquePickClear = HashMap.empty<string, V4f>().add("Colors", black).add("pickId", new V4f(0, 0, 0, 0));
   const opaquePickTask = hasPick
-    ? runtime.compile(signature, compileScene(scene, { ...base, ...withPicking, passFilter: isOpaque, pipelineOverride: wboitPickOverride, clear: { colors: opaquePickClear, depth: 1.0 } }))
+    ? runtime.compile(signature, compileScene(scene, { ...base, ...withPicking, passFilter: isOpaque, pipelineOverride: wboitPickOverride(rz), clear: { colors: opaquePickClear, depth: farDepth } }))
     : undefined;
   const transparentPickTask = hasPick
-    ? runtime.compile(signature, compileScene(scene, { ...base, ...withPicking, passFilter: isTransparent, pipelineOverride: wboitPickOverride }))
+    ? runtime.compile(signature, compileScene(scene, { ...base, ...withPicking, passFilter: isTransparent, pipelineOverride: wboitPickOverride(rz) }))
     : undefined;
 
   return {
