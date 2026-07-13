@@ -83,6 +83,23 @@ const clear: ClearValues = {
 
 const transparency = mode === "off" ? undefined : (mode as "wboit" | "abuffer");
 
+// ?stress=N — N semi-transparent quads (heap-native transparency at scale)
+const stressN = Number(new URLSearchParams(location.search).get("stress") ?? "0");
+const stressQuads = Array.from({ length: stressN }, (_, i) => {
+  const t = i / Math.max(1, stressN - 1);
+  const x = -3.5 + 7 * ((i * 37) % 100) / 100;
+  const y = -2.2 + 4.4 * ((i * 61) % 100) / 100;
+  const z = 1 + 5 * t;
+  return (
+    <Sg.Quad
+      key={i}
+      Trafo={[Sg.translate(new V3d(x, y, z)), Sg.scale(new V3d(0.35, 0.35, 1))]}
+      Color={new V4f(((i * 7) % 10) / 10, ((i * 13) % 10) / 10, ((i * 29) % 10) / 10, 0.35)}
+    />
+  );
+});
+(globalThis as any).__stressN = stressN;
+
 // force-CLASSIC leaf (a dummy storage buffer fails heap eligibility): a
 // magenta quad on the MVP-uniform shader, main pass — isolates whether the
 // classic (ScenePass) path serves uniform.ModelViewProjTrafo at all.
@@ -114,6 +131,7 @@ mount(root, (
         Trafo={[Sg.translate(new V3d(0, 0, 0)), Sg.scale(new V3d(4, 3, 1))]}
         Color={new V4f(1, 0, 0, 1)}
       />
+      {stressN > 0 && Sg.transparent(<Sg>{stressQuads}</Sg>)}
       {/* heap-eligible transparent quad */}
       {!new URLSearchParams(location.search).has("noGreen") && Sg.transparent(
         <Sg.Quad

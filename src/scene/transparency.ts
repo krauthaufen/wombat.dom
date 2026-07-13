@@ -35,7 +35,17 @@ declare module "@aardworx/wombat.shader/uniforms" {
   interface UniformScope { readonly u_invSize: V2f; readonly u_width: u32; }
 }
 
-const MAXN = 1 << 20;        // A-buffer node-pool capacity (~24 MB)
+// A-buffer node-pool capacity. Each node costs 24 B (depth u32 + color
+// vec4f + next u32), so 1<<20 ≈ 24 MB — fine on desktop, a lot of GPU
+// memory to hand a phone. Mobile gets 1<<18 (~6 MB), which still covers
+// (pixels × overlapping transparent layers) for annotation-scale content.
+// Module-level constant: it's a shader closure hole, sampled once at
+// compile, so it must not vary per task within a process.
+const IS_COARSE = typeof matchMedia !== "undefined"
+  && matchMedia("(pointer: coarse)").matches;
+const MAXN = IS_COARSE ? 1 << 18 : 1 << 20;
+/** Bounded size-keyed FBO cache depth (mobile keeps fewer resolutions live). */
+const FBO_CACHE_MAX = IS_COARSE ? 2 : 4;
 const NULLU = 0xffffffff;
 const DEPTH_Q = 16777215.0;  // depth quantisation (24-bit) for the A-buffer sort
 
@@ -163,18 +173,20 @@ const abResolveStd: Effect = effect(fsVS, fragment((_in: {}, b: FragmentBuiltinI
     let found = 0.0;
     let it: u32 = headBufR[px] as u32;
     for (let step = 0; step < 32; step = step + 1) {
-      if (it !== (NULLU as u32)) {
-        const d = nodeDepthR[it] as u32;
-        if (d > lastD && d < bestD && d < odepthQ) { bestD = d; bestI = it; found = 1.0; }
-        it = nodeNextR[it] as u32;
-      }
+      // early-exit: the per-pixel list is usually 1-2 nodes long. Running the
+      // full 16x32 iteration space unconditionally cost ~500M iterations per
+      // 1 MP frame (measured: 27 fps at 1280x800).
+      if (it === (NULLU as u32)) { break; }
+      const d = nodeDepthR[it] as u32;
+      if (d > lastD && d < bestD && d < odepthQ) { bestD = d; bestI = it; found = 1.0; }
+      it = nodeNextR[it] as u32;
     }
-    if (found > 0.5) {
-      const src = nodeColorR[bestI] as V4f;
-      outRGB = outRGB.add(src.xyz.mul(src.w).mul(T));   // front-to-back over
-      T = T * (1.0 - src.w);
-      lastD = bestD;
-    }
+    if (found < 0.5) { break; }   // no further layer at this pixel
+    const src = nodeColorR[bestI] as V4f;
+    outRGB = outRGB.add(src.xyz.mul(src.w).mul(T));   // front-to-back over
+    T = T * (1.0 - src.w);
+    lastD = bestD;
+    if (T < 0.004) { break; }     // fully saturated
   }
   // pickId is emitted (dummy) so the pipeline matches a {Colors, pickId}
   // output; it's masked write-mask-only when present, and dropped otherwise.
@@ -197,18 +209,17 @@ const abResolveRev: Effect = effect(fsVS, fragment((_in: {}, b: FragmentBuiltinI
     let found = 0.0;
     let it: u32 = headBufR[px] as u32;
     for (let step = 0; step < 32; step = step + 1) {
-      if (it !== (NULLU as u32)) {
-        const d = nodeDepthR[it] as u32;
-        if (d < lastD && d > bestD && d > odepthQ) { bestD = d; bestI = it; found = 1.0; }
-        it = nodeNextR[it] as u32;
-      }
+      if (it === (NULLU as u32)) { break; }
+      const d = nodeDepthR[it] as u32;
+      if (d < lastD && d > bestD && d > odepthQ) { bestD = d; bestI = it; found = 1.0; }
+      it = nodeNextR[it] as u32;
     }
-    if (found > 0.5) {
-      const src = nodeColorR[bestI] as V4f;
-      outRGB = outRGB.add(src.xyz.mul(src.w).mul(T));
-      T = T * (1.0 - src.w);
-      lastD = bestD;
-    }
+    if (found < 0.5) { break; }
+    const src = nodeColorR[bestI] as V4f;
+    outRGB = outRGB.add(src.xyz.mul(src.w).mul(T));
+    T = T * (1.0 - src.w);
+    lastD = bestD;
+    if (T < 0.004) { break; }
   }
   return { Colors: new V4f(outRGB.add(opaque.xyz.mul(T)), 1.0 - (1.0 - opaque.w) * T), pickId: new V4f(0.0, 0.0, 0.0, 0.0) };
 }));
@@ -337,7 +348,7 @@ export function transparencyTask(
       if (hit !== undefined) { fboCache.delete(key); fboCache.set(key, hit); return hit; } // move to MRU
       const made = buildOit(w, h);
       fboCache.set(key, made);
-      while (fboCache.size > 4) { const oldest = fboCache.keys().next().value as string; fboCache.get(oldest)!.destroy(); fboCache.delete(oldest); }
+      while (fboCache.size > FBO_CACHE_MAX) { const oldest = fboCache.keys().next().value as string; fboCache.get(oldest)!.destroy(); fboCache.delete(oldest); }
       return made;
     };
 
@@ -417,7 +428,7 @@ export function transparencyTask(
       destroy: () => { colors.destroy(); odepth.destroy(); depth.destroy(); },
     };
     interCache.set(key, made);
-    while (interCache.size > 4) { const oldest = interCache.keys().next().value as string; interCache.get(oldest)!.destroy(); interCache.delete(oldest); }
+    while (interCache.size > FBO_CACHE_MAX) { const oldest = interCache.keys().next().value as string; interCache.get(oldest)!.destroy(); interCache.delete(oldest); }
     return made;
   };
 

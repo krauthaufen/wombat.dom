@@ -235,111 +235,75 @@ function sceneUsesPassStatic(node: SgNode): boolean {
 }
 
 /**
- * Pass-grouped lowering — walks the tree eagerly at compile-scene
- * time (forcing adaptive structural containers ONCE), bucketing each
- * leaf's `lowerLeaf(...)` output into a `Map<pass, RenderTree[]>`.
- * The result is `RenderTree.ordered(...passSorted.flatMap(arr))`.
+ * Pass-grouped lowering — REACTIVE.
  *
- * Why force here (in `collectByPass`): pass-bucketing is a STATIC
- * structural fold over the SG. Contents of each bucket are produced
- * by `lowerLeaf`, which itself IS fully reactive (it returns a
- * `RenderTree.adaptive(...)` gated on `state.active` so per-leaf
- * Active flips propagate without re-bucketing). The tradeoff: a
- * Pass-using scene that ALSO restructures via `Sg.adaptive` /
- * `cset` etc. inside a Pass scope won't re-bucket on those changes.
- * Restructure outside Pass scopes if reactive bucketing is needed —
- * a fully-reactive `collectByPass` is a separate (alist-of-alist /
- * alist-by-key) refactor and not warranted for this turn.
+ * The tree is lowered once PER DISTINCT PASS (ascending), each time
+ * through the ordinary reactive `lower` path with a pass-scoped leaf
+ * filter, and the resulting sub-trees are concatenated in pass order.
+ * Ordering between passes therefore comes from the concatenation, while
+ * everything INSIDE each pass keeps its normal reactivity — adaptive
+ * groups, asets/alists, streamed tile leaves and `Active` flips all still
+ * propagate.
+ *
+ * The previous implementation eagerly force-walked the whole SG once and
+ * bucketed the lowered leaves. That froze every adaptive container in a
+ * Pass-using scene: a streaming scene (tiles arriving in a clist) simply
+ * stopped updating — and, because nothing marked any more, the on-demand
+ * render loop stopped too (the "Sg.Pass makes the scene vanish/freeze"
+ * bug). Lowering N times costs one extra traversal per pass (N is 2–3 in
+ * practice) and buys back full reactivity.
+ *
+ * The SET of distinct passes is still discovered by a static scan
+ * (`collectPassValues`): a pass value that only appears later, inside an
+ * adaptive subtree that was empty at compile time, is not picked up.
+ * Leaves in such a pass are dropped rather than mis-ordered.
  */
 function lowerByPass(node: SgNode, state: TraversalState, opts: CompileSceneOptions): RenderTree {
-  const buckets = new Map<number, RenderTree[]>();
-  collectByPass(node, state, opts, buckets);
-  const passes = [...buckets.keys()].sort((a, b) => a - b);
-  const ordered: RenderTree[] = [];
-  for (const p of passes) for (const t of buckets.get(p)!) ordered.push(t);
-  return RenderTree.ordered(...ordered);
+  const passes = [...collectPassValues(node, state.renderPass, new Set<number>())].sort((a, b) => a - b);
+  if (passes.length <= 1) return lower(node, state, opts);
+  const userFilter = opts.passFilter;
+  const trees: RenderTree[] = [];
+  for (const p of passes) {
+    const passOpts: CompileSceneOptions = {
+      ...opts,
+      passFilter: (rp: number) => rp === p && (userFilter === undefined || userFilter(rp)),
+    };
+    trees.push(lower(node, state, passOpts));
+  }
+  return RenderTree.ordered(...trees);
 }
 
-function collectByPass(
-  node: SgNode,
-  state: TraversalState,
-  opts: CompileSceneOptions,
-  buckets: Map<number, RenderTree[]>,
-): void {
+/**
+ * Static scan for the distinct `renderPass` values a tree can produce.
+ * Structural containers are forced ONCE here (construction-boundary read,
+ * not on the live path) — only the SET of passes is snapshotted; the
+ * contents of each pass stay fully reactive (see `lowerByPass`).
+ */
+function collectPassValues(node: SgNode, pass: number, out: Set<number>): Set<number> {
   switch (node.kind) {
-    case "Empty": return;
-    case "Leaf": {
-      const tree = lowerLeaf(node, state, opts);
-      if (tree.kind === "Empty") return;
-      const arr = buckets.get(state.renderPass) ?? [];
-      arr.push(tree);
-      buckets.set(state.renderPass, arr);
-      return;
-    }
+    case "Empty": return out;
+    case "Leaf": out.add(pass); return out;
+    case "Pass": return collectPassValues(node.child, node.pass, out);
     case "Group":
-      // Why force here: collectByPass runs ONCE at compile-scene time
-      // for static pass-bucketing — see `lowerByPass` rationale.
-      for (const c of node.children.content.force()) collectByPass(c, state, opts, buckets);
-      return;
-    case "UnorderedGroup":
-      // Why force here: same as Group above.
-      for (const c of node.children.content.force()) collectByPass(c, state, opts, buckets);
-      return;
-    case "AdaptiveGroup":
-      // Why force here: same as Group above.
-      collectByPass(node.child.force(), state, opts, buckets);
-      return;
-    case "Trafo": collectByPass(node.child, state.pushTrafo(node.value), opts, buckets); return;
-    case "Shader": collectByPass(node.child, state.pushShader(node.effect), opts, buckets); return;
-    case "Uniform": {
-      // Why force here: pass-bucketing is STATIC (see `lowerByPass`);
-      // dynamic uniform-set additions inside a Pass-using scope do
-      // not re-bucket. Per-key uniform avals stay reactive at the
-      // leaf, just the SET of keys is snapshotted here.
-      const entries = node.bag.kind === "Static" ? node.bag.entries : node.bag.entries.content.force();
-      collectByPass(node.child, state.pushUniforms(entries), opts, buckets);
-      return;
+    case "UnorderedGroup": {
+      // Why force here: STATIC pass-set discovery at compileScene time (see
+      // the doc above) — the per-pass CONTENTS stay reactive.
+      for (const c of node.children.content.force()) collectPassValues(c, pass, out);
+      return out;
     }
-    case "BlendMode": collectByPass(node.child, state.pushBlendMode(node.mode), opts, buckets); return;
-    case "Cursor": collectByPass(node.child, state.pushCursor(node.cursor), opts, buckets); return;
-    case "PickThrough": collectByPass(node.child, state.pushPickThrough(node.value), opts, buckets); return;
-    case "Intersectable": collectByPass(node.child, state.pushIntersectable(node.intersectable), opts, buckets); return;
-    case "PixelSnapRadius": collectByPass(node.child, state.pushPixelSnapRadius(node.radius), opts, buckets); return;
-    case "On": collectByPass(node.child, state.pushHandlers(node.handlers), opts, buckets); return;
-    case "Active": collectByPass(node.child, state.pushActive(node.active), opts, buckets); return;
-    case "View": collectByPass(node.child, state.withCamera(node.view, state.proj), opts, buckets); return;
-    case "Proj": collectByPass(node.child, state.withCamera(state.view, node.proj), opts, buckets); return;
-    case "Delay": collectByPass(node.create(state), state, opts, buckets); return;
-    case "DepthTest": collectByPass(node.child, state.pushDepthTest(node.mode), opts, buckets); return;
-    case "DepthMask": collectByPass(node.child, state.pushDepthMask(node.write), opts, buckets); return;
-    case "DepthBias": collectByPass(node.child, state.pushDepthBias(node.bias), opts, buckets); return;
-    case "DepthClamp": collectByPass(node.child, state.pushDepthClamp(node.clamp), opts, buckets); return;
-    case "CullMode": collectByPass(node.child, state.pushCullMode(node.mode), opts, buckets); return;
-    case "FrontFace": collectByPass(node.child, state.pushFrontFace(node.mode), opts, buckets); return;
-    case "FillMode": collectByPass(node.child, state.pushFillMode(node.mode), opts, buckets); return;
-    case "BlendConstant": collectByPass(node.child, state.pushBlendConstant(node.value), opts, buckets); return;
-    case "ColorMask": collectByPass(node.child, state.pushColorMask(node.mask), opts, buckets); return;
-    case "StencilMode": collectByPass(node.child, state.pushStencilMode(node.mode), opts, buckets); return;
-    case "Pass": collectByPass(node.child, state.pushRenderPass(node.pass), opts, buckets); return;
-    case "VertexAttributes": collectByPass(node.child, state.pushVertexAttributes(node.attributes), opts, buckets); return;
-    case "InstanceAttributes": collectByPass(node.child, state.pushInstanceAttributes(node.attributes), opts, buckets); return;
-    case "Index": collectByPass(node.child, state.pushIndex(node.index), opts, buckets); return;
-    case "Mode": collectByPass(node.child, state.pushMode(node.mode), opts, buckets); return;
-    case "NoEvents": collectByPass(node.child, state.pushNoEvents(node.value), opts, buckets); return;
-    case "PickContext": collectByPass(node.child, state.pushPickContext(node.value), opts, buckets); return;
-    case "ForcePixelPicking": collectByPass(node.child, state.pushForcePixelPicking(node.value), opts, buckets); return;
-    case "CanFocus": collectByPass(node.child, state.pushCanFocus(node.value), opts, buckets); return;
-    case "Instanced":
-      // The instancing rewrite happens at leaf-lower time via `state`;
-      // pass-bucketing just needs to recurse with the scope pushed.
-      collectByPass(node.child, state.pushInstancing(node), opts, buckets);
-      return;
+    // Why force here: same static pass-set scan.
+    case "AdaptiveGroup": return collectPassValues(node.child.force(), pass, out);
+    case "Delay": {
+      try { return collectPassValues(node.create(TraversalState.empty), pass, out); }
+      catch { return out; }
+    }
+    default: {
+      // every remaining node kind is a single-child scope
+      const child = (node as { child?: SgNode }).child;
+      return child !== undefined ? collectPassValues(child, pass, out) : out;
+    }
   }
 }
-
-// ---------------------------------------------------------------------------
-// Lowering — SgNode + TraversalState → RenderTree
-// ---------------------------------------------------------------------------
 
 function lower(
   node: SgNode,

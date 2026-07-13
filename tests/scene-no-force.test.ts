@@ -31,10 +31,12 @@ const ALLOWLIST: readonly string[] = [
   // compileScene time to decide whether to bucket-by-pass.
   "for (const c of node.children.content.force()) if (sceneUsesPassStatic(c)) return true;",
   "case \"AdaptiveGroup\": return sceneUsesPassStatic(node.child.force());",
-  // collectByPass — STATIC pass-bucketing fallback (see lowerByPass
-  // doc for tradeoff). Bucket contents are reactive via lowerLeaf.
-  "for (const c of node.children.content.force()) collectByPass(c, state, opts, buckets);",
-  "collectByPass(node.child.force(), state, opts, buckets);",
+  // collectPassValues — STATIC scan for the SET of distinct render passes,
+  // once at compileScene time. Only the pass set is snapshotted; the
+  // contents of each pass stay reactive (lowerByPass re-lowers per pass
+  // through the ordinary reactive `lower` path).
+  "for (const c of node.children.content.force()) collectPassValues(c, pass, out);",
+  "case \"AdaptiveGroup\": return collectPassValues(node.child.force(), pass, out);",
   // Uniform key-set static snapshot at the bucketing boundary.
   "const entries = node.bag.kind === \"Static\" ? node.bag.entries : node.bag.entries.content.force();",
   // state.noEvents.isConstant fast path — force on a constant aval has
