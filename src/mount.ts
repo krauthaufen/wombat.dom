@@ -2,6 +2,7 @@
 // creates DOM, attaches adaptive bindings under a fresh root scope.
 // Returns a Disposable that tears the whole subtree down.
 
+import { installTapEvents } from "./tap.js";
 import { Scope, pushScope, popScope } from "./scope.js";
 import { UIScheduler, defaultScheduler } from "./scheduler.js";
 import {
@@ -36,6 +37,9 @@ export function mount(
   vnode: VNode | JsxResult,
   opts: MountOptions = {},
 ): MountResult {
+  // Global tap/dbltap synthesis (Aardvark.Dom parity) — idempotent, so every
+  // mount can just ask for it and `onTap` works anywhere in the tree.
+  installTapEvents();
   // `vnode: VNode | JsxResult` — the union widens to include scene
   // `SgNode`s only because `JSX.Element` does (one element type for
   // every JSX expression). A scene tree isn't mountable on its own;

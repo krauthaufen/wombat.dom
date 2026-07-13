@@ -3,6 +3,12 @@
 export { mount, mountInto, type MountResult, type MountOptions } from "./mount.js";
 export { Scope, useScope, type Disposable } from "./scope.js";
 export {
+  installTapEvents,
+  TAP_MAX_DURATION_MS, TAP_MAX_MOVE_PX,
+  DOUBLE_TAP_GAP_MS, DOUBLE_TAP_MOVE_PX,
+  type TapEvent, type TapEventExtras,
+} from "./tap.js";
+export {
   UIScheduler,
   defaultScheduler,
   type Binding,
