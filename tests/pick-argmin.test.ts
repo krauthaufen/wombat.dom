@@ -42,8 +42,8 @@ describe("buildPickArgminWgsl", () => {
   it("declares the five bindings", () => {
     expect(src).toContain("var pickTex: texture_2d<f32>");
     expect(src).toContain("var<uniform> params: Params");
-    expect(src).toContain("var<storage, read> metadata: array<vec2<f32>>");
-    expect(src).toContain("var<storage, read_write> bestKey: atomic<u32>");
+    expect(src).toContain("var<storage, read> metadata: array<vec4<f32>>");
+    expect(src).toContain("var<storage, read_write> bestKey: array<atomic<u32>, 16>");
     expect(src).toContain("var<storage, read_write> result: Result");
   });
   it("does the argmin via a lock-free atomicMin across workgroups", () => {
@@ -109,7 +109,51 @@ describe("argminPickReference", () => {
     block(px, CX + 2, CY, [-7, 1, 2, 3]); // pixel is negative → Mode-B layout, mismatch
     const r = argminPickReference(CX, CY, W, H, gridFrom(px), meta);
     expect(r.found).toBe(false);
+  })
+
+  it("higher priority wins within its radius over a closer low-priority hit", () => {
+    // id 1 at the exact cursor (priority 0, radius 1); id 2 five pixels away
+    // (priority 1, radius 10) — priority beats distance.
+    const px = (x: number, y: number): readonly [number, number, number, number] => {
+      if (x === CX && y === CY) return [1, 0, 0, 0];
+      if (x === CX + 5 && y === CY) return [2, 0, 0, 0];
+      return [0, 0, 0, 0];
+    };
+    const meta: Array<readonly [number, number, number]> = [];
+    meta[1] = [1, 1, 0];
+    meta[2] = [10, 1, 1];
+    const r = argminPickReference(CX, CY, W, H, px, meta);
+    expect(r.found).toBe(true);
+    expect(r.slot0).toBe(2);
+    expect(r.dist2).toBe(25);
   });
+
+  it("equal priorities keep the closest-wins rule", () => {
+    const px = (x: number, y: number): readonly [number, number, number, number] => {
+      if (x === CX && y === CY) return [1, 0, 0, 0];
+      if (x === CX + 5 && y === CY) return [2, 0, 0, 0];
+      return [0, 0, 0, 0];
+    };
+    const meta: Array<readonly [number, number, number]> = [];
+    meta[1] = [1, 1, 1];
+    meta[2] = [10, 1, 1];
+    const r = argminPickReference(CX, CY, W, H, px, meta);
+    expect(r.slot0).toBe(1);
+  });
+
+  it("negative priority yields to default-0 hits", () => {
+    // background at the cursor with priority -1; a default annotation 3 px out
+    const px = (x: number, y: number): readonly [number, number, number, number] => {
+      if (x === CX && y === CY) return [1, 0, 0, 0];
+      if (x === CX + 3 && y === CY) return [2, 0, 0, 0];
+      return [0, 0, 0, 0];
+    };
+    const meta: Array<readonly [number, number, number]> = [];
+    meta[1] = [1, 1, -1];
+    meta[2] = [10, 1, 0];
+    const r = argminPickReference(CX, CY, W, H, px, meta);
+    expect(r.slot0).toBe(2);
+  });;
 
   it("accepts an isolated pixel (no 3×3 guard — MSAA handled upstream)", () => {
     const px = new Map<string, readonly [number, number, number, number]>();

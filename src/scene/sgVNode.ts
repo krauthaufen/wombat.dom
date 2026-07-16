@@ -15,7 +15,7 @@
 export const SG_KINDS: ReadonlySet<string> = new Set<string>([
   "Empty", "Group", "UnorderedGroup", "AdaptiveGroup", "Leaf",
   "Trafo", "Shader", "Uniform", "BlendMode", "Cursor", "PickThrough",
-  "Intersectable", "PixelSnapRadius", "On", "Active", "View", "Proj", "Delay",
+  "Intersectable", "PixelSnapRadius", "PickPriority", "On", "Active", "View", "Proj", "Delay",
   // Phase 1
   "DepthTest", "DepthMask", "DepthBias", "DepthClamp",
   "CullMode", "FrontFace", "FillMode",

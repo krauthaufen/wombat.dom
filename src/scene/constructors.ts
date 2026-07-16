@@ -184,6 +184,11 @@ function intersectable(value: IIntersectable | aval<IIntersectable>): (child: Sg
   return (child: SgNode): SgNode => ({ kind: "Intersectable", intersectable: i, child });
 }
 
+function pickPriority(value: number | aval<number>): (child: SgNode) => SgNode {
+  const v = liftAval(value);
+  return (child: SgNode): SgNode => ({ kind: "PickPriority", value: v, child });
+}
+
 function pixelSnapRadius(radius: number | aval<number>): (child: SgNode) => SgNode {
   const r: aval<number> = isAValRuntime(radius)
     ? radius as aval<number>
@@ -502,6 +507,11 @@ export interface SgScopeProps {
   PickThrough?: boolean;
   Intersectable?: IIntersectable | aval<IIntersectable>;
   PixelSnapRadius?: number | aval<number>;
+  /** Pick priority (integer, default 0, negatives allowed; clamped to
+   *  [-8, 7]): within each candidate's own snap radius, the HIGHEST
+   *  priority wins over any closer lower-priority hit; ties resolve to
+   *  the candidate closest to the pointer. */
+  PickPriority?: number | aval<number>;
 
   // Camera scopes — also sniffable from outside the scene.
   View?: aval<Trafo3d>;
@@ -622,6 +632,7 @@ function applyScopeAttrs(node: SgNode, props: SgScopeProps): SgNode {
   if (props.PickThrough !== undefined) n = pickThrough(props.PickThrough, n);
   if (props.Intersectable !== undefined) n = intersectable(props.Intersectable)(n);
   if (props.PixelSnapRadius !== undefined) n = pixelSnapRadius(props.PixelSnapRadius)(n);
+  if (props.PickPriority !== undefined)    n = pickPriority(props.PickPriority)(n);
   if (props.Cursor !== undefined)      n = cursor(props.Cursor, n);
   if (props.BlendMode !== undefined)   n = blendMode(props.BlendMode, n);
   if (props.Shader !== undefined)      n = shader(props.Shader, n);
@@ -1164,6 +1175,7 @@ export interface SgNamespace {
   pickThrough: typeof pickThrough;
   intersectable: typeof intersectable;
   pixelSnapRadius: typeof pixelSnapRadius;
+  pickPriority:    typeof pickPriority;
   on:          typeof on;
   onClick:        typeof onClick;
   onPointerDown:  typeof onPointerDown;
@@ -1268,6 +1280,7 @@ export const Sg: SgNamespace = (() => {
   fn.pickThrough = pickThrough;
   fn.intersectable = intersectable;
   fn.pixelSnapRadius = pixelSnapRadius;
+  fn.pickPriority    = pickPriority;
   fn.on          = on;
   fn.onClick        = onClick;
   fn.onPointerDown  = onPointerDown;

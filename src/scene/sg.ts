@@ -58,6 +58,7 @@ export type SgNode =
   | SgPickThrough
   | SgIntersectable
   | SgPixelSnapRadius
+  | SgPickPriority
   | SgOn
   | SgActive
   | SgView
@@ -217,6 +218,12 @@ export interface SgIntersectable {
 export interface SgPixelSnapRadius {
   readonly kind: "PixelSnapRadius";
   readonly radius: aval<number>;
+  readonly child: SgNode;
+}
+
+export interface SgPickPriority {
+  readonly kind: "PickPriority";
+  readonly value: aval<number>;
   readonly child: SgNode;
 }
 

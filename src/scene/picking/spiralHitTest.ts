@@ -336,6 +336,20 @@ export function spiralHitTest(
 
   let winnerHoverIdValue = 0;
 
+  // Priority support: instead of returning at the FIRST valid offset,
+  // keep the best candidate by (priority desc); offsets are distance-
+  // sorted, so the first candidate AT a given priority is its closest.
+  // Early-exit once the best reaches the registry's priority watermark
+  // (all-default scenes exit at the first candidate — old behaviour).
+  const prioOf = (scope: LeafPickScope): number => {
+    if (scope.pickPriority === undefined) return 0;
+    const p = AVal.force(scope.pickPriority);
+    return Math.max(-8, Math.min(7, Math.floor(p)));
+  };
+  const prioMax = (registry as { maxPickPriority?: number }).maxPickPriority ?? 0;
+  let bestPrio = -Infinity;
+  let bestWinner: PreliminaryWinner | undefined;
+
   // readIdAt: helper for the 3×3 neighbour count + the centre slot
   // read. Mirrors F# `readIdAt`.
   const readIdAt = (lx: number, ly: number): number => {
@@ -458,32 +472,40 @@ export function spiralHitTest(
     }
 
     // ---- Decide winner for this offset ----
-    const pickPixel = pixOk && (!bvhOk || (revZ ? pixDepth >= bvhDepth : pixDepth <= bvhDepth));
+    // Same-offset pixel-vs-BVH: higher priority wins; tie → depth rule.
+    let cand: PreliminaryWinner | undefined;
+    let candPrio = -Infinity;
+    const pixPrio = pixOk && pixScope !== undefined ? prioOf(pixScope) : -Infinity;
+    const bvhPrio = bvhOk && bvhScope !== undefined ? prioOf(bvhScope) : -Infinity;
+    const pickPixel =
+      pixOk && (!bvhOk
+        || pixPrio > bvhPrio
+        || (pixPrio === bvhPrio && (revZ ? pixDepth >= bvhDepth : pixDepth <= bvhDepth)));
     if (pickPixel && pixScope !== undefined) {
-      winnerHoverIdValue = pixScope.pickId;
-      return finalizeWinner({
-        scope: pixScope,
-        viewPos: pixVp,
-        viewNormal: pixN,
-        partIndex: pixPi,
-        isPixel: true,
-        offX: off.dx,
-        offY: off.dy,
-        hoverPickId: winnerHoverIdValue,
-      }, pointer, cullSet, rayFor);
+      cand = {
+        scope: pixScope, viewPos: pixVp, viewNormal: pixN, partIndex: pixPi,
+        isPixel: true, offX: off.dx, offY: off.dy, hoverPickId: pixScope.pickId,
+      };
+      candPrio = pixPrio;
     } else if (bvhOk && bvhScope !== undefined) {
-      return finalizeWinner({
-        scope: bvhScope,
-        viewPos: bvhVp,
-        viewNormal: bvhN,
-        partIndex: 0,
-        isPixel: false,
-        offX: off.dx,
-        offY: off.dy,
-        hoverPickId: winnerHoverIdValue,
-      }, pointer, cullSet, rayFor);
+      cand = {
+        scope: bvhScope, viewPos: bvhVp, viewNormal: bvhN, partIndex: 0,
+        isPixel: false, offX: off.dx, offY: off.dy, hoverPickId: winnerHoverIdValue,
+      };
+      candPrio = bvhPrio;
     }
-    // No winner at this offset; continue.
+    if (cand !== undefined && candPrio > bestPrio) {
+      bestPrio = candPrio;
+      bestWinner = cand;
+      if (bestPrio >= prioMax) break; // nothing higher can exist
+    }
+  }
+
+  if (bestWinner !== undefined) {
+    winnerHoverIdValue = bestWinner.hoverPickId !== 0 ? bestWinner.hoverPickId : winnerHoverIdValue;
+    return finalizeWinner(
+      { ...bestWinner, hoverPickId: winnerHoverIdValue },
+      pointer, cullSet, rayFor);
   }
 
   // No spiral offset produced a winner. F# returns None here; we

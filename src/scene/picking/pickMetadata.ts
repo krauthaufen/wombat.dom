@@ -21,7 +21,13 @@ import { AVal, type aval } from "@aardworx/wombat.adaptive";
 import type { LeafPickScope, PickMode } from "./registry.js";
 import { PICK_SNAP_RADIUS } from "./pickArgminCompute.js";
 
-export const METADATA_FLOATS_PER_ID = 2;
+export const METADATA_FLOATS_PER_ID = 4; // [effR, modeSign, priority, pad]
+
+/** Clamped pick priority; default 0 when the scope never set one. */
+export function effectivePriority(p: number | undefined): number {
+  if (p === undefined || !isFinite(p)) return 0;
+  return Math.max(-8, Math.min(7, Math.floor(p)));
+}
 
 /** Effective snap radius, folding active/noEvents into the radius test. */
 export function effectiveRadius(active: boolean, noEvents: boolean, radius: number): number {
@@ -121,10 +127,11 @@ export class PickMetadata {
     for (let i = 0; i <= this.maxId; i++) this.dirty.add(i);
   }
 
-  private writeEntry(id: number, effR: number, modeSign: number): void {
+  private writeEntry(id: number, effR: number, modeSign: number, priority: number): void {
     const base = id * METADATA_FLOATS_PER_ID;
     this.data[base] = effR;
     this.data[base + 1] = modeSign;
+    this.data[base + 2] = priority;
     this.dirty.add(id);
   }
 
@@ -139,6 +146,10 @@ export class PickMetadata {
     return effectiveRadius(active, noEvents, radius);
   }
 
+  private computePrio(scope: LeafPickScope): number {
+    return effectivePriority(scope.pickPriority !== undefined ? AVal.force(scope.pickPriority) : 0);
+  }
+
   /** Register (or re-register) a scope's metadata. */
   register(scope: LeafPickScope, mode: PickMode): void {
     const id = scope.pickId;
@@ -148,10 +159,11 @@ export class PickMetadata {
     const dynamic =
       !this.isConst(scope.active) ||
       !this.isConst(scope.noEvents) ||
-      !this.isConst(scope.pixelSnapRadius);
+      !this.isConst(scope.pixelSnapRadius) ||
+      !this.isConst(scope.pickPriority);
     this.entries.set(id, { scope, modeSign, dynamic });
     if (dynamic) this.dynamicIds.add(id); else this.dynamicIds.delete(id);
-    this.writeEntry(id, this.computeEffR(scope), modeSign);
+    this.writeEntry(id, this.computeEffR(scope), modeSign, this.computePrio(scope));
   }
 
   /** Drop a scope — its id becomes permanently invalid until re-registered. */
@@ -159,7 +171,7 @@ export class PickMetadata {
     if (!this.entries.has(id)) return;
     this.entries.delete(id);
     this.dynamicIds.delete(id);
-    this.writeEntry(id, -1, this.data[id * METADATA_FLOATS_PER_ID + 1] ?? 1);
+    this.writeEntry(id, -1, this.data[id * METADATA_FLOATS_PER_ID + 1] ?? 1, 0);
   }
 
   clear(): void {
@@ -177,8 +189,10 @@ export class PickMetadata {
       const e = this.entries.get(id);
       if (e === undefined) continue;
       const effR = this.computeEffR(e.scope);
-      if (this.data[id * METADATA_FLOATS_PER_ID] !== effR) {
-        this.writeEntry(id, effR, e.modeSign);
+      const prio = this.computePrio(e.scope);
+      if (this.data[id * METADATA_FLOATS_PER_ID] !== effR
+          || this.data[id * METADATA_FLOATS_PER_ID + 2] !== prio) {
+        this.writeEntry(id, effR, e.modeSign, prio);
       }
     }
   }

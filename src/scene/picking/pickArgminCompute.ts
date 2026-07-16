@@ -112,11 +112,15 @@ struct Params {
 };
 @group(0) @binding(1) var<uniform> params: Params;
 
-// metadata[absId] = vec2(effectiveRadius, modeSign). radius<0 ⇒ invalid.
-@group(0) @binding(2) var<storage, read> metadata: array<vec2<f32>>;
+// metadata[absId] = vec4(effectiveRadius, modeSign, priority, pad).
+// radius<0 ⇒ invalid; priority clamped to [-8, 7], default 0.
+@group(0) @binding(2) var<storage, read> metadata: array<vec4<f32>>;
 
-// Packed winner key: (dist² << SHIFT) | discLocalIndex. Init to 0xffffffff.
-@group(0) @binding(3) var<storage, read_write> bestKey: atomic<u32>;
+// One packed winner key PER PRIORITY LEVEL — slot 0 is the highest
+// priority (+7), slot 15 the lowest (-8). Key: (dist² << SHIFT) |
+// discLocalIndex, atomicMin per slot; decode takes the first non-empty
+// slot from the top, i.e. HIGHEST PRIORITY WINS, ties by distance.
+@group(0) @binding(3) var<storage, read_write> bestKey: array<atomic<u32>, 16>;
 
 struct Result {
   found: u32,
@@ -154,15 +158,16 @@ fn findMin(@builtin(global_invocation_id) gid: vec3<u32>) {
   let s0: f32 = loadSlot0(params.cx + dx, params.cy + dy);
   if (s0 == 0.0) { return; }
   let absId: u32 = u32(abs(s0));
-  let md: vec2<f32> = metadata[absId];
+  let md: vec4<f32> = metadata[absId];
   let effR: f32 = md.x;
   let d2f: f32 = f32(d2i);
   if (effR < 0.0 || d2f > effR * effR) { return; }      // snap radius (folds active/noEvents)
   let pixSign: f32 = select(1.0, -1.0, s0 < 0.0);
   if (pixSign != md.y) { return; }                       // mode-sign gate
+  let slot: u32 = u32(7 - clamp(i32(md.z), -8, 7));      // priority → key slot
   // disc-local index is monotonic in (dy, dx) ⇒ matches a (py·W+px) tie-break.
   let discIdx: u32 = u32((dy + R) * SIDE + (dx + R));
-  atomicMin(&bestKey, (u32(d2i) << SHIFT) | discIdx);
+  atomicMin(&bestKey[slot], (u32(d2i) << SHIFT) | discIdx);
 }
 
 @compute @workgroup_size(1)
@@ -170,7 +175,12 @@ fn decode() {
   let R: i32 = params.radius;
   let SIDE: i32 = 2 * R + 1;
   result.centerSlot0 = loadSlot0(params.cx, params.cy);
-  let key: u32 = atomicLoad(&bestKey);
+  // first non-empty slot from the top = highest-priority winner
+  var key: u32 = NO_WINNER;
+  for (var s: u32 = 0u; s < 16u; s = s + 1u) {
+    let k = atomicLoad(&bestKey[s]);
+    if (k != NO_WINNER) { key = k; break; }
+  }
   if (key == NO_WINNER) {
     result.found = 0u;
     result.px = 0; result.py = 0; result.dist2 = 0.0;
@@ -226,8 +236,9 @@ function getOrBuildEntry(device: GPUDevice): CacheEntry {
 export interface PickArgminCompute {
   /**
    * Encode one argmin (findMin + decode) into `encoder`. `metadataBuffer`
-   * is a read-only storage buffer of `vec2<f32>(effectiveRadius, modeSign)`
-   * indexed by absolute pickId; it must be ≥ `(maxPickId+1)*8` bytes.
+   * is a read-only storage buffer of `vec4<f32>(effectiveRadius, modeSign,
+   * priority, pad)` indexed by absolute pickId; ≥ `(maxPickId+1)*16` bytes.
+   * Priority: highest wins within its own snap radius, ties by distance.
    * `radius` is the search-window radius (clamped to `PICK_ARGMIN_MAX_RADIUS`;
    * defaults to `SNAP_RADIUS_MAX`). Call `read()` after the submit.
    */
@@ -256,7 +267,7 @@ export function createPickArgminCompute(device: GPUDevice): PickArgminCompute {
     label: "pick.argmin.params",
   });
   const bestKey = device.createBuffer({
-    size: 4,
+    size: 64, // 16 priority slots × u32
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     label: "pick.argmin.bestKey",
   });
@@ -275,7 +286,7 @@ export function createPickArgminCompute(device: GPUDevice): PickArgminCompute {
     compute(encoder, pickView, metadataBuffer, cx, cy, width, height, radius): void {
       const r = Math.max(0, Math.min(PICK_ARGMIN_MAX_RADIUS, Math.floor(radius ?? PICK_SNAP_RADIUS)));
       device.queue.writeBuffer(params, 0, new Int32Array([cx | 0, cy | 0, width | 0, height | 0, r]));
-      device.queue.writeBuffer(bestKey, 0, new Uint32Array([0xffffffff]));
+      device.queue.writeBuffer(bestKey, 0, new Uint32Array(16).fill(0xffffffff));
       const bg = device.createBindGroup({
         layout,
         entries: [
@@ -334,10 +345,11 @@ export function argminPickReference(
   width: number,
   height: number,
   pixelAt: (x: number, y: number) => readonly [number, number, number, number],
-  metadata: ReadonlyArray<readonly [number, number]>,
+  metadata: ReadonlyArray<readonly [number, number] | readonly [number, number, number]>,
   radius: number = PICK_SNAP_RADIUS,
 ): PickArgminResult {
   const R = Math.max(0, Math.min(PICK_ARGMIN_MAX_RADIUS, Math.floor(radius)));
+  let bestP = -Infinity; // priority first: higher wins
   let bestD = Infinity;
   let bestI = Infinity;
   const slot0At = (x: number, y: number): number => {
@@ -365,9 +377,11 @@ export function argminPickReference(
       if (effR < 0 || d2 > effR * effR) continue;
       const pixSign = s0 < 0 ? -1 : 1;
       if (pixSign !== meta[1]) continue;
+      const prio = Math.max(-8, Math.min(7, Math.floor(meta[2] ?? 0)));
       // disc-local index tie-break (== ascending py·W+px within the disc).
       const li = (dy + R) * (2 * R + 1) + (dx + R);
-      if (d2 < bestD || (d2 === bestD && li < bestI)) {
+      if (prio > bestP || (prio === bestP && (d2 < bestD || (d2 === bestD && li < bestI)))) {
+        bestP = prio;
         bestD = d2;
         bestI = li;
         best = { found: true, px, py, dist2: d2, slot0: s[0], slot1: s[1], slot2: s[2], slot3: s[3], centerSlot0 };

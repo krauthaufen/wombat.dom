@@ -74,6 +74,9 @@ export function forEachLeaf(
     case "PixelSnapRadius":
       forEachLeaf(node.child, state.pushPixelSnapRadius(node.radius), visit);
       return;
+    case "PickPriority":
+      forEachLeaf(node.child, state.pushPickPriority(node.value), visit);
+      return;
     case "On":
       forEachLeaf(node.child, state.pushHandlers(node.handlers), visit);
       return;

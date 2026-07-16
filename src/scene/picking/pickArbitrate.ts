@@ -136,9 +136,21 @@ export function arbitratePick(
     bvhDepth = transformPosProjZ(pFwd, vFwd.transformPos(bvh.worldPoint));
   }
 
-  // ---- 5-case arbitration ----
+  // ---- arbitration ----
+  // Priority first: the higher-priority candidate wins outright (the
+  // argmin kernel already resolved priority WITHIN the pixel side; here
+  // we arbitrate pixel-vs-BVH). Tie → the original 5-case depth logic.
+  const prioOf = (scope: LeafPickScope | undefined): number => {
+    if (scope === undefined || scope.pickPriority === undefined) return 0;
+    const p = AVal.force(scope.pickPriority);
+    return Math.max(-8, Math.min(7, Math.floor(p)));
+  };
   let winnerIsPixel: boolean;
-  if (bvh !== undefined) {
+  const pixPrio = prioOf(pixScope);
+  const bvhPrio = bvh !== undefined ? prioOf(bvh.scope) : -Infinity;
+  if (pixScope !== undefined && bvh !== undefined && pixPrio !== bvhPrio) {
+    winnerIsPixel = pixPrio > bvhPrio;
+  } else if (bvh !== undefined) {
     // Pixel wins only when it's exactly under the cursor AND in front.
     // "In front" flips under a reversed-Z projection (near = 1, far = 0).
     const revZ = isReversedZ(pBwd);

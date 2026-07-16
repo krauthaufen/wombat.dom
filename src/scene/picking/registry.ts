@@ -86,6 +86,14 @@ export interface LeafPickScope {
    */
   readonly pixelSnapRadius: aval<number>;
   /**
+   * Pick priority (integer, default 0, negatives allowed; clamped to
+   * [-8, 7] at resolve time). Within each candidate's OWN snap radius
+   * the highest priority wins over closer lower-priority hits; ties
+   * resolve to the candidate nearest the pointer. Optional so existing
+   * constructors keep working — absent means 0.
+   */
+  readonly pickPriority?: aval<number>;
+  /**
    * Optional per-scope intersectable (world-space). Used by the
    * dispatcher to build a BVH and ray-fall-through past pickThrough
    * scopes when the pixel-pick lands on a "transparent" hit.
@@ -286,8 +294,20 @@ export class PickRegistry {
     }
   }
 
+  /**
+   * High watermark of pick priorities ever registered (never lowered on
+   * deregister — a stale-high value only disables an early-exit
+   * optimisation, never correctness). Used by the spiral fallback to
+   * stop as soon as no higher-priority candidate can exist.
+   */
+  maxPickPriority = 0;
+
   acquire(scope: Omit<LeafPickScope, "pickId">, mode: PickMode = "A"): PickId {
     const pickId = this.next++;
+    if (scope.pickPriority !== undefined) {
+      const p = Math.max(-8, Math.min(7, Math.floor(AVal.force(scope.pickPriority))));
+      if (p > this.maxPickPriority) this.maxPickPriority = p;
+    }
     const full: LeafPickScope = { pickId, ...scope };
     this.entries.set(pickId, full);
     this.modes.set(pickId, mode);

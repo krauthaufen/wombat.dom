@@ -218,7 +218,7 @@ function sceneUsesPassStatic(node: SgNode): boolean {
     case "AdaptiveGroup": return sceneUsesPassStatic(node.child.force());
     case "Trafo": case "Shader": case "Uniform": case "BlendMode":
     case "Cursor": case "PickThrough": case "Intersectable":
-    case "PixelSnapRadius": case "On": case "Active": case "View": case "Proj":
+    case "PixelSnapRadius": case "PickPriority": case "On": case "Active": case "View": case "Proj":
     case "DepthTest": case "DepthMask": case "DepthBias": case "DepthClamp":
     case "CullMode": case "FrontFace": case "FillMode":
     case "BlendConstant": case "ColorMask": case "StencilMode":
@@ -390,6 +390,9 @@ function lower(
 
     case "PixelSnapRadius":
       return lower(node.child, state.pushPixelSnapRadius(node.radius), opts);
+
+    case "PickPriority":
+      return lower(node.child, state.pushPickPriority(node.value), opts);
 
     case "On":
       return lower(node.child, state.pushHandlers(node.handlers), opts);
@@ -627,6 +630,7 @@ function lowerLeaf(
       proj: state.proj,
       model: state.model,
       pixelSnapRadius: state.pixelSnapRadius,
+      pickPriority: state.pickPriority,
       canFocus: state.canFocus,
       pickPath,
       ...(state.intersectable !== undefined ? { intersectable: state.intersectable } : {}),

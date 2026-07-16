@@ -210,6 +210,9 @@ export class TraversalState implements IUniformProvider {
    * `AVal.constant(1)`. The dispatcher clamps to `[0, 16]`.
    */
   readonly pixelSnapRadius: aval<number>;
+  /** Pick priority (int, default 0, negatives allowed; clamp [-8,7]):
+   *  highest priority within its own snap radius wins the pick. */
+  readonly pickPriority: aval<number>;
   /** Active conjunction across all enclosing Active scopes. Defaults to `true`. */
   readonly active: aval<boolean>;
   /**
@@ -343,6 +346,7 @@ export class TraversalState implements IUniformProvider {
     this.pickThrough = spec.pickThrough;
     this.intersectable = spec.intersectable;
     this.pixelSnapRadius = spec.pixelSnapRadius;
+    this.pickPriority = spec.pickPriority;
     this.active = spec.active;
     this.handlers = spec.handlers;
     this.depthTest = spec.depthTest;
@@ -389,6 +393,7 @@ export class TraversalState implements IUniformProvider {
     pickThrough: false,
     intersectable: undefined,
     pixelSnapRadius: AVal.constant(0),
+    pickPriority: AVal.constant(0),
     active: AVal.constant(true),
     handlers: [],
     depthTest: AVal.constant<DepthCompare>("less"),
@@ -496,6 +501,11 @@ export class TraversalState implements IUniformProvider {
   /** `<Sg PixelSnapRadius={r}>`: override. */
   pushPixelSnapRadius(radius: aval<number>): TraversalState {
     return this.with({ pixelSnapRadius: radius });
+  }
+
+  /** `<Sg PickPriority={p}>`: override. */
+  pushPickPriority(value: aval<number>): TraversalState {
+    return this.with({ pickPriority: value });
   }
 
   /** `<Sg.Active value={a}>`: AND-compose across nesting. */
@@ -701,6 +711,7 @@ export class TraversalState implements IUniformProvider {
       pickThrough: patch.pickThrough ?? this.pickThrough,
       intersectable: "intersectable" in patch ? patch.intersectable : this.intersectable,
       pixelSnapRadius: patch.pixelSnapRadius ?? this.pixelSnapRadius,
+      pickPriority: patch.pickPriority ?? this.pickPriority,
       active: patch.active ?? this.active,
       handlers: patch.handlers ?? this.handlers,
       depthTest: patch.depthTest ?? this.depthTest,
@@ -847,6 +858,7 @@ interface TraversalSpec {
   pickThrough: boolean;
   intersectable: aval<IIntersectable> | undefined;
   pixelSnapRadius: aval<number>;
+  pickPriority: aval<number>;
   active: aval<boolean>;
   handlers: ReadonlyArray<LeafPickEntry>;
   depthTest: aval<DepthCompare>;
