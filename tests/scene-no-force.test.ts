@@ -55,6 +55,10 @@ const ALLOWLIST: readonly string[] = [
   // default. Constant-aval one-shot reads at compile-scene time.
   "const fppConst = state.forcePixelPicking.isConstant && state.forcePixelPicking.force();",
   "const noEventsConst = state.noEvents.isConstant && state.noEvents.force();",
+  // assertHeapIfSafe — CONSTANT-only forces (guarded by isConstant);
+  // adaptive avals qualify solely via construction-level proofs.
+  "const dc = dcAv.force();",
+  "return b.force().kind === \"host\";",
 ];
 
 describe("compile.ts — zero force on the live render path", () => {

@@ -27,6 +27,7 @@ import { IBuffer, type BufferView, type DrawCall,
 import type { Effect } from "@aardworx/wombat.shader";
 import { instanceEffect } from "@aardworx/wombat.shader";
 import type { SgInstanced, SgLeaf, SgNode } from "./sg.js";
+import { markHostBufferAVal } from "./hostBuffers.js";
 
 /**
  * Walk the subtree once and surface a friendly error for any
@@ -206,14 +207,36 @@ export function applyInstancing(
   // Override the leaf's drawCall to set instanceCount = scope.count.
   // (The validator already rejected leaves with instanceCount>1, so
   // this is always a clean overwrite.) Constant-fold when both inputs
-  // are constant — a static instanced leaf then carries zero adaptive
-  // nodes for its draw call instead of a zip+map pair.
-  const drawCall = leaf.drawCall.isConstant && inst.count.isConstant
-    // AVal.force OK: both isConstant — immutable by definition.
-    ? AVal.constant<DrawCall>({ ...AVal.force(leaf.drawCall), instanceCount: AVal.force(inst.count) })
-    : AVal.zip(leaf.drawCall, inst.count).map((dc, n) => ({
+  // are constant; a constant leaf drawCall with an adaptive count
+  // (the collection-editing shape: per-item geometry template + count
+  // aval) needs only ONE map node — the zip pair is reserved for the
+  // rare fully-adaptive leaf drawCall.
+  let drawCall: aval<DrawCall>;
+  if (leaf.drawCall.isConstant) {
+    // AVal.force OK: isConstant — immutable by definition.
+    const dc0 = AVal.force(leaf.drawCall);
+    drawCall = inst.count.isConstant
+      ? AVal.constant<DrawCall>({ ...dc0, instanceCount: AVal.force(inst.count) })
+      : inst.count.map((n) => ({ ...dc0, instanceCount: n }));
+    // Construction-level proof: every value this aval can ever
+    // produce is `{ ...dc0, instanceCount: n }` — dc0 is CONSTANT, so
+    // the shape (kind, firstVertex/firstInstance, geometry counts) is
+    // pinned by this code for all time; only instanceCount varies
+    // (and the heap draws n=0 as nothing). Record the proof so row
+    // lowering can assert heap eligibility without ever touching the
+    // live aval. This is NOT a snapshot of a changeable value.
+    if (
+      dc0.firstInstance === 0 &&
+      (dc0.kind === "indexed" || dc0.firstVertex === 0)
+    ) {
+      (drawCall as { __sgHeapSafeDraw?: { kind: DrawCall["kind"] } })
+        .__sgHeapSafeDraw = { kind: dc0.kind };
+    }
+  } else {
+    drawCall = AVal.zip(leaf.drawCall, inst.count).map((dc, n) => ({
       ...dc, instanceCount: n,
     }));
+  }
 
   return { effect, instanceAttributes: instAttrs, uniformOverrides, drawCall };
 }
@@ -300,7 +323,7 @@ function colsFromPackedM44(packed: aval<Float32Array>): BufferView[] {
   // we'd hit `maxVertexBuffers` (8) the moment a leaf has more than
   // two matrix instance attributes.
   const sharedBuf: aval<import("@aardworx/wombat.rendering/core").IBuffer> =
-    packed.map((arr) => IBuffer.fromHost(arr));
+    markHostBufferAVal(packed.map((arr) => IBuffer.fromHost(arr)));
   const out: BufferView[] = [];
   for (let col = 0; col < 4; col++) {
     const offset = col * 16;

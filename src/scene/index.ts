@@ -55,6 +55,7 @@ export {
   __setRowLowering,
   type CompileSceneOptions,
 } from "./compile.js";
+export { markHostBufferAVal, isMarkedHostBufferAVal } from "./hostBuffers.js";
 export {
   stageNode, templateStats, resetTemplates,
   effectUniformNames, validateTemplateEffect, warnUnresolvedUniforms,

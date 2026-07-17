@@ -43,7 +43,7 @@ import { RenderTree, UniformProvider, AttributeProvider } from "@aardworx/wombat
 import { isDerivedRule } from "@aardworx/wombat.rendering/runtime";
 import type {
   BlendState, BufferView,
-  Command, ClearValues, DepthBiasState, DepthState,
+  Command, ClearValues, DepthBiasState, DepthState, DrawCall,
   IAttributeProvider, IBuffer, IFramebuffer, ISampler, ITexture, IUniformProvider,
   PipelineState, PlainRasterizerState, RasterizerState, RenderObject,
   StencilState, Topology,
@@ -532,6 +532,90 @@ export function __setRowLowering(enabled: boolean): void {
   _rowLowering = enabled;
 }
 
+/** Distinct-by-identity aval count (the compile layer over-binds each
+ *  texture under `name` and `${name}_view`, so name count ≠ aval count). */
+function distinctAvalCount(m: { iter(f: (n: string, av: unknown) => void): void }): number {
+  let first: unknown, second: unknown, n = 0;
+  m.iter((_k, av) => {
+    if (av === first || av === second) return;
+    if (first === undefined) { first = av; n = 1; }
+    else if (second === undefined) { second = av; n = 2; }
+    else n++;
+  });
+  return n;
+}
+
+/**
+ * Producer-asserted heap eligibility (rendering ≥ 0.21.4). After a
+ * successful row lowering the RO's heap answer can be PROVEN at build
+ * time — asserting it lets the hybrid partition share two SCENE-level
+ * toggle avals instead of building a live per-row predicate (custom
+ * aval + negation aval + their subscriptions, retained for the
+ * scene's lifetime; the dominant remaining per-row rendering cost).
+ *
+ * Evidence rules (locked-in — never violate): knowledge about an
+ * aval's future values comes ONLY from
+ *   1. its runtime `isConstant` property (then forcing is legal), or
+ *   2. a construction-level proof — a marker set at the one site
+ *      whose code pins the property for every producible value
+ *      (`__sgHeapSafeDraw` from the instancing layer's count-map over
+ *      a constant drawCall; `markHostBufferAVal` where the mapping
+ *      function itself constructs `IBuffer.fromHost`).
+ * A one-shot force of a changeable aval is NEVER evidence. Anything
+ * not provable by 1 or 2 keeps the fully reactive predicate —
+ * correctness never depends on the assertion.
+ */
+function assertHeapIfSafe(ro: RenderObject): void {
+  try {
+    if (ro.storageBuffers !== undefined && ro.storageBuffers.count > 0) return;
+    // Texture VALUES decide heap servability reactively (host kind,
+    // dims) — textured rows keep the reactive predicate. Samplers are
+    // never value-inspected by the heap; distinct ≤ 1 suffices.
+    if (ro.textures.count > 0) return;
+    if (distinctAvalCount(ro.samplers) > 1) return;
+    if (ro.indices !== undefined) {
+      const fmt = ro.indices.elementType.indexFormat;
+      if (fmt !== "uint32" && fmt !== "uint16") return;
+    }
+    const dcAv = ro.drawCall as aval<DrawCall> &
+      { __sgHeapSafeDraw?: { kind: DrawCall["kind"] } };
+    let dcKind: DrawCall["kind"];
+    if (dcAv.isConstant) {
+      // Why force here: constant — immutable by definition.
+      const dc = dcAv.force();
+      if (dc.firstInstance !== 0) return;
+      if (dc.kind === "non-indexed" && dc.firstVertex !== 0) return;
+      dcKind = dc.kind;
+    } else if (dcAv.__sgHeapSafeDraw !== undefined) {
+      dcKind = dcAv.__sgHeapSafeDraw.kind;
+    } else {
+      return;
+    }
+    if (dcKind === "indexed" ? ro.indices === undefined : ro.indices !== undefined) return;
+    const hostView = (v: BufferView): boolean => {
+      const b = v.buffer as aval<IBuffer> & { __sgHostBuffer?: true };
+      if (b.__sgHostBuffer === true) return true;   // construction proof
+      if (!b.isConstant) return false;
+      // Why force here: constant — immutable by definition.
+      return b.force().kind === "host";
+    };
+    const provider = (p: IAttributeProvider): boolean => {
+      for (const n of p.names()) {
+        const v = p.tryGet(n);
+        if (v !== undefined && !hostView(v)) return false;
+      }
+      return true;
+    };
+    if (!provider(ro.vertexAttributes)) return;
+    if (ro.instanceAttributes !== undefined && !provider(ro.instanceAttributes)) return;
+    if (ro.indices !== undefined && !hostView(ro.indices)) return;
+    (ro as { heapAsserted?: boolean }).heapAsserted = true;
+  } catch {
+    // best-effort: an unexpected provider shape just keeps the
+    // reactive predicate.
+  }
+}
+
 function lowerRowOrClassic(
   child: SgNode,
   state: TraversalState,
@@ -556,6 +640,7 @@ function lowerRowOrClassic(
     const obj = t.object as RenderObject & { uniforms: IUniformProvider };
     const plan = getPlan(staged.template, state, obj.effect);
     (obj as { uniforms: IUniformProvider }).uniforms = new RowProvider(plan, staged.holes);
+    assertHeapIfSafe(obj);
     recordRowLowered();
     if (staged.template.spineEffectId !== undefined) {
       // rows still work, but per-item effect application defeats the
