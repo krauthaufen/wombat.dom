@@ -58,7 +58,9 @@ export const PICK_ID_MAX: PickId = (1 << 24) - 1;
  */
 export interface LeafPickEntry {
   readonly handlers: EventHandlers;
-  readonly local2World: aval<Trafo3d>;
+  /** Lazy — the model composite is only built when an event actually
+   *  dispatches through this entry (see traversalState.modelLazy). */
+  readonly local2World: () => aval<Trafo3d>;
 }
 
 /**
@@ -78,7 +80,8 @@ export interface LeafPickScope {
   readonly active: aval<boolean>;
   readonly view: aval<Trafo3d>;
   readonly proj: aval<Trafo3d>;
-  readonly model: aval<Trafo3d>;
+  /** Lazy — resolved once at BVH registration / event time. */
+  readonly model: () => aval<Trafo3d>;
   /**
    * Pixel-snap-radius (device pixels) for the spiral hit-test.
    * Clamped to `[0, SNAP_RADIUS_MAX]` at dispatch time. Default
@@ -323,7 +326,7 @@ export class PickRegistry {
       const po: PickObject = {
         scope: full,
         intersectable: scope.intersectable!,
-        trafo: scope.model,
+        trafo: scope.model(),
       };
       this.bvhEntries.set(pickId, po);
       transact(() => { this._pickObjects.add(po); });

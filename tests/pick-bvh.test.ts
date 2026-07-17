@@ -66,13 +66,13 @@ interface AcquireOpts {
 
 function acquire(reg: PickRegistry, handlers: ReadonlyArray<Record<string, (e: SceneEvent) => unknown>>, opts: AcquireOpts = {}): number {
   return reg.acquire({
-    handlers: handlers.map(h => ({ handlers: bubbleOf(h), local2World: AVal.constant(Trafo3d.identity) })),
+    handlers: handlers.map(h => ({ handlers: bubbleOf(h), local2World: () => AVal.constant(Trafo3d.identity) })),
     cursor: undefined,
     pickThrough: opts.pickThrough ?? false,
     active: AVal.constant(true),
     view: AVal.constant(Trafo3d.identity),
     proj: AVal.constant(Trafo3d.identity),
-    model: AVal.constant(Trafo3d.identity),
+    model: () => (AVal.constant(Trafo3d.identity)),
     pixelSnapRadius: AVal.constant(1),
     ...(opts.intersectable !== undefined ? { intersectable: AVal.constant(opts.intersectable) } : {}),
   });

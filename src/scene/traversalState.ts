@@ -215,7 +215,20 @@ export class UniformScopeChain {
 
 export class TraversalState implements IUniformProvider {
   /** Local-to-world model trafo. Starts at identity. */
-  readonly model: aval<Trafo3d>;
+  get model(): aval<Trafo3d> {
+    const u = this._modelU;
+    return typeof u === "function" ? u() : u;
+  }
+
+  /** Thunk form of `model` — hand this to per-leaf registrations so
+   *  the composite is only built on first actual use. Memoized. */
+  modelLazy(): () => aval<Trafo3d> {
+    if (this._modelLazyMemo === undefined) {
+      const u = this._modelU;
+      this._modelLazyMemo = typeof u === "function" ? u : () => u;
+    }
+    return this._modelLazyMemo;
+  }
   /**
    * The accumulated `Model` ancestor trafo chain (root→leaf), one entry per
    * `<Sg Trafo>` scope. The heap path consumes this (`RenderObject.modelChain`)
@@ -234,6 +247,15 @@ export class TraversalState implements IUniformProvider {
   readonly viewport: aval<{ width: number; height: number }>;
   /** Innermost shader-scope effect, or `undefined` if no Shader scope was entered. */
   readonly shader: Effect | undefined;
+  /** Lazily-composed model: either a concrete aval (explicit sets,
+   *  instancing reset, the root identity) or a memoizing thunk built
+   *  by `pushTrafo` — the composite MapVal per Trafo scope is only
+   *  created when something actually pulls `model` (classic-path
+   *  uniforms, BVH registration, event dispatch). The heap path
+   *  (modelChain + GPU recipes) never does, so rows never pay it. */
+  private readonly _modelU: aval<Trafo3d> | (() => aval<Trafo3d>);
+  private _modelLazyMemo: (() => aval<Trafo3d>) | undefined;
+
   /** Uniform scopes as a parent-linked delta chain; inner-wins on
    *  conflict (achieved by lookup order — own entries first, then the
    *  parent chain). A scope push is ONE small allocation reusing the
@@ -363,7 +385,7 @@ export class TraversalState implements IUniformProvider {
    * `this.model` here and resets the outer `model` to identity so
    * the in-subtree trafos accumulate cleanly.
    */
-  readonly instancingParentModel: aval<Trafo3d> | undefined;
+  readonly instancingParentModel: (() => aval<Trafo3d>) | undefined;
 
   /**
    * The `PipelineState` derived from the render-state scopes accumulated
@@ -381,7 +403,7 @@ export class TraversalState implements IUniformProvider {
   readonly pipelineState: PipelineState | undefined;
 
   private constructor(spec: TraversalSpec) {
-    this.model = spec.model;
+    this._modelU = spec.model;
     this.modelChain = spec.modelChain;
     this.view = spec.view;
     this.proj = spec.proj;
@@ -502,8 +524,19 @@ export class TraversalState implements IUniformProvider {
     } else {
       modelChain = [composed, ...prev];
     }
+    // Lazy composite: capture the PARENT's model union (not the state)
+    // and memoize per level so repeated pulls share one aval identity.
+    const parentU = this._modelU;
+    let cache: aval<Trafo3d> | undefined;
+    const lazyModel = (): aval<Trafo3d> => {
+      if (cache === undefined) {
+        const parent = typeof parentU === "function" ? parentU() : parentU;
+        cache = composeModel(parent, composed);
+      }
+      return cache;
+    };
     return this.with({
-      model: composeModel(this.model, composed),
+      model: lazyModel,
       modelChain,
     });
   }
@@ -566,7 +599,7 @@ export class TraversalState implements IUniformProvider {
    * INCLUDING this scope) — the dispatcher uses it to push each
    * handler-level into its own local frame. */
   pushHandlers(handlers: EventHandlers): TraversalState {
-    const entry: LeafPickEntry = { handlers, local2World: this.model };
+    const entry: LeafPickEntry = { handlers, local2World: this.modelLazy() };
     return this.with({ handlers: [...this.handlers, entry] });
   }
 
@@ -732,7 +765,7 @@ export class TraversalState implements IUniformProvider {
   pushInstancing(node: import("./sg.js").SgInstanced): TraversalState {
     return this.with({
       instancing: node,
-      instancingParentModel: this.model,
+      instancingParentModel: this.modelLazy(),
       model: AVal.constant(Trafo3d.identity),
     });
   }
@@ -745,7 +778,7 @@ export class TraversalState implements IUniformProvider {
 
   private with(patch: Partial<TraversalSpec>): TraversalState {
     return new TraversalState({
-      model: patch.model ?? this.model,
+      model: patch.model ?? this._modelU,
       modelChain: patch.modelChain ?? this.modelChain,
       view: patch.view ?? this.view,
       proj: patch.proj ?? this.proj,
@@ -909,9 +942,9 @@ export function deriveAutoUniform(
 interface TraversalSpec {
   modelChain: readonly aval<Trafo3d>[];
   instancing: import("./sg.js").SgInstanced | undefined;
-  instancingParentModel: aval<Trafo3d> | undefined;
+  instancingParentModel: (() => aval<Trafo3d>) | undefined;
   pipelineState: PipelineState | undefined;
-  model: aval<Trafo3d>;
+  model: aval<Trafo3d> | (() => aval<Trafo3d>);
   view: aval<Trafo3d>;
   proj: aval<Trafo3d>;
   viewport: aval<{ width: number; height: number }>;

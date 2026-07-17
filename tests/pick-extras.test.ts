@@ -49,11 +49,11 @@ async function flush(): Promise<void> { for (let i = 0; i < 5; i++) await Promis
 
 function acquire(reg: PickRegistry, handlers: EventHandlers[]): number {
   return reg.acquire({
-    handlers: handlers.map(h => ({ handlers: h, local2World: AVal.constant(Trafo3d.identity) })),
+    handlers: handlers.map(h => ({ handlers: h, local2World: () => AVal.constant(Trafo3d.identity) })),
     cursor: undefined, pickThrough: false,
     active: AVal.constant(true),
     view: AVal.constant(Trafo3d.identity), proj: AVal.constant(Trafo3d.identity),
-    model: AVal.constant(Trafo3d.identity), pixelSnapRadius: AVal.constant(1),
+    model: () => (AVal.constant(Trafo3d.identity)), pixelSnapRadius: AVal.constant(1),
   });
 }
 
@@ -123,11 +123,11 @@ describe("PickDispatcher — pointer capture released on scope unmount", () => {
     reg.clear();
     // Re-register a NEW scope for the spiral hit to land on.
     const idB = reg.acquire({
-      handlers: [{ handlers: bubbleOf({ OnPointerMove: () => onB.push("moveB") }), local2World: AVal.constant(Trafo3d.identity) }],
+      handlers: [{ handlers: bubbleOf({ OnPointerMove: () => onB.push("moveB") }), local2World: () => AVal.constant(Trafo3d.identity) }],
       cursor: undefined, pickThrough: false,
       active: AVal.constant(true),
       view: AVal.constant(Trafo3d.identity), proj: AVal.constant(Trafo3d.identity),
-      model: AVal.constant(Trafo3d.identity), pixelSnapRadius: AVal.constant(1),
+      model: () => (AVal.constant(Trafo3d.identity)), pixelSnapRadius: AVal.constant(1),
     });
     curId = idB;
 

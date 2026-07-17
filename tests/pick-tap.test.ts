@@ -75,13 +75,13 @@ interface AcquireOpts { pixelSnapRadius?: number; }
 
 function acquire(reg: PickRegistry, handlers: Record<string, (e: SceneEvent) => unknown>, opts: AcquireOpts = {}): number {
   return reg.acquire({
-    handlers: [{ handlers: bubbleOf(handlers), local2World: AVal.constant(Trafo3d.identity) }],
+    handlers: [{ handlers: bubbleOf(handlers), local2World: () => AVal.constant(Trafo3d.identity) }],
     cursor: undefined,
     pickThrough: false,
     active: AVal.constant(true),
     view: AVal.constant(Trafo3d.identity),
     proj: AVal.constant(Trafo3d.identity),
-    model: AVal.constant(Trafo3d.identity),
+    model: () => (AVal.constant(Trafo3d.identity)),
     pixelSnapRadius: AVal.constant(opts.pixelSnapRadius ?? 1),
   });
 }

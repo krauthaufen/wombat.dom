@@ -107,7 +107,7 @@ describe("applyInstancing", () => {
       attributes: HashMap.empty<string, BufferView>(),
       child: leaf(),
     };
-    const applied = applyInstancing(node, idTrafo, idTrafo, idTrafo, idTrafo, stubEffect, leaf());
+    const applied = applyInstancing(node, () => idTrafo, () => idTrafo, idTrafo, idTrafo, stubEffect, leaf());
     let cols = 0;
     for (const [k] of applied.instanceAttributes) {
       if (k.startsWith("_InstanceTrafo_col") || k.startsWith("_InstanceTrafoInv_col")) cols++;
@@ -141,7 +141,7 @@ describe("applyInstancing", () => {
       attributes: HashMap.empty<string, BufferView>(),
       child: leaf(),
     };
-    const applied = applyInstancing(node, innerModel, parentModel, view, proj, stubEffect, leaf());
+    const applied = applyInstancing(node, () => innerModel, () => parentModel, view, proj, stubEffect, leaf());
     // Every trafo uniform that depends on the model trafo must be
     // overridden — the auto-injected default would derive it from
     // `state.model = innerModel` (post-reset inner chain), which is
@@ -171,7 +171,7 @@ describe("applyInstancing", () => {
       attributes: HashMap.empty<string, BufferView>().add("Color", dummyView),
       child: leaf(),
     };
-    const applied = applyInstancing(node, idTrafo, idTrafo, idTrafo, idTrafo, stubEffect, leaf());
+    const applied = applyInstancing(node, () => idTrafo, () => idTrafo, idTrafo, idTrafo, stubEffect, leaf());
     expect(applied.instanceAttributes.tryFind("Color")).toBeDefined();
     expect(applied.uniformOverrides.isEmpty).toBe(true);
   });

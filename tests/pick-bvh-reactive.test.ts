@@ -26,7 +26,7 @@ describe("PickRegistry — reactive BVH (Aardvark.Dom parity)", () => {
     const id = reg.acquire({
       handlers: [], cursor: undefined, pickThrough: false,
       active: AVal.constant(true), view: AVal.constant(Trafo3d.identity),
-      proj: AVal.constant(Trafo3d.identity), model: trafo,
+      proj: AVal.constant(Trafo3d.identity), model: () => (trafo),
       pixelSnapRadius: AVal.constant(1),
       intersectable,
     });
@@ -60,7 +60,7 @@ describe("PickRegistry — reactive BVH (Aardvark.Dom parity)", () => {
     const rayShift = new Ray3d(new V3d(10, 0, -10), new V3d(0, 0, 1));
     const hit1 = bvh1.closestHit(rayShift, 0, Number.POSITIVE_INFINITY,
       (_k, entry) => {
-        const t = AVal.force(entry.scope.model);
+        const t = AVal.force(entry.scope.model());
         const localRay = rayShift.transformed(t.inverse());
         return entry.intersectable.intersects(localRay, 0, Number.POSITIVE_INFINITY);
       });
@@ -68,7 +68,7 @@ describe("PickRegistry — reactive BVH (Aardvark.Dom parity)", () => {
     // Original ray now MISSES the moved box.
     const hit0b = bvh1.closestHit(ray, 0, Number.POSITIVE_INFINITY,
       (_k, entry) => {
-        const t = AVal.force(entry.scope.model);
+        const t = AVal.force(entry.scope.model());
         const localRay = ray.transformed(t.inverse());
         return entry.intersectable.intersects(localRay, 0, Number.POSITIVE_INFINITY);
       });
@@ -83,7 +83,7 @@ describe("PickRegistry — reactive BVH (Aardvark.Dom parity)", () => {
     reg.acquire({
       handlers: [], cursor: undefined, pickThrough: false,
       active: AVal.constant(true), view: AVal.constant(Trafo3d.identity),
-      proj: AVal.constant(Trafo3d.identity), model: AVal.constant(Trafo3d.identity),
+      proj: AVal.constant(Trafo3d.identity), model: () => (AVal.constant(Trafo3d.identity)),
       pixelSnapRadius: AVal.constant(1),
       intersectable: it,
     });
@@ -103,7 +103,7 @@ describe("PickRegistry — reactive BVH (Aardvark.Dom parity)", () => {
     reg.acquire({
       handlers: [], cursor: undefined, pickThrough: false,
       active: AVal.constant(true), view: AVal.constant(Trafo3d.identity),
-      proj: AVal.constant(Trafo3d.identity), model: AVal.constant(Trafo3d.identity),
+      proj: AVal.constant(Trafo3d.identity), model: () => (AVal.constant(Trafo3d.identity)),
       pixelSnapRadius: AVal.constant(1),
       intersectable: AVal.constant(unitBox()),
     });
@@ -113,7 +113,7 @@ describe("PickRegistry — reactive BVH (Aardvark.Dom parity)", () => {
     reg.acquire({
       handlers: [], cursor: undefined, pickThrough: false,
       active: AVal.constant(true), view: AVal.constant(Trafo3d.identity),
-      proj: AVal.constant(Trafo3d.identity), model: AVal.constant(Trafo3d.identity),
+      proj: AVal.constant(Trafo3d.identity), model: () => (AVal.constant(Trafo3d.identity)),
       pixelSnapRadius: AVal.constant(1),
       intersectable: AVal.constant(unitBox()),
     });

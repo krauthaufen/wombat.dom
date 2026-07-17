@@ -77,15 +77,15 @@ describe("PickDispatcher — per-scope local2World on dispatch", () => {
 
     const id = reg.acquire({
       handlers: [
-        { handlers: outer, local2World: AVal.constant(outerT) },
-        { handlers: inner, local2World: AVal.constant(innerT) },
+        { handlers: outer, local2World: () => AVal.constant(outerT) },
+        { handlers: inner, local2World: () => AVal.constant(innerT) },
       ],
       cursor: undefined,
       pickThrough: false,
       active: AVal.constant(true),
       view: AVal.constant(Trafo3d.identity),
       proj: AVal.constant(Trafo3d.identity),
-      model: AVal.constant(innerT),
+      model: () => (AVal.constant(innerT)),
       pixelSnapRadius: AVal.constant(1),
     });
 
@@ -138,26 +138,26 @@ describe("PickDispatcher — per-scope local2World on dispatch", () => {
     const childB: EventHandlers = { bubble: { OnClick: (e) => { seen.push({ which: "B", pos: e.position }); } } };
     const idA = reg.acquire({
       handlers: [
-        { handlers: parent, local2World: AVal.constant(parentT) },
-        { handlers: childA, local2World: AVal.constant(parentT) },
+        { handlers: parent, local2World: () => AVal.constant(parentT) },
+        { handlers: childA, local2World: () => AVal.constant(parentT) },
       ],
       cursor: undefined, pickThrough: false,
       active: AVal.constant(true),
       view: AVal.constant(Trafo3d.identity),
       proj: AVal.constant(Trafo3d.identity),
-      model: AVal.constant(parentT),
+      model: () => (AVal.constant(parentT)),
       pixelSnapRadius: AVal.constant(1),
     });
     const idB = reg.acquire({
       handlers: [
-        { handlers: parent, local2World: AVal.constant(parentT) },
-        { handlers: childB, local2World: AVal.constant(parentT) },
+        { handlers: parent, local2World: () => AVal.constant(parentT) },
+        { handlers: childB, local2World: () => AVal.constant(parentT) },
       ],
       cursor: undefined, pickThrough: false,
       active: AVal.constant(true),
       view: AVal.constant(Trafo3d.identity),
       proj: AVal.constant(Trafo3d.identity),
-      model: AVal.constant(parentT),
+      model: () => (AVal.constant(parentT)),
       pixelSnapRadius: AVal.constant(1),
     });
 
@@ -210,11 +210,11 @@ describe("TraversalState.pushHandlers — local2World snapshot", () => {
 
     expect(s.handlers).toHaveLength(2);
     // Entry A's local2World captures only t1.
-    const aL = AVal.force(s.handlers[0]!.local2World);
+    const aL = AVal.force(s.handlers[0]!.local2World());
     expect(aL.forward.toArray()).toEqual(t1.forward.toArray());
     // Entry B's local2World captures t1 ∘ t2 = the full state.model
     // at scope-B entry.
-    const bL = AVal.force(s.handlers[1]!.local2World);
+    const bL = AVal.force(s.handlers[1]!.local2World());
     expect(bL.forward.toArray()).toEqual(AVal.force(s.model).forward.toArray());
   });
 });

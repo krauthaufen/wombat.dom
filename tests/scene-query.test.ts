@@ -21,7 +21,7 @@ function acquireBoxAt(reg: PickRegistry, model: import("@aardworx/wombat.adaptiv
     active: AVal.constant(true),
     view: AVal.constant(Trafo3d.identity),
     proj: AVal.constant(Trafo3d.identity),
-    model,
+    model: () => model,
     pixelSnapRadius: AVal.constant(1),
     intersectable: AVal.constant(unitBox()),
   });

@@ -980,7 +980,7 @@ export class PickDispatcher implements SceneEventDispatch {
     for (let i = 0; i < path.length; i++) {
       const h = path[i]!.handlers.capture?.[ev.kind];
       if (h !== undefined) {
-        const local = AVal.force(path[i]!.local2World);
+        const local = AVal.force(path[i]!.local2World());
         const localEv = ev.transformedAt(local, path[i]);
         let r: boolean | void;
         try { r = h(localEv); } catch (err) { console.error(`[PickDispatcher] capture ${ev.kind} threw:`, err); continue; }
@@ -991,7 +991,7 @@ export class PickDispatcher implements SceneEventDispatch {
     for (let i = path.length - 1; i >= 0; i--) {
       const h = path[i]!.handlers.bubble?.[ev.kind];
       if (h !== undefined) {
-        const local = AVal.force(path[i]!.local2World);
+        const local = AVal.force(path[i]!.local2World());
         const localEv = ev.transformedAt(local, path[i]);
         let r: boolean | void;
         try { r = h(localEv); } catch (err) { console.error(`[PickDispatcher] bubble ${ev.kind} threw:`, err); continue; }
@@ -1031,7 +1031,7 @@ export class PickDispatcher implements SceneEventDispatch {
     const cap = entry.handlers.capture?.[ev.kind];
     const bub = entry.handlers.bubble?.[ev.kind];
     if (cap === undefined && bub === undefined) return;
-    const local = AVal.force(entry.local2World);
+    const local = AVal.force(entry.local2World());
     const localEv = ev.transformedAt(local, entry);
     if (cap !== undefined) {
       try { cap(localEv); } catch (err) { console.error(`[PickDispatcher] capture ${ev.kind} threw:`, err); }
@@ -1062,7 +1062,7 @@ export class PickDispatcher implements SceneEventDispatch {
   ): SceneEventLocation {
     const view = scope !== undefined ? AVal.force(scope.view) : Trafo3d.identity;
     const proj = scope !== undefined ? AVal.force(scope.proj) : Trafo3d.identity;
-    const model = scope?.model ?? AVal.constant(Trafo3d.identity);
+    const model = scope !== undefined ? scope.model() : AVal.constant(Trafo3d.identity);
     // Convert CSS-px cursor coords to device pixels using the live
     // canvas rect — keeps `pixel/viewportSize` in the same unit space
     // for the NDC math inside SceneEventLocation.

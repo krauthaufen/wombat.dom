@@ -71,14 +71,14 @@ function acquireWith(
   return reg.acquire({
     handlers: handlers.map((h, i) => ({
       handlers: h,
-      local2World: AVal.constant(localTrafos?.[i] ?? Trafo3d.identity),
+      local2World: () => AVal.constant(localTrafos?.[i] ?? Trafo3d.identity),
     })),
     cursor: undefined,
     pickThrough: false,
     active: AVal.constant(true),
     view: AVal.constant(Trafo3d.identity),
     proj: AVal.constant(Trafo3d.identity),
-    model: AVal.constant(Trafo3d.identity),
+    model: () => (AVal.constant(Trafo3d.identity)),
     pixelSnapRadius: AVal.constant(1),
   });
 }

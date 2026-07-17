@@ -111,15 +111,16 @@ export interface AppliedInstancing {
 export function applyInstancing(
   inst: SgInstanced,
   /** Cumulative ModelTrafo accumulated INSIDE the instancing subtree
-   *  (i.e. the leaf's `state.model` after the scope reset). Gets
-   *  pre-merged into each per-instance trafo on the CPU side. */
-  innerModel: aval<Trafo3d>,
+   *  (i.e. the leaf's `state.model` after the scope reset). LAZY —
+   *  only the trafos branch resolves it, so non-trafo instanced rows
+   *  never build a model composite. */
+  innerModel: () => aval<Trafo3d>,
   /** Cumulative ModelTrafo from OUTSIDE the instancing scope. Becomes
    *  the leaf's `ModelTrafo` uniform after the rewrite — the shader
    *  reads `uniform.ModelTrafo * inst.InstanceTrafo`, and we want
    *  `uniform.ModelTrafo` to carry the parent-scope trafo so the
    *  full transform comes out as `parentTrafo * (instance · inner)`. */
-  parentModel: aval<Trafo3d>,
+  parentModel: () => aval<Trafo3d>,
   /** Scope view/proj — needed to recompute the composite ModelView*
    *  uniforms with the parent (rather than inner) model. */
   view: aval<Trafo3d>,
@@ -145,7 +146,9 @@ export function applyInstancing(
   // `InstanceTrafoInv`, so the per-instance normal transform falls
   // out for free.
   if (inst.trafos !== undefined) {
-    const merged = mergeTrafosCached(innerModel, inst.trafos);
+    const innerModelR = innerModel();
+    const parentModelR = parentModel();
+    const merged = mergeTrafosCached(innerModelR, inst.trafos);
     for (let i = 0; i < 4; i++) {
       instAttrs = instAttrs.add(`_InstanceTrafo_col${i}`,    merged.fwCols[i]!);
       instAttrs = instAttrs.add(`_InstanceTrafoInv_col${i}`, merged.bwCols[i]!);
@@ -173,18 +176,18 @@ export function applyInstancing(
     const inv = (t: aval<Trafo3d>): aval<Trafo3d> => t.map(x => x.inverse());
     const compose = (a: aval<Trafo3d>, b: aval<Trafo3d>): aval<Trafo3d> =>
       AVal.zip(a, b).map((aT, bT) => aT.mul(bT));
-    const parentModelView    = compose(parentModel, view);
+    const parentModelView    = compose(parentModelR, view);
     const viewProj           = compose(view, proj);
-    const parentModelViewProj = compose(parentModel, viewProj);
+    const parentModelViewProj = compose(parentModelR, viewProj);
     // Match the auto-injected NormalMatrix shape (M44 = inv-T padded
     // for direction-vec multiplies). For the parent scope.
-    const parentNormalMatrix = parentModel.map(t => {
+    const parentNormalMatrix = parentModelR.map(t => {
       const invT = t.backward.transpose();
       return Trafo3d.fromMatrices(invT, invT.transpose());
     });
     uniformOverrides = uniformOverrides
-      .add("ModelTrafo",            parentModel as aval<unknown>)
-      .add("ModelTrafoInv",         inv(parentModel) as aval<unknown>)
+      .add("ModelTrafo",            parentModelR as aval<unknown>)
+      .add("ModelTrafoInv",         inv(parentModelR) as aval<unknown>)
       .add("ModelViewTrafo",        parentModelView as aval<unknown>)
       .add("ModelViewTrafoInv",     inv(parentModelView) as aval<unknown>)
       .add("ModelViewProjTrafo",    parentModelViewProj as aval<unknown>)

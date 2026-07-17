@@ -112,7 +112,7 @@ describe("Phase 3 — ForcePixelPicking suppresses BVH fall-through", () => {
     reg.acquire({
       handlers: [], cursor: undefined, pickThrough: false,
       active: AVal.constant(true), view: AVal.constant(Trafo3d.identity),
-      proj: AVal.constant(Trafo3d.identity), model: AVal.constant(Trafo3d.identity),
+      proj: AVal.constant(Trafo3d.identity), model: () => (AVal.constant(Trafo3d.identity)),
       pixelSnapRadius: AVal.constant(1),
       intersectable: AVal.constant(box),
       pickPath: "pixel",

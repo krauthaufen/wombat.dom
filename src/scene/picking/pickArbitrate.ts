@@ -229,7 +229,7 @@ function bvhClosest(
     if (!AVal.force(scope.active)) return undefined;
     if (scopeNoEvents(scope)) return undefined;
     if (!accept(scope)) return undefined;
-    const trafo = AVal.force(scope.model);
+    const trafo = AVal.force(scope.model());
     const localRay = ray.transformed(trafo.inverse());
     const lh = value.intersectable.intersects(localRay, 0, Number.POSITIVE_INFINITY);
     if (lh === undefined) return undefined;

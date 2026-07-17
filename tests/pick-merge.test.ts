@@ -55,7 +55,7 @@ function acquire(reg: PickRegistry, opts: AcquireOpts = {}): number {
     active: AVal.constant(true),
     view: AVal.constant(Trafo3d.identity),
     proj: AVal.constant(Trafo3d.identity),
-    model: AVal.constant(Trafo3d.identity),
+    model: () => (AVal.constant(Trafo3d.identity)),
     pixelSnapRadius: AVal.constant(opts.pixelSnapRadius ?? SNAP_RADIUS_MAX),
     ...(opts.intersectable !== undefined ? { intersectable: AVal.constant(opts.intersectable) } : {}),
   }, opts.mode ?? "A");

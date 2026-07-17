@@ -670,7 +670,7 @@ function lowerLeaf(
       active: state.active,
       view: state.view,
       proj: state.proj,
-      model: state.model,
+      model: state.modelLazy(),
       pixelSnapRadius: state.pixelSnapRadius,
       pickPriority: state.pickPriority,
       canFocus: state.canFocus,
@@ -695,9 +695,9 @@ function lowerLeaf(
   let leafForBuild = merged;
   let stateForBuild = state;
   if (state.instancing !== undefined) {
-    const parentModel = state.instancingParentModel ?? state.model;
+    const parentModel = state.instancingParentModel ?? state.modelLazy();
     const applied = applyInstancing(
-      state.instancing, state.model, parentModel,
+      state.instancing, state.modelLazy(), parentModel,
       state.view, state.proj, effect, merged,
     );
     effect = applied.effect;

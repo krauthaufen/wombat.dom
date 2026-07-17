@@ -24,11 +24,11 @@ function acquire(reg: PickRegistry, opts: {
   canFocus?: boolean;
 } = {}): number {
   return reg.acquire({
-    handlers: (opts.handlers ?? []).map(h => ({ handlers: h, local2World: AVal.constant(Trafo3d.identity) })),
+    handlers: (opts.handlers ?? []).map(h => ({ handlers: h, local2World: () => AVal.constant(Trafo3d.identity) })),
     cursor: undefined, pickThrough: false,
     active: AVal.constant(true),
     view: AVal.constant(Trafo3d.identity), proj: AVal.constant(Trafo3d.identity),
-    model: AVal.constant(Trafo3d.identity), pixelSnapRadius: AVal.constant(1),
+    model: () => (AVal.constant(Trafo3d.identity)), pixelSnapRadius: AVal.constant(1),
     ...(opts.canFocus !== undefined ? { canFocus: AVal.constant(opts.canFocus) } : {}),
   });
 }

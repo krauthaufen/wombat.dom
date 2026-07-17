@@ -193,7 +193,7 @@ export function pointHitTest(
       const scope = item.value.scope;
       if (!AVal.force(scope.active)) continue;
       if (scopeNoEvents(scope)) continue;
-      const trafo = AVal.force(scope.model);
+      const trafo = AVal.force(scope.model());
       const localRay = ray.transformed(trafo.inverse());
       const hit = item.value.intersectable.intersects(localRay, 0, bestT);
       if (hit !== undefined && hit.t < bestT) {
@@ -328,7 +328,7 @@ export function spiralHitTest(
     const candidates = bvh.getIntersectingFrustum(planes);
     for (const item of candidates) {
       const scope = item.value.scope;
-      const trafo = AVal.force(scope.model);
+      const trafo = AVal.force(scope.model());
       cullSet.push({ scope, intersectable: item.value.intersectable, trafo });
     }
   }

@@ -62,7 +62,7 @@ export function createSceneQuery(
         const scope = item.value.scope;
         if (!scope.active.getValue(token)) continue;
         if (scope.noEvents !== undefined && scope.noEvents.getValue(token)) continue;
-        const trafo = scope.model.getValue(token);
+        const trafo = scope.model().getValue(token);
         const localRay = ray.transformed(trafo.inverse());
         const hit = item.value.intersectable.intersects(localRay, 0, bestT);
         if (hit !== undefined && hit.t < bestT) {
