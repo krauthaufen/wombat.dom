@@ -54,6 +54,11 @@ export {
   compileScene,
   type CompileSceneOptions,
 } from "./compile.js";
+export {
+  stageNode, templateStats, resetTemplates,
+  effectUniformNames, validateTemplateEffect, warnUnresolvedUniforms,
+  type SceneTemplate, type StagedNode, type TemplateStats,
+} from "./template.js";
 
 export {
   transparencyTask,

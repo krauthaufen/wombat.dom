@@ -61,6 +61,7 @@ import { isITexture, resolveTextureAval } from "./textureResolver.js";
 import { ISampler as ISamplerImpl } from "@aardworx/wombat.rendering/core";
 import { composePickChainWithChoiceCached } from "./picking/pickChain.js";
 import type { PickRegistry } from "./picking/registry.js";
+import { warnUnresolvedUniforms } from "./template.js";
 
 // ---------------------------------------------------------------------------
 // Options + entry point
@@ -691,6 +692,22 @@ function lowerLeaf(
   return RenderTree.leaf(obj);
 }
 
+// Names supplied via `opts.injectUniforms` — memoised per map so the
+// M1 uniform check doesn't rebuild the set for every leaf.
+const injectedNamesMemo = new WeakMap<object, ReadonlySet<string>>();
+function injectedNames(opts: CompileSceneOptions): ReadonlySet<string> | undefined {
+  const m = opts.injectUniforms;
+  if (m === undefined) return undefined;
+  let s = injectedNamesMemo.get(m);
+  if (s === undefined) {
+    const names = new Set<string>();
+    for (const [k] of m) names.add(k);
+    injectedNamesMemo.set(m, names);
+    s = names;
+  }
+  return s;
+}
+
 function buildRenderObject(
   leaf: SgLeaf,
   state: TraversalState,
@@ -698,6 +715,10 @@ function buildRenderObject(
   opts: CompileSceneOptions,
   pickId: number | undefined,
 ): RenderObject {
+  // M1 (docs/scene-templates.md): name effect uniforms nothing in scope
+  // resolves — today they silently read zero at draw time. Deduped per
+  // (effect, missing-set); per-leaf cost is a few Set probes.
+  warnUnresolvedUniforms(effect, state.uniforms, injectedNames(opts), leaf.instanceAttributes);
   // `<Sg Uniform={…}>` scope entries, split into scalars vs textures/
   // samplers — memoised on the (shared) scope uniform map, so a whole
   // subtree under one `<Sg.Uniform>` scope splits it once, not per leaf.
