@@ -46,6 +46,9 @@ export interface SceneTemplate {
   readonly holeCount: number;
   /** Uniform names provided by Uniform scopes on the spine (static bags). */
   readonly providedUniforms: ReadonlySet<string>;
+  /** name → hole index of the providing (innermost) Uniform-scope value.
+   *  The plan's slot table (instance-tables M2) resolves through this. */
+  readonly uniformHoles: ReadonlyMap<string, number>;
   /** Instances staged against this template (stats). */
   instances: number;
 }
@@ -202,7 +205,8 @@ function encodeHandlerBag(h: EventHandlers, holes: unknown[], parts: string[]): 
   }
 }
 
-function encodeUniformBag(bag: UniformBag, holes: unknown[], parts: string[], provided: Set<string>): void {
+function encodeUniformBag(out: WalkOut, bag: UniformBag, parts: string[]): void {
+  const { holes, provided, uniformHoles } = out;
   if (bag.kind === "Static") {
     parts.push("Us(");
     for (const name of sortedNames(bag.entries)) {
@@ -211,6 +215,9 @@ function encodeUniformBag(bag: UniformBag, holes: unknown[], parts: string[], pr
       // NB: value avals hole by IDENTITY even when constant — a folded
       // uniform VALUE would merge leaves that legitimately differ.
       parts.push("?");
+      // walk is outer→inner, so a later (deeper) scope overwrites —
+      // matching the traversal's inner-wins shadowing.
+      uniformHoles.set(name, holes.length);
       holes.push(bag.entries.tryFind(name));
     }
     parts.push(")");
@@ -228,6 +235,7 @@ interface WalkOut {
   readonly parts: string[];
   readonly holes: unknown[];
   readonly provided: Set<string>;
+  readonly uniformHoles: Map<string, number>;
 }
 
 function walk(node: SgNode, out: WalkOut): void {
@@ -293,7 +301,7 @@ function walk(node: SgNode, out: WalkOut): void {
       walk(node.child, out);
       return;
     case "Uniform":
-      encodeUniformBag(node.bag, out.holes, parts, out.provided);
+      encodeUniformBag(out, node.bag, parts);
       walk(node.child, out);
       return;
     case "On":
@@ -368,7 +376,7 @@ function walk(node: SgNode, out: WalkOut): void {
  * shape, same static values) share one `SceneTemplate`.
  */
 export function stageNode(node: SgNode): StagedNode {
-  const out: WalkOut = { parts: [], holes: [], provided: new Set() };
+  const out: WalkOut = { parts: [], holes: [], provided: new Set(), uniformHoles: new Map() };
   walk(node, out);
   const key = out.parts.join(" ");
   let t = registry.get(key);
@@ -378,6 +386,7 @@ export function stageNode(node: SgNode): StagedNode {
       key,
       holeCount: out.holes.length,
       providedUniforms: out.provided,
+      uniformHoles: out.uniformHoles,
       instances: 0,
     };
     registry.set(key, t);
