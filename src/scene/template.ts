@@ -49,6 +49,17 @@ export interface SceneTemplate {
   /** name → hole index of the providing (innermost) Uniform-scope value.
    *  The plan's slot table (instance-tables M2) resolves through this. */
   readonly uniformHoles: ReadonlyMap<string, number>;
+  /** True when the spine carries a Dynamic (amap) uniform bag — such
+   *  subtrees are not row-lowerable (their key set is reactive). */
+  readonly hasDynamicUniforms: boolean;
+  /** Hole indices of Trafo scope values BEFORE any Instanced scope
+   *  (outer→inner order) — compose over the parent's model. */
+  readonly preTrafoHoles: ReadonlyArray<number>;
+  /** Hole indices of Trafo scope values AFTER the innermost Instanced
+   *  scope — compose over identity (pushInstancing resets model). */
+  readonly postTrafoHoles: ReadonlyArray<number>;
+  /** True when the spine contains an Instanced scope. */
+  readonly hasInstancing: boolean;
   /** Instances staged against this template (stats). */
   instances: number;
 }
@@ -223,6 +234,7 @@ function encodeUniformBag(out: WalkOut, bag: UniformBag, parts: string[]): void 
     parts.push(")");
   } else {
     parts.push("Ud?");
+    out.hasDynamicUniforms = true;
     holes.push(bag.entries);
   }
 }
@@ -236,6 +248,10 @@ interface WalkOut {
   readonly holes: unknown[];
   readonly provided: Set<string>;
   readonly uniformHoles: Map<string, number>;
+  hasDynamicUniforms: boolean;
+  readonly preTrafoHoles: number[];
+  readonly postTrafoHoles: number[];
+  hasInstancing: boolean;
 }
 
 function walk(node: SgNode, out: WalkOut): void {
@@ -313,18 +329,21 @@ function walk(node: SgNode, out: WalkOut): void {
     case "Trafo": {
       parts.push("T");
       const v = node.value;
+      const bucket = out.hasInstancing ? out.postTrafoHoles : out.preTrafoHoles;
       if (Array.isArray(v)) {
         parts.push(`[${v.length}]`);
-        for (const e of v) { parts.push("?"); holes.push(e); }
+        for (const e of v) { parts.push("?"); bucket.push(holes.length); holes.push(e); }
       } else {
         // Trafo3d instances and avals are per-instance values.
         parts.push("?");
+        bucket.push(holes.length);
         holes.push(v);
       }
       walk(node.child, out);
       return;
     }
     case "Instanced": {
+      out.hasInstancing = true;
       parts.push("I(");
       encodeValue(node.count, holes, parts);
       if (node.trafos !== undefined) { parts.push(";tr?"); holes.push(node.trafos); }
@@ -376,7 +395,10 @@ function walk(node: SgNode, out: WalkOut): void {
  * shape, same static values) share one `SceneTemplate`.
  */
 export function stageNode(node: SgNode): StagedNode {
-  const out: WalkOut = { parts: [], holes: [], provided: new Set(), uniformHoles: new Map() };
+  const out: WalkOut = {
+    parts: [], holes: [], provided: new Set(), uniformHoles: new Map(),
+    hasDynamicUniforms: false, preTrafoHoles: [], postTrafoHoles: [], hasInstancing: false,
+  };
   walk(node, out);
   const key = out.parts.join(" ");
   let t = registry.get(key);
@@ -387,6 +409,10 @@ export function stageNode(node: SgNode): StagedNode {
       holeCount: out.holes.length,
       providedUniforms: out.provided,
       uniformHoles: out.uniformHoles,
+      hasDynamicUniforms: out.hasDynamicUniforms,
+      preTrafoHoles: out.preTrafoHoles,
+      postTrafoHoles: out.postTrafoHoles,
+      hasInstancing: out.hasInstancing,
       instances: 0,
     };
     registry.set(key, t);

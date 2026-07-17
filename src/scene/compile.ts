@@ -61,7 +61,8 @@ import { isITexture, resolveTextureAval } from "./textureResolver.js";
 import { ISampler as ISamplerImpl } from "@aardworx/wombat.rendering/core";
 import { composePickChainWithChoiceCached } from "./picking/pickChain.js";
 import type { PickRegistry } from "./picking/registry.js";
-import { warnUnresolvedUniforms } from "./template.js";
+import { stageNode, warnUnresolvedUniforms } from "./template.js";
+import { getPlan, RowProvider } from "./templatePlan.js";
 
 // ---------------------------------------------------------------------------
 // Options + entry point
@@ -338,7 +339,7 @@ function lower(
       // `PickRegistry` (and a corresponding `_pickObjects` slot for
       // BVH-path scopes).
       const children: aset<RenderTree> = ASet.mapUse(
-        (child: SgNode) => lowerWithCleanup(child, state, opts),
+        (child: SgNode) => lowerRowOrClassic(child, state, opts),
         (wc) => wc.dispose(),
         node.children,
       ).map(wc => wc.tree);
@@ -494,6 +495,39 @@ const _NOOP_DISPOSE = (): void => {};
 // nested collections correct with the same replace-semantics).
 let _idSink: number[] | undefined;
 const _childOptsCache = new WeakMap<CompileSceneOptions, CompileSceneOptions>();
+// Instance-tables step 2 (docs/instance-tables.md): unordered-group
+// children that lower to a SINGLE leaf and stage to a row-eligible
+// template get their uniform provider swapped for the shared-plan
+// `RowProvider` — per-row retention drops from (leaf state + split
+// result + provider union) to (plan ref + holes). Trafo-family names
+// reconstruct the row model from the template's trafo holes through
+// the same `deriveAutoUniform` code path the state uses. Anything
+// ineligible keeps the classic result untouched — correctness never
+// depends on staging.
+function lowerRowOrClassic(
+  child: SgNode,
+  state: TraversalState,
+  opts: CompileSceneOptions,
+): LoweredChild {
+  const wc = lowerWithCleanup(child, state, opts);
+  const t = wc.tree;
+  if (t.kind !== "Leaf") return wc;
+  // Injected uniforms ride between scope and state in the classic
+  // provider; rows don't model them — and autoUniforms:false disables
+  // the auto derivation rows assume. Both are rare, pass-level options.
+  if (opts.injectUniforms !== undefined || opts.autoUniforms === false) return wc;
+  try {
+    const staged = stageNode(child);
+    if (staged.template.hasDynamicUniforms) return wc;
+    const obj = t.object as RenderObject & { uniforms: IUniformProvider };
+    const plan = getPlan(staged.template, state, obj.effect);
+    (obj as { uniforms: IUniformProvider }).uniforms = new RowProvider(plan, staged.holes);
+  } catch {
+    // staging must never break lowering — keep the classic result
+  }
+  return wc;
+}
+
 function lowerWithCleanup(
   child: SgNode,
   state: TraversalState,

@@ -845,7 +845,25 @@ export class TraversalState implements IUniformProvider {
    * but only if a shader reads it.
    */
   private tryGetAutoUniform(name: string): aval<unknown> | undefined {
-    const model = this.model, view = this.view, proj = this.proj;
+    return deriveAutoUniform(name, this.model, this.view, this.proj, this.viewport);
+  }
+}
+
+/**
+ * Standalone auto-uniform derivation over explicit trafo sources —
+ * shared by `TraversalState` (classic per-leaf lowering) and the
+ * instance-table `RowProvider` (rows retain only the slim `model`
+ * aval, not the state; see docs/instance-tables.md). Extracted so the
+ * two paths CANNOT drift.
+ */
+export function deriveAutoUniform(
+  name: string,
+  model: aval<Trafo3d>,
+  view: aval<Trafo3d>,
+  proj: aval<Trafo3d>,
+  viewport: aval<{ width: number; height: number }>,
+): aval<unknown> | undefined {
+  {
     const compose = (a: aval<Trafo3d>, b: aval<Trafo3d>): aval<Trafo3d> =>
       AVal.zip(a, b).map((aT, bT) => aT.mul(bT));
     const inv = (t: aval<Trafo3d>): aval<Trafo3d> =>
@@ -882,7 +900,7 @@ export class TraversalState implements IUniformProvider {
           const o = v.backward.transformPos(V3d.zero);
           return new V3f(o.x, o.y, o.z);
         });
-      case "ViewportSize": return this.viewport;
+      case "ViewportSize": return viewport;
       default: return undefined;
     }
   }

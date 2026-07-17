@@ -13,10 +13,15 @@
 // leaf's TraversalState) would return. `tests/template-plan.test.ts`
 // pins this by construction against `pushUniforms`.
 
-import type { aval } from "@aardworx/wombat.adaptive";
+import { AVal, type aval } from "@aardworx/wombat.adaptive";
+import { Trafo3d } from "@aardworx/wombat.base";
 import type { Effect } from "@aardworx/wombat.shader";
 import type { IUniformProvider } from "@aardworx/wombat.rendering/core";
-import type { TraversalState } from "./traversalState.js";
+import {
+  composeModel, composeTrafoValue, deriveAutoUniform,
+  type TraversalState,
+} from "./traversalState.js";
+import type { TrafoValue } from "./sg.js";
 import { effectUniformNames, type SceneTemplate, type StagedNode } from "./template.js";
 
 export type UniformSlot =
@@ -75,18 +80,57 @@ export function getPlan(
  * (an `IUniformProvider` itself) handles everything the template's own
  * scopes don't supply — shared across every row of the group.
  */
+const IDENTITY_MODEL: aval<Trafo3d> = AVal.constant(Trafo3d.identity);
+
 export class RowProvider implements IUniformProvider {
+  /** Lazily reconstructed row model (see rowModel()). */
+  private _model: aval<Trafo3d> | undefined;
+
   constructor(
     private readonly plan: TemplatePlan,
     private readonly holes: ReadonlyArray<unknown>,
   ) {}
+
+  /**
+   * The row's model aval, reconstructed from the template's Trafo
+   * holes exactly as the traversal would have composed it:
+   *   - spine WITHOUT Instanced: fold pre-trafos over the parent model;
+   *   - spine WITH Instanced: `pushInstancing` resets the model to
+   *     identity, so only post-Instanced trafos compose (over identity).
+   * Only ever built when a trafo-family uniform is actually pulled —
+   * the heap path (modelChain + recipes) never asks.
+   */
+  private rowModel(): aval<Trafo3d> {
+    if (this._model !== undefined) return this._model;
+    const t = this.plan.template;
+    let m: aval<Trafo3d>;
+    if (t.hasInstancing) {
+      m = IDENTITY_MODEL;
+      for (const i of t.postTrafoHoles) {
+        m = composeModel(m, composeTrafoValue(this.holes[i] as TrafoValue));
+      }
+    } else {
+      m = this.plan.parent.model;
+      for (const i of t.preTrafoHoles) {
+        m = composeModel(m, composeTrafoValue(this.holes[i] as TrafoValue));
+      }
+    }
+    this._model = m;
+    return m;
+  }
 
   tryGet(name: string): aval<unknown> | undefined {
     const slot = this.plan.slots.get(name);
     if (slot !== undefined && slot.kind === "hole") {
       return this.holes[slot.index] as aval<unknown>;
     }
-    return (this.plan.parent as unknown as IUniformProvider).tryGet(name);
+    // parent uniform scopes (shared chain), then auto-derived over the
+    // ROW's model — same code path the TraversalState uses, extracted
+    // into `deriveAutoUniform` so the two cannot drift.
+    const p = this.plan.parent;
+    const scoped = p.uniforms.tryFind(name);
+    if (scoped !== undefined) return scoped;
+    return deriveAutoUniform(name, this.rowModel(), p.view, p.proj, p.viewport);
   }
 
   *names(): Iterable<string> {
