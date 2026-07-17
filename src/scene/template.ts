@@ -731,6 +731,11 @@ export function sceneEfficiency(): EfficiencyReport {
 export function resetEfficiency(): void {
   _rowBails.clear();
   _rowsLowered = 0;
+  if (_reportTimer !== undefined) {
+    clearTimeout(_reportTimer);
+    _reportTimer = undefined;
+  }
+  _reported.clear();
 }
 
 // Report policy: ONE console line per quiet-period burst, only when a

@@ -1,7 +1,7 @@
 // Quantified efficiency accounting: counts + byte estimates per bail
 // reason, thresholds gate reporting (3 inefficient objects = silence).
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   sceneEfficiency, resetEfficiency,
 } from "../src/scene/index.js";
@@ -60,5 +60,22 @@ describe("scene efficiency accounting", () => {
     expect(b.count).toBe(45);
     expect(b.sources.length).toBe(16);
     expect(b.sources[0]).toEqual({ loc: "F.fs:0", count: 6 });
+  });
+
+  it("the thresholded console line names the top call sites", () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // 1500 × 700B ≈ 1.05MB — crosses BOTH thresholds.
+      for (let i = 0; i < 1500; i++) recordRowBail("dynamic-uniform-bag", undefined, "App.fs:947");
+      vi.advanceTimersByTime(1100);
+      expect(warn).toHaveBeenCalledTimes(1);
+      const line = warn.mock.calls[0]![0] as string;
+      expect(line).toContain("1500 scene items");
+      expect(line).toContain("— at App.fs:947 ×1500");
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
   });
 });
