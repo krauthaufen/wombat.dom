@@ -504,12 +504,19 @@ const _childOptsCache = new WeakMap<CompileSceneOptions, CompileSceneOptions>();
 // the same `deriveAutoUniform` code path the state uses. Anything
 // ineligible keeps the classic result untouched — correctness never
 // depends on staging.
+let _rowLowering = true;
+/** TEST-ONLY: toggle row lowering to compare against the classic path. */
+export function __setRowLowering(enabled: boolean): void {
+  _rowLowering = enabled;
+}
+
 function lowerRowOrClassic(
   child: SgNode,
   state: TraversalState,
   opts: CompileSceneOptions,
 ): LoweredChild {
   const wc = lowerWithCleanup(child, state, opts);
+  if (!_rowLowering) return wc;
   const t = wc.tree;
   if (t.kind !== "Leaf") return wc;
   // Injected uniforms ride between scope and state in the classic

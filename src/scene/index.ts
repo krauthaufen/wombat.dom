@@ -52,6 +52,7 @@ export { Sg, collectSgChildren, type SgScopeProps } from "./constructors.js";
 
 export {
   compileScene,
+  __setRowLowering,
   type CompileSceneOptions,
 } from "./compile.js";
 export {

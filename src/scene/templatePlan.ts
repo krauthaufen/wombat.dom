@@ -120,10 +120,10 @@ export class RowProvider implements IUniformProvider {
   }
 
   tryGet(name: string): aval<unknown> | undefined {
-    const slot = this.plan.slots.get(name);
-    if (slot !== undefined && slot.kind === "hole") {
-      return this.holes[slot.index] as aval<unknown>;
-    }
+    // Row-scoped uniforms shadow for ANY name (not only effect-declared
+    // ones — derived-mode rules and diagnostics pull arbitrary names).
+    const hole = this.plan.template.uniformHoles.get(name);
+    if (hole !== undefined) return this.holes[hole] as aval<unknown>;
     // parent uniform scopes (shared chain), then auto-derived over the
     // ROW's model — same code path the TraversalState uses, extracted
     // into `deriveAutoUniform` so the two cannot drift.
