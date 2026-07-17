@@ -58,6 +58,8 @@ export {
 export {
   stageNode, templateStats, resetTemplates,
   effectUniformNames, validateTemplateEffect, warnUnresolvedUniforms,
+  sceneEfficiency, resetEfficiency,
+  type EfficiencyReport, type RowBailReason,
   type SceneTemplate, type StagedNode, type TemplateStats,
 } from "./template.js";
 

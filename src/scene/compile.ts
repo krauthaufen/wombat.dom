@@ -61,7 +61,9 @@ import { isITexture, resolveTextureAval } from "./textureResolver.js";
 import { ISampler as ISamplerImpl } from "@aardworx/wombat.rendering/core";
 import { composePickChainWithChoiceCached } from "./picking/pickChain.js";
 import type { PickRegistry } from "./picking/registry.js";
-import { stageNode, warnUnresolvedUniforms } from "./template.js";
+import {
+  recordRowBail, recordRowLowered, stageNode, warnUnresolvedUniforms,
+} from "./template.js";
 import { getPlan, RowProvider } from "./templatePlan.js";
 
 // ---------------------------------------------------------------------------
@@ -538,18 +540,29 @@ function lowerRowOrClassic(
   const wc = lowerWithCleanup(child, state, opts);
   if (!_rowLowering) return wc;
   const t = wc.tree;
-  if (t.kind !== "Leaf") return wc;
+  if (t.kind !== "Leaf") {
+    if (t.kind !== "Empty") recordRowBail("multi-leaf-subtree");
+    return wc;
+  }
   // Injected uniforms ride between scope and state in the classic
   // provider; rows don't model them — and autoUniforms:false disables
   // the auto derivation rows assume. Both are rare, pass-level options.
-  if (opts.injectUniforms !== undefined || opts.autoUniforms === false) return wc;
+  if (opts.injectUniforms !== undefined) { recordRowBail("injected-uniforms-pass"); return wc; }
+  if (opts.autoUniforms === false) { recordRowBail("auto-uniforms-off"); return wc; }
   try {
     const staged = stageNode(child);
-    if (staged.template.hasDynamicUniforms) return wc;
+    if (staged.template.hasDynamicUniforms) { recordRowBail("dynamic-uniform-bag"); return wc; }
     const obj = t.object as RenderObject & { uniforms: IUniformProvider };
     const plan = getPlan(staged.template, state, obj.effect);
     (obj as { uniforms: IUniformProvider }).uniforms = new RowProvider(plan, staged.holes);
+    recordRowLowered();
+    if (staged.template.spineEffectId !== undefined) {
+      // rows still work, but per-item effect application defeats the
+      // upcoming row-store bucketing — advisory, quantified.
+      recordRowBail("per-leaf-effect-scope", staged.template.spineEffectId);
+    }
   } catch {
+    recordRowBail("staging-failed");
     // staging must never break lowering — keep the classic result
   }
   return wc;

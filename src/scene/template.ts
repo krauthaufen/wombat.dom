@@ -60,6 +60,9 @@ export interface SceneTemplate {
   readonly postTrafoHoles: ReadonlyArray<number>;
   /** True when the spine contains an Instanced scope. */
   readonly hasInstancing: boolean;
+  /** effect.id of the innermost Shader scope ON the spine (per-item
+   *  effect application — usually hoistable), or undefined. */
+  readonly spineEffectId: string | undefined;
   /** Instances staged against this template (stats). */
   instances: number;
 }
@@ -252,6 +255,7 @@ interface WalkOut {
   readonly preTrafoHoles: number[];
   readonly postTrafoHoles: number[];
   hasInstancing: boolean;
+  spineEffectId: string | undefined;
 }
 
 function walk(node: SgNode, out: WalkOut): void {
@@ -314,6 +318,7 @@ function walk(node: SgNode, out: WalkOut): void {
     case "Shader":
       // effect.id is a build-time stable template hash — static.
       parts.push(`S(${node.effect.id})`);
+      out.spineEffectId = node.effect.id;
       walk(node.child, out);
       return;
     case "Uniform":
@@ -404,7 +409,8 @@ function walk(node: SgNode, out: WalkOut): void {
 export function stageNode(node: SgNode): StagedNode {
   const out: WalkOut = {
     parts: [], holes: [], provided: new Set(), uniformHoles: new Map(),
-    hasDynamicUniforms: false, preTrafoHoles: [], postTrafoHoles: [], hasInstancing: false,
+    hasDynamicUniforms: false, preTrafoHoles: [], postTrafoHoles: [],
+    hasInstancing: false, spineEffectId: undefined,
   };
   walk(node, out);
   const key = out.parts.join(" ");
@@ -420,6 +426,7 @@ export function stageNode(node: SgNode): StagedNode {
       preTrafoHoles: out.preTrafoHoles,
       postTrafoHoles: out.postTrafoHoles,
       hasInstancing: out.hasInstancing,
+      spineEffectId: out.spineEffectId,
       instances: 0,
     };
     registry.set(key, t);
@@ -561,4 +568,121 @@ export function validateTemplateEffect(
     );
   }
   return missing;
+}
+
+// ---------------------------------------------------------------------------
+// Efficiency accounting (quantified — see the design rule: a warning
+// without counts is noise; only aggregate numbers above thresholds are
+// ever reported, and at most once per burst).
+// ---------------------------------------------------------------------------
+
+export type RowBailReason =
+  | "dynamic-uniform-bag"
+  | "injected-uniforms-pass"
+  | "auto-uniforms-off"
+  | "multi-leaf-subtree"
+  | "per-leaf-effect-scope"
+  | "staging-failed";
+
+interface BailStat { count: number; sameEffectId: string | undefined; mixed: boolean }
+
+const _rowBails = new Map<RowBailReason, BailStat>();
+let _rowsLowered = 0;
+
+/** Measured on TileRenderer @5k (2026-07-17): per-row overhead of the
+ *  classic path vs row lowering, bytes. Used ONLY for impact estimates
+ *  in reports — never for behavior. */
+const CLASSIC_OVERHEAD_BYTES = 700;
+
+export function recordRowLowered(): void {
+  _rowsLowered++;
+}
+
+export function recordRowBail(reason: RowBailReason, effectId?: string): void {
+  let s = _rowBails.get(reason);
+  if (s === undefined) {
+    s = { count: 0, sameEffectId: effectId, mixed: false };
+    _rowBails.set(reason, s);
+  }
+  s.count++;
+  if (effectId !== undefined && s.sameEffectId !== effectId) s.mixed = true;
+  scheduleEfficiencyReport();
+}
+
+export interface EfficiencyReport {
+  readonly rowsLowered: number;
+  readonly bails: ReadonlyArray<{
+    reason: RowBailReason;
+    count: number;
+    /** Estimated avoidable bytes (count × measured classic overhead). */
+    estBytes: number;
+    hint: string;
+  }>;
+  /** Template-explosion suspects: templates with ≥2 instances are
+   *  healthy; a burst of single-instance templates is the smell. */
+  readonly singleInstanceTemplates: number;
+  readonly templates: number;
+  readonly instances: number;
+}
+
+const HINTS: Record<RowBailReason, string> = {
+  "dynamic-uniform-bag": "an amap-backed Sg.Uniform prevents row lowering — use per-key avals in a static bag if the key set is fixed",
+  "injected-uniforms-pass": "pass-level injected uniforms (OIT build) route rows through the classic path for that pass only",
+  "auto-uniforms-off": "autoUniforms:false disables the derivations rows rely on",
+  "multi-leaf-subtree": "children lowering to several leaves aren't rows — split the collection so each child is one leaf",
+  "per-leaf-effect-scope": "Sg.Effect applied per child — apply it ONCE above the collection",
+  "staging-failed": "staging threw (internal — please report)",
+};
+
+export function sceneEfficiency(): EfficiencyReport {
+  let single = 0, templates = 0, instances = 0;
+  for (const t of registry.values()) {
+    templates++;
+    instances += t.instances;
+    if (t.instances === 1) single++;
+  }
+  const bails = [..._rowBails.entries()]
+    .map(([reason, s]) => ({
+      reason,
+      count: s.count,
+      estBytes: s.count * CLASSIC_OVERHEAD_BYTES,
+      hint: reason === "per-leaf-effect-scope" && !s.mixed && s.sameEffectId !== undefined
+        ? `${HINTS[reason]} (all ${s.count} use the SAME effect ${s.sameEffectId})`
+        : HINTS[reason],
+    }))
+    .sort((a, b) => b.count - a.count);
+  return { rowsLowered: _rowsLowered, bails, singleInstanceTemplates: single, templates, instances };
+}
+
+/** Test hook. */
+export function resetEfficiency(): void {
+  _rowBails.clear();
+  _rowsLowered = 0;
+}
+
+// Report policy: ONE console line per quiet-period burst, only when a
+// single reason crosses BOTH thresholds (instances AND estimated MB) —
+// three inefficient objects stay silent forever; five thousand speak
+// once, with numbers.
+const REPORT_MIN_COUNT = 500;
+const REPORT_MIN_BYTES = 1 << 20;
+let _reportTimer: ReturnType<typeof setTimeout> | undefined;
+const _reported = new Set<string>();
+
+function scheduleEfficiencyReport(): void {
+  if (_reportTimer !== undefined) return;
+  _reportTimer = setTimeout(() => {
+    _reportTimer = undefined;
+    const r = sceneEfficiency();
+    for (const b of r.bails) {
+      if (b.count < REPORT_MIN_COUNT || b.estBytes < REPORT_MIN_BYTES) continue;
+      const key = `${b.reason}|${Math.log2(b.count) | 0}`;
+      if (_reported.has(key)) continue;
+      _reported.add(key);
+      console.warn(
+        `[wombat.dom] ${b.count} scene items lowered on the classic path ` +
+        `(~${(b.estBytes / 1048576).toFixed(1)} MB avoidable): ${b.hint}`,
+      );
+    }
+  }, 1000);
 }
