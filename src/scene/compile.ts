@@ -62,7 +62,7 @@ import { ISampler as ISamplerImpl } from "@aardworx/wombat.rendering/core";
 import { composePickChainWithChoiceCached } from "./picking/pickChain.js";
 import type { PickRegistry } from "./picking/registry.js";
 import {
-  recordRowBail, recordRowLowered, stageNode, warnUnresolvedUniforms,
+  recordRowBail, recordRowLowered, sgSourceOf, stageNode, warnUnresolvedUniforms,
 } from "./template.js";
 import { getPlan, RowProvider } from "./templatePlan.js";
 
@@ -539,19 +539,20 @@ function lowerRowOrClassic(
 ): LoweredChild {
   const wc = lowerWithCleanup(child, state, opts);
   if (!_rowLowering) return wc;
+  const src = sgSourceOf(child);
   const t = wc.tree;
   if (t.kind !== "Leaf") {
-    if (t.kind !== "Empty") recordRowBail("multi-leaf-subtree");
+    if (t.kind !== "Empty") recordRowBail("multi-leaf-subtree", undefined, src);
     return wc;
   }
   // Injected uniforms ride between scope and state in the classic
   // provider; rows don't model them — and autoUniforms:false disables
   // the auto derivation rows assume. Both are rare, pass-level options.
-  if (opts.injectUniforms !== undefined) { recordRowBail("injected-uniforms-pass"); return wc; }
-  if (opts.autoUniforms === false) { recordRowBail("auto-uniforms-off"); return wc; }
+  if (opts.injectUniforms !== undefined) { recordRowBail("injected-uniforms-pass", undefined, src); return wc; }
+  if (opts.autoUniforms === false) { recordRowBail("auto-uniforms-off", undefined, src); return wc; }
   try {
     const staged = stageNode(child);
-    if (staged.template.hasDynamicUniforms) { recordRowBail("dynamic-uniform-bag"); return wc; }
+    if (staged.template.hasDynamicUniforms) { recordRowBail("dynamic-uniform-bag", undefined, src); return wc; }
     const obj = t.object as RenderObject & { uniforms: IUniformProvider };
     const plan = getPlan(staged.template, state, obj.effect);
     (obj as { uniforms: IUniformProvider }).uniforms = new RowProvider(plan, staged.holes);
@@ -559,10 +560,10 @@ function lowerRowOrClassic(
     if (staged.template.spineEffectId !== undefined) {
       // rows still work, but per-item effect application defeats the
       // upcoming row-store bucketing — advisory, quantified.
-      recordRowBail("per-leaf-effect-scope", staged.template.spineEffectId);
+      recordRowBail("per-leaf-effect-scope", staged.template.spineEffectId, src);
     }
   } catch {
-    recordRowBail("staging-failed");
+    recordRowBail("staging-failed", undefined, src);
     // staging must never break lowering — keep the classic result
   }
   return wc;
@@ -859,7 +860,7 @@ function buildRenderObject(
   // M1 (docs/scene-templates.md): name effect uniforms nothing in scope
   // resolves — today they silently read zero at draw time. Deduped per
   // (effect, missing-set); per-leaf cost is a few Set probes.
-  warnUnresolvedUniforms(effect, state.uniforms, injectedNames(opts), leaf.instanceAttributes);
+  warnUnresolvedUniforms(effect, state.uniforms, injectedNames(opts), leaf.instanceAttributes, sgSourceOf(leaf));
   // `<Sg Uniform={…}>` scope entries, split into scalars vs textures/
   // samplers — memoised PER CHAIN NODE, extending the parent's cached
   // split (scene-templates M2): leaves reuse ancestor texture/sampler

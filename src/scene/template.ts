@@ -413,7 +413,7 @@ export function stageNode(node: SgNode): StagedNode {
     hasInstancing: false, spineEffectId: undefined,
   };
   walk(node, out);
-  const key = out.parts.join(" ");
+  const key = out.parts.join("\u0000");
   let t = registry.get(key);
   if (t === undefined) {
     t = {
@@ -513,6 +513,8 @@ export function warnUnresolvedUniforms(
   /** Per-leaf instance attributes — the instancing rewrite feeds these
    *  names from vertex inputs, so their uniform decls are satisfied. */
   instanceProvided?: { tryFind(name: string): unknown },
+  /** Stamped call site (`sgSourceOf`) — named in the warning. */
+  srcLoc?: string,
 ): void {
   let missing: string[] | undefined;
   for (const name of effectUniformNamesMemo(effect)) {
@@ -532,8 +534,9 @@ export function warnUnresolvedUniforms(
         return Array.isArray(vs) ? vs.filter((v) => v.kind === "Entry").map((v) => v.entry?.name ?? "?") : [];
       })
     : [];
+  const at = srcLoc !== undefined ? ` at ${srcLoc}` : "";
   console.warn(
-    `[wombat.dom] effect ${effect.id} [${entries.join("+")}]: uniforms with no provider in scope: ` +
+    `[wombat.dom] effect ${effect.id} [${entries.join("+")}]${at}: uniforms with no provider in scope: ` +
     `${missing.join(", ")} — they will read as zero/defaults at draw time.`,
   );
 }
@@ -571,6 +574,42 @@ export function validateTemplateEffect(
 }
 
 // ---------------------------------------------------------------------------
+// Source locations (M3 front-end). The Fable plugin wraps every `Sg.*`
+// call site in `withSgSource(value, "File.fs:line")`; TS/JSX consumers
+// can call it by hand. Locations are pure METADATA: they never enter
+// template keys (the same shape built at two sites still shares one
+// template) — they exist so efficiency reports can name the call site
+// that pays a cost.
+// ---------------------------------------------------------------------------
+
+/**
+ * Tag `value` with a source location. Nodes are stamped directly
+ * (first stamp wins — the innermost construct that CREATED the node);
+ * functions (scene ops `node => node`, curried constructors) are
+ * wrapped so the value they eventually produce gets stamped instead.
+ * Anything else passes through untouched. Never throws.
+ */
+export function withSgSource<T>(value: T, loc: string): T {
+  if (typeof value === "function") {
+    const f = value as unknown as (...args: unknown[]) => unknown;
+    return ((...args: unknown[]) =>
+      withSgSource(f(...args), loc)) as unknown as T;
+  }
+  if (value !== null && typeof value === "object") {
+    const n = value as { srcLoc?: string };
+    if (n.srcLoc === undefined) n.srcLoc = loc;
+  }
+  return value;
+}
+
+/** The stamped source location of a node, if any. */
+export function sgSourceOf(node: unknown): string | undefined {
+  return node !== null && typeof node === "object"
+    ? (node as { srcLoc?: string }).srcLoc
+    : undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Efficiency accounting (quantified — see the design rule: a warning
 // without counts is noise; only aggregate numbers above thresholds are
 // ever reported, and at most once per burst).
@@ -584,7 +623,19 @@ export type RowBailReason =
   | "per-leaf-effect-scope"
   | "staging-failed";
 
-interface BailStat { count: number; sameEffectId: string | undefined; mixed: boolean }
+/** Cap on distinct call-site locations tracked per reason — the report
+ *  names the TOP sites; an unbounded map would let a pathological scene
+ *  (unique locations per item) grow accounting state without limit. */
+const MAX_SOURCES = 16;
+
+interface BailStat {
+  count: number;
+  sameEffectId: string | undefined;
+  mixed: boolean;
+  sources: Map<string, number> | undefined;
+  /** True when locations beyond `MAX_SOURCES` were dropped. */
+  sourcesTruncated: boolean;
+}
 
 const _rowBails = new Map<RowBailReason, BailStat>();
 let _rowsLowered = 0;
@@ -598,14 +649,28 @@ export function recordRowLowered(): void {
   _rowsLowered++;
 }
 
-export function recordRowBail(reason: RowBailReason, effectId?: string): void {
+export function recordRowBail(
+  reason: RowBailReason,
+  effectId?: string,
+  srcLoc?: string,
+): void {
   let s = _rowBails.get(reason);
   if (s === undefined) {
-    s = { count: 0, sameEffectId: effectId, mixed: false };
+    s = {
+      count: 0, sameEffectId: effectId, mixed: false,
+      sources: undefined, sourcesTruncated: false,
+    };
     _rowBails.set(reason, s);
   }
   s.count++;
   if (effectId !== undefined && s.sameEffectId !== effectId) s.mixed = true;
+  if (srcLoc !== undefined) {
+    if (s.sources === undefined) s.sources = new Map();
+    const n = s.sources.get(srcLoc);
+    if (n !== undefined) s.sources.set(srcLoc, n + 1);
+    else if (s.sources.size < MAX_SOURCES) s.sources.set(srcLoc, 1);
+    else s.sourcesTruncated = true;
+  }
   scheduleEfficiencyReport();
 }
 
@@ -617,6 +682,9 @@ export interface EfficiencyReport {
     /** Estimated avoidable bytes (count × measured classic overhead). */
     estBytes: number;
     hint: string;
+    /** Call sites that hit this reason (source-tagged nodes only;
+     *  the Fable plugin stamps `File.fs:line`), heaviest first. */
+    sources: ReadonlyArray<{ loc: string; count: number }>;
   }>;
   /** Template-explosion suspects: templates with ≥2 instances are
    *  healthy; a burst of single-instance templates is the smell. */
@@ -649,6 +717,11 @@ export function sceneEfficiency(): EfficiencyReport {
       hint: reason === "per-leaf-effect-scope" && !s.mixed && s.sameEffectId !== undefined
         ? `${HINTS[reason]} (all ${s.count} use the SAME effect ${s.sameEffectId})`
         : HINTS[reason],
+      sources: s.sources === undefined
+        ? []
+        : [...s.sources.entries()]
+            .map(([loc, count]) => ({ loc, count }))
+            .sort((a, b) => b.count - a.count),
     }))
     .sort((a, b) => b.count - a.count);
   return { rowsLowered: _rowsLowered, bails, singleInstanceTemplates: single, templates, instances };
@@ -679,9 +752,13 @@ function scheduleEfficiencyReport(): void {
       const key = `${b.reason}|${Math.log2(b.count) | 0}`;
       if (_reported.has(key)) continue;
       _reported.add(key);
+      const sites = b.sources.length === 0
+        ? ""
+        : ` — at ${b.sources.slice(0, 3)
+            .map((s) => `${s.loc} ×${s.count}`).join(", ")}`;
       console.warn(
         `[wombat.dom] ${b.count} scene items lowered on the classic path ` +
-        `(~${(b.estBytes / 1048576).toFixed(1)} MB avoidable): ${b.hint}`,
+        `(~${(b.estBytes / 1048576).toFixed(1)} MB avoidable): ${b.hint}${sites}`,
       );
     }
   }, 1000);

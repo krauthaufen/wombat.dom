@@ -40,4 +40,25 @@ describe("scene efficiency accounting", () => {
     const b = r.bails.find((x) => x.reason === "per-leaf-effect-scope")!;
     expect(b.hint).not.toContain("SAME");
   });
+
+  it("aggregates call-site locations per reason, heaviest first", () => {
+    for (let i = 0; i < 50; i++) recordRowBail("dynamic-uniform-bag", undefined, "App.fs:947");
+    for (let i = 0; i < 9; i++) recordRowBail("dynamic-uniform-bag", undefined, "App.fs:12");
+    recordRowBail("dynamic-uniform-bag"); // untagged: counted, no source
+    const b = sceneEfficiency().bails.find((x) => x.reason === "dynamic-uniform-bag")!;
+    expect(b.count).toBe(60);
+    expect(b.sources).toEqual([
+      { loc: "App.fs:947", count: 50 },
+      { loc: "App.fs:12", count: 9 },
+    ]);
+  });
+
+  it("caps distinct locations (existing sites keep counting)", () => {
+    for (let i = 0; i < 40; i++) recordRowBail("multi-leaf-subtree", undefined, `F.fs:${i}`);
+    for (let i = 0; i < 5; i++) recordRowBail("multi-leaf-subtree", undefined, "F.fs:0");
+    const b = sceneEfficiency().bails.find((x) => x.reason === "multi-leaf-subtree")!;
+    expect(b.count).toBe(45);
+    expect(b.sources.length).toBe(16);
+    expect(b.sources[0]).toEqual({ loc: "F.fs:0", count: 6 });
+  });
 });

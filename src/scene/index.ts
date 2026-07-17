@@ -59,6 +59,7 @@ export {
   stageNode, templateStats, resetTemplates,
   effectUniformNames, validateTemplateEffect, warnUnresolvedUniforms,
   sceneEfficiency, resetEfficiency,
+  withSgSource, sgSourceOf,
   type EfficiencyReport, type RowBailReason,
   type SceneTemplate, type StagedNode, type TemplateStats,
 } from "./template.js";
