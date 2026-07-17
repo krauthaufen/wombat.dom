@@ -1,6 +1,11 @@
 # Scene templates — staging compiler for the scene graph
 
-Status: **in progress** (started 2026-07-17).
+Status: **M0 + M1 shipped** (2026-07-17, `src/scene/template.ts`);
+M1 wired into `buildRenderObject` (validates uniforms actually READ in
+the stage IR — decl lists over-approximate; aval-hole-bound and
+instance-attribute names count as provided). Verified end-to-end on
+TileRenderer: a misspelled `LineColour` is named once per effect
+variant, zero false positives on the full app. M2/M3 open.
 
 ## Problem
 
