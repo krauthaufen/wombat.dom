@@ -202,10 +202,15 @@ export function applyInstancing(
 
   // Override the leaf's drawCall to set instanceCount = scope.count.
   // (The validator already rejected leaves with instanceCount>1, so
-  // this is always a clean overwrite.)
-  const drawCall = AVal.zip(leaf.drawCall, inst.count).map((dc, n) => ({
-    ...dc, instanceCount: n,
-  }));
+  // this is always a clean overwrite.) Constant-fold when both inputs
+  // are constant — a static instanced leaf then carries zero adaptive
+  // nodes for its draw call instead of a zip+map pair.
+  const drawCall = leaf.drawCall.isConstant && inst.count.isConstant
+    // AVal.force OK: both isConstant — immutable by definition.
+    ? AVal.constant<DrawCall>({ ...AVal.force(leaf.drawCall), instanceCount: AVal.force(inst.count) })
+    : AVal.zip(leaf.drawCall, inst.count).map((dc, n) => ({
+      ...dc, instanceCount: n,
+    }));
 
   return { effect, instanceAttributes: instAttrs, uniformOverrides, drawCall };
 }

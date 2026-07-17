@@ -44,7 +44,7 @@ import { isDerivedRule } from "@aardworx/wombat.rendering/runtime";
 import type {
   BlendState, BufferView,
   Command, ClearValues, DepthBiasState, DepthState,
-  IBuffer, IFramebuffer, ISampler, ITexture, IUniformProvider,
+  IAttributeProvider, IBuffer, IFramebuffer, ISampler, ITexture, IUniformProvider,
   PipelineState, PlainRasterizerState, RasterizerState, RenderObject,
   StencilState, Topology,
 } from "@aardworx/wombat.rendering/core";
@@ -645,7 +645,7 @@ function lowerLeaf(
   // OIT: append the weighted-blend / A-buffer fragment writer onto the
   // (transparent) leaf's effect. Mirrors aardvark's composeSurface.
   if (opts.composeEffect !== undefined) {
-    effect = opts.composeEffect(effect);
+    effect = composeEffectCached(opts.composeEffect, effect);
   }
 
   // If an `Sg.Instanced` scope is in effect, rewrite the effect via
@@ -690,6 +690,60 @@ function lowerLeaf(
   const baseObj: RenderObject = buildRenderObject(leafForBuild, stateForBuild, effect, opts, pickId);
   const obj: RenderObject = { ...baseObj, active: state.active };
   return RenderTree.leaf(obj);
+}
+
+// Applicator hoists (scene-templates M2): anything built from a
+// SHARED input collapses to one instance via identity memos. A scene
+// with 10k leaves referencing one geometry node gets ONE attribute
+// provider, one composed OIT effect per user effect, one overridden
+// PipelineState per (state, pass) — not 10k of each.
+const _attrProviderMemo = new WeakMap<object, IAttributeProvider>();
+function attrProviderOf(m: HashMap<string, BufferView>): IAttributeProvider {
+  let p = _attrProviderMemo.get(m);
+  if (p === undefined) {
+    p = AttributeProvider.ofMap(m);
+    _attrProviderMemo.set(m, p);
+  }
+  return p;
+}
+
+const _composeEffectMemo = new WeakMap<object, WeakMap<Effect, Effect>>();
+function composeEffectCached(fn: (e: Effect) => Effect, e: Effect): Effect {
+  let byEffect = _composeEffectMemo.get(fn);
+  if (byEffect === undefined) {
+    byEffect = new WeakMap();
+    _composeEffectMemo.set(fn, byEffect);
+  }
+  let r = byEffect.get(e);
+  if (r === undefined) {
+    r = fn(e);
+    byEffect.set(e, r);
+  }
+  return r;
+}
+
+const _psOverrideMemo = new WeakMap<object, WeakMap<PipelineState, Map<number, PipelineState>>>();
+function pipelineOverrideCached(
+  fn: (ps: PipelineState, renderPass: number) => PipelineState,
+  ps: PipelineState,
+  renderPass: number,
+): PipelineState {
+  let byPs = _psOverrideMemo.get(fn);
+  if (byPs === undefined) {
+    byPs = new WeakMap();
+    _psOverrideMemo.set(fn, byPs);
+  }
+  let byPass = byPs.get(ps);
+  if (byPass === undefined) {
+    byPass = new Map();
+    byPs.set(ps, byPass);
+  }
+  let r = byPass.get(renderPass);
+  if (r === undefined) {
+    r = fn(ps, renderPass);
+    byPass.set(renderPass, r);
+  }
+  return r;
 }
 
 // Provider over `opts.injectUniforms` — memoised per map so every
@@ -771,7 +825,7 @@ function buildRenderObject(
   // each, same as before).
   let pipelineState = state.pipelineState ?? derivePipelineState(state, opts);
   if (opts.pipelineOverride !== undefined) {
-    pipelineState = opts.pipelineOverride(pipelineState, state.renderPass);
+    pipelineState = pipelineOverrideCached(opts.pipelineOverride, pipelineState, state.renderPass);
   }
 
   // RenderObject.indices is `aval<BufferView>` (no undefined). The
@@ -786,9 +840,9 @@ function buildRenderObject(
     effect,
     ...(pickId !== undefined ? { pickId } : {}),
     pipelineState,
-    vertexAttributes: AttributeProvider.ofMap(leaf.vertexAttributes),
+    vertexAttributes: attrProviderOf(leaf.vertexAttributes),
     ...(leaf.instanceAttributes !== undefined
-      ? { instanceAttributes: AttributeProvider.ofMap(leaf.instanceAttributes) }
+      ? { instanceAttributes: attrProviderOf(leaf.instanceAttributes) }
       : {}),
     uniforms,
     textures,
@@ -837,6 +891,16 @@ function buildRenderObject(
  * undefined>.
  */
 function mergeLeafGeometry(leaf: SgLeaf, state: TraversalState): SgLeaf {
+  // Hoist: when no geometry scope contributes anything, the leaf passes
+  // through UNCHANGED — preserving its identity so every downstream
+  // per-map memo (attribute providers, pick geometry keys) collapses
+  // across all occurrences of a shared leaf (one provider for all
+  // cylinders, not one per cylinder).
+  if (state.vertexAttributes.count === 0
+    && state.instanceAttributes.count === 0
+    && (leaf.indices !== undefined || state.index === undefined)) {
+    return leaf;
+  }
   const vertex: HashMap<string, BufferView> = (() => {
     if (state.vertexAttributes.count === 0) return leaf.vertexAttributes;
     let m = state.vertexAttributes;
