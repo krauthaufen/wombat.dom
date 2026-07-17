@@ -55,7 +55,7 @@ import type {
   ModeValue,
   SgLeaf, SgNode,
 } from "./sg.js";
-import { TraversalState } from "./traversalState.js";
+import { TraversalState, UniformScopeChain } from "./traversalState.js";
 import { applyInstancing, validateInstancingSubtree } from "./instancing.js";
 import { isITexture, resolveTextureAval } from "./textureResolver.js";
 import { ISampler as ISamplerImpl } from "@aardworx/wombat.rendering/core";
@@ -692,6 +692,18 @@ function lowerLeaf(
   return RenderTree.leaf(obj);
 }
 
+// Provider over `opts.injectUniforms` — memoised per map so every
+// leaf shares one instance.
+const _injectedProviderMemo = new WeakMap<object, IUniformProvider>();
+function getInjectedProvider(m: HashMap<string, aval<unknown>>): IUniformProvider {
+  let p = _injectedProviderMemo.get(m);
+  if (p === undefined) {
+    p = UniformProvider.ofMap(m);
+    _injectedProviderMemo.set(m, p);
+  }
+  return p;
+}
+
 // Names supplied via `opts.injectUniforms` — memoised per map so the
 // M1 uniform check doesn't rebuild the set for every leaf.
 const injectedNamesMemo = new WeakMap<object, ReadonlySet<string>>();
@@ -720,46 +732,36 @@ function buildRenderObject(
   // (effect, missing-set); per-leaf cost is a few Set probes.
   warnUnresolvedUniforms(effect, state.uniforms, injectedNames(opts), leaf.instanceAttributes);
   // `<Sg Uniform={…}>` scope entries, split into scalars vs textures/
-  // samplers — memoised on the (shared) scope uniform map, so a whole
-  // subtree under one `<Sg.Uniform>` scope splits it once, not per leaf.
-  const { uniforms: scopeScalars, textures, samplers, scalarProvider } = getSplitScopeUniforms(state.uniforms);
-  // The only genuinely per-leaf uniform is `PickId`; everything else
-  // (scope scalars + the auto-injected derived trafos) is resolved by
-  // `state` itself (it's an `IUniformProvider`). The per-leaf cost is a
-  // single 3-field provider object + one aval — NOT a per-leaf HAMT
-  // overlay + union pair: at heap scale (hundreds of thousands of
-  // leaves) those were a top JS-memory item. The provider resolves
-  // PickId first, then scope scalars, then state — same shadowing as
-  // the old overlay-union.
-  let leafScalars = scopeScalars;
-  if (opts.injectUniforms !== undefined) {
-    for (const [k, v] of opts.injectUniforms) {
-      if (leafScalars.tryFind(k) === undefined) leafScalars = leafScalars.add(k, v);
-    }
-  }
+  // samplers — memoised PER CHAIN NODE, extending the parent's cached
+  // split (scene-templates M2): leaves reuse ancestor texture/sampler
+  // maps + scalar providers by reference; a per-leaf uniform scope
+  // costs one provider node reusing the bag's own entry map, never a
+  // merged HashMap.
+  const { textures, samplers, scalarProvider, scalarCount } = getSplitScopeUniforms(state.uniforms);
   // PickId is a FIRST-CLASS RenderObject field (`ro.pickId`) — the
   // heap writes it inline into the drawHeader, the classic path
   // synthesizes the uniform. It must NOT ride the uniform provider: a
   // unique per-leaf aval/provider measured ~6.5 KB of JS heap PER LEAF
   // at scale (see ~/claude/pickid-inline-plan.md).
-  const injected = leafScalars !== scopeScalars;
+  //
+  // Provider shadowing order (same as the old overlay-union): scope
+  // scalars (inner-most first via the chain) → injected uniforms →
+  // state-derived autos. `injectUniforms` must not override scope
+  // entries (old code only added missing keys) but MUST shadow the
+  // auto-derived names — placing it between chain and state does both.
+  const injectedP = opts.injectUniforms !== undefined
+    ? getInjectedProvider(opts.injectUniforms)
+    : undefined;
   let uniforms: IUniformProvider;
-  if ((opts.autoUniforms ?? true) && !injected) {
-    // fast path: scope scalars are memoised per scope map — the
-    // provider is SHARED across every leaf under the same scopes.
-    uniforms =
-      scopeScalars.count === 0
-        ? state
-        : (scalarProvider !== undefined
-            ? new UnionOf2(scalarProvider, state)
-            : new UnionOf2(UniformProvider.ofMap(scopeScalars), state));
+  if (opts.autoUniforms ?? true) {
+    let tail: IUniformProvider = state;
+    if (injectedP !== undefined) tail = new UnionOf2(injectedP, state);
+    uniforms = scalarCount === 0 || scalarProvider === undefined
+      ? tail
+      : new UnionOf2(scalarProvider, tail);
   } else {
-    uniforms =
-      (opts.autoUniforms ?? true)
-        ? (leafScalars.count === 0
-            ? state
-            : UniformProvider.union(UniformProvider.ofMap(leafScalars), state))
-        : UniformProvider.ofMap(leafScalars);
+    const scopeOnly = scalarProvider ?? UniformProvider.empty;
+    uniforms = injectedP !== undefined ? new UnionOf2(scopeOnly, injectedP) : scopeOnly;
   }
   // Use the `PipelineState` the traversal already derived for this
   // subtree (shared across all leaves under the same render-state
@@ -925,26 +927,60 @@ function splitTexturesFromUniforms(
   return { uniforms: outU, textures: outT, samplers: outS };
 }
 
-// Memoise `splitTexturesFromUniforms` on the *scope uniform map*: every
-// leaf under one `<Sg.Uniform>` scope shares that HashMap object, so the
-// classification (which forces each entry) runs once per scope, not once
-// per leaf. (For a scene with no `<Sg.Uniform>` scope the map is the
-// shared `HashMap.empty()` carried by `TraversalState.empty` — one entry.)
-type SplitUniforms = ReturnType<typeof splitTexturesFromUniforms> & {
-  /** Memoised `UniformProvider.ofMap(uniforms)` (set when non-empty). */
-  scalarProvider?: IUniformProvider;
+// Memoise the texture/sampler/scalar classification PER CHAIN NODE and
+// extend the parent's cached result incrementally (scene-templates M2):
+// a leaf-level `<Sg.Uniform>` scope with two scalar entries reuses the
+// parent's texture/sampler maps by REFERENCE (no per-leaf empty maps)
+// and composes its scalar provider as `own → parent` without ever
+// materializing a merged HashMap. Classification forces each entry
+// once per SCOPE, not once per leaf.
+interface SplitUniforms {
+  readonly textures: HashMap<string, aval<ITexture>>;
+  readonly samplers: HashMap<string, aval<ISampler>>;
+  /** Chain-shaped scalar provider (own-first shadowing), or undefined
+   *  when no scalars exist anywhere on the chain. */
+  readonly scalarProvider?: IUniformProvider | undefined;
+  /** Total scalar entries on the chain (fast emptiness check). */
+  readonly scalarCount: number;
+}
+const _emptySplit: SplitUniforms = {
+  textures: HashMap.empty<string, aval<ITexture>>(),
+  samplers: HashMap.empty<string, aval<ISampler>>(),
+  scalarCount: 0,
 };
-const _splitScopeUniformsCache = new WeakMap<HashMap<string, aval<unknown>>, SplitUniforms>();
-function getSplitScopeUniforms(scopeUniforms: HashMap<string, aval<unknown>>): SplitUniforms {
-  let r = _splitScopeUniformsCache.get(scopeUniforms);
-  if (r === undefined) {
-    r = splitTexturesFromUniforms(scopeUniforms);
-    if (r.uniforms.count > 0) {
-      (r as { scalarProvider?: IUniformProvider }).scalarProvider = UniformProvider.ofMap(r.uniforms);
+const _splitScopeUniformsCache = new WeakMap<UniformScopeChain, SplitUniforms>();
+function getSplitScopeUniforms(chain: UniformScopeChain): SplitUniforms {
+  const cached = _splitScopeUniformsCache.get(chain);
+  if (cached !== undefined) return cached;
+  let r: SplitUniforms;
+  const parent = chain.parent !== undefined ? getSplitScopeUniforms(chain.parent) : _emptySplit;
+  if (chain.entries.count === 0) {
+    r = parent;
+  } else {
+    const own = splitTexturesFromUniforms(chain.entries);
+    const textures = own.textures.count === 0
+      ? parent.textures
+      : mergeMaps(parent.textures, own.textures);
+    const samplers = own.samplers.count === 0
+      ? parent.samplers
+      : mergeMaps(parent.samplers, own.samplers);
+    let scalarProvider: IUniformProvider | undefined;
+    if (own.uniforms.count === 0) scalarProvider = parent.scalarProvider;
+    else {
+      const ownP = UniformProvider.ofMap(own.uniforms);
+      scalarProvider = parent.scalarProvider === undefined ? ownP : new UnionOf2(ownP, parent.scalarProvider);
     }
-    _splitScopeUniformsCache.set(scopeUniforms, r);
+    r = { textures, samplers, scalarProvider, scalarCount: parent.scalarCount + own.uniforms.count };
   }
+  _splitScopeUniformsCache.set(chain, r);
   return r;
+}
+
+function mergeMaps<V>(outer: HashMap<string, V>, inner: HashMap<string, V>): HashMap<string, V> {
+  if (outer.count === 0) return inner;
+  let m = outer;
+  for (const [k, v] of inner) m = m.add(k, v);
+  return m;
 }
 
 /** Two-provider union without the general variadic machinery. */

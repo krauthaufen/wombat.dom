@@ -170,6 +170,49 @@ export const AUTO_UNIFORM_NAMES: readonly string[] = [
  * accidentally evaluated outside a render control still gets a
  * sane (if useless) state to consume.
  */
+/**
+ * Uniform scopes as a parent-linked delta chain (scene-templates M2).
+ * Each `<Sg.Uniform>` push is one node holding the scope's OWN entry
+ * map (allocated by the constructor anyway); lookup walks own-first →
+ * parent, which reproduces the old HashMap-merge inner-wins shadowing
+ * exactly. `toMap()` materializes for the rare consumer that needs a
+ * flat map (cached per node).
+ */
+export class UniformScopeChain {
+  static readonly empty = new UniformScopeChain(undefined, HashMap.empty<string, aval<unknown>>());
+
+  private _materialized: HashMap<string, aval<unknown>> | undefined;
+
+  constructor(
+    readonly parent: UniformScopeChain | undefined,
+    readonly entries: HashMap<string, aval<unknown>>,
+  ) {}
+
+  tryFind(name: string): aval<unknown> | undefined {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    let c: UniformScopeChain | undefined = this;
+    while (c !== undefined) {
+      const v = c.entries.tryFind(name);
+      if (v !== undefined) return v;
+      c = c.parent;
+    }
+    return undefined;
+  }
+
+  get isEmpty(): boolean {
+    return this.entries.count === 0 && (this.parent === undefined || this.parent.isEmpty);
+  }
+
+  /** Flat inner-wins map — outer entries added first, inner overwrite. */
+  toMap(): HashMap<string, aval<unknown>> {
+    if (this._materialized !== undefined) return this._materialized;
+    let m = this.parent !== undefined ? this.parent.toMap() : HashMap.empty<string, aval<unknown>>();
+    for (const [k, v] of this.entries) m = m.add(k, v);
+    this._materialized = m;
+    return m;
+  }
+}
+
 export class TraversalState implements IUniformProvider {
   /** Local-to-world model trafo. Starts at identity. */
   readonly model: aval<Trafo3d>;
@@ -191,8 +234,12 @@ export class TraversalState implements IUniformProvider {
   readonly viewport: aval<{ width: number; height: number }>;
   /** Innermost shader-scope effect, or `undefined` if no Shader scope was entered. */
   readonly shader: Effect | undefined;
-  /** Per-key uniform map; inner-wins on conflict (achieved by HashMap.add). */
-  readonly uniforms: HashMap<string, aval<unknown>>;
+  /** Uniform scopes as a parent-linked delta chain; inner-wins on
+   *  conflict (achieved by lookup order — own entries first, then the
+   *  parent chain). A scope push is ONE small allocation reusing the
+   *  bag's own entry map; nothing is merged or copied, so 10k sibling
+   *  leaves share the whole ancestor chain (scene-templates M2). */
+  readonly uniforms: UniformScopeChain;
   /** Innermost blend mode, or `undefined`. */
   readonly blendMode: BlendState | undefined;
   /** Innermost cursor; an aval is fine because Cursor is a CSS prop, not a pipeline state. */
@@ -387,7 +434,7 @@ export class TraversalState implements IUniformProvider {
     proj: AVal.constant(Trafo3d.identity),
     viewport: AVal.constant({ width: 1, height: 1 }),
     shader: undefined,
-    uniforms: HashMap.empty<string, aval<unknown>>(),
+    uniforms: UniformScopeChain.empty,
     blendMode: undefined,
     cursor: undefined,
     pickThrough: false,
@@ -472,9 +519,8 @@ export class TraversalState implements IUniformProvider {
    * the inner value replaces any outer one in the result map.
    */
   pushUniforms(entries: HashMap<string, aval<unknown>>): TraversalState {
-    let merged = this.uniforms;
-    for (const [k, v] of entries) merged = merged.add(k, v);
-    return this.with({ uniforms: merged });
+    if (entries.count === 0) return this;
+    return this.with({ uniforms: new UniformScopeChain(this.uniforms, entries) });
   }
 
   /** `<Sg BlendMode={m}>`: override. Clears `pipelineState` (changes a
@@ -852,7 +898,7 @@ interface TraversalSpec {
   proj: aval<Trafo3d>;
   viewport: aval<{ width: number; height: number }>;
   shader: Effect | undefined;
-  uniforms: HashMap<string, aval<unknown>>;
+  uniforms: UniformScopeChain;
   blendMode: BlendState | undefined;
   cursor: aval<string> | undefined;
   pickThrough: boolean;

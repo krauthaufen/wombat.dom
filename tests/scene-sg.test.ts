@@ -100,7 +100,7 @@ describe("TraversalState — attribute composition", () => {
     expect(AVal.force(s.model)).toBe(Trafo3d.identity);
     expect(AVal.force(s.active)).toBe(true);
     expect(s.shader).toBeUndefined();
-    expect(s.uniforms.count).toBe(0);
+    expect(s.uniforms.isEmpty).toBe(true);
     expect(s.handlers).toHaveLength(0);
   });
 
