@@ -96,6 +96,8 @@ export interface LeafPickScope {
    * constructors keep working — absent means 0.
    */
   readonly pickPriority?: aval<number>;
+  /** Opaque app row key from `<Sg PickTag>` — surfaced as `SceneEvent.pickTag`. */
+  readonly tag?: unknown;
   /**
    * Optional per-scope intersectable (world-space). Used by the
    * dispatcher to build a BVH and ray-fall-through past pickThrough

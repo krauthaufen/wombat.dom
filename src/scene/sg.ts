@@ -59,6 +59,7 @@ export type SgNode =
   | SgIntersectable
   | SgPixelSnapRadius
   | SgPickPriority
+  | SgPickTag
   | SgOn
   | SgActive
   | SgView
@@ -218,6 +219,19 @@ export interface SgIntersectable {
 export interface SgPixelSnapRadius {
   readonly kind: "PixelSnapRadius";
   readonly radius: aval<number>;
+  readonly child: SgNode;
+}
+
+/**
+ * App-chosen pick tag scope — an OPAQUE value (row/item key) carried
+ * onto the leaf's pick scope and surfaced as `SceneEvent.pickTag`.
+ * Innermost wins. Enables collection-level handlers: one `On` scope
+ * above a group resolves WHICH item was hit via the tag instead of a
+ * closure per item.
+ */
+export interface SgPickTag {
+  readonly kind: "PickTag";
+  readonly value: unknown;
   readonly child: SgNode;
 }
 

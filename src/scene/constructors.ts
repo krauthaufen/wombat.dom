@@ -184,6 +184,10 @@ function intersectable(value: IIntersectable | aval<IIntersectable>): (child: Sg
   return (child: SgNode): SgNode => ({ kind: "Intersectable", intersectable: i, child });
 }
 
+function pickTag(value: unknown): (child: SgNode) => SgNode {
+  return (child: SgNode): SgNode => ({ kind: "PickTag", value, child });
+}
+
 function pickPriority(value: number | aval<number>): (child: SgNode) => SgNode {
   const v = liftAval(value);
   return (child: SgNode): SgNode => ({ kind: "PickPriority", value: v, child });
@@ -512,6 +516,7 @@ export interface SgScopeProps {
    *  priority wins over any closer lower-priority hit; ties resolve to
    *  the candidate closest to the pointer. */
   PickPriority?: number | aval<number>;
+  PickTag?: unknown;
 
   // Camera scopes — also sniffable from outside the scene.
   View?: aval<Trafo3d>;
@@ -633,6 +638,7 @@ function applyScopeAttrs(node: SgNode, props: SgScopeProps): SgNode {
   if (props.Intersectable !== undefined) n = intersectable(props.Intersectable)(n);
   if (props.PixelSnapRadius !== undefined) n = pixelSnapRadius(props.PixelSnapRadius)(n);
   if (props.PickPriority !== undefined)    n = pickPriority(props.PickPriority)(n);
+  if (props.PickTag !== undefined)         n = pickTag(props.PickTag)(n);
   if (props.Cursor !== undefined)      n = cursor(props.Cursor, n);
   if (props.BlendMode !== undefined)   n = blendMode(props.BlendMode, n);
   if (props.Shader !== undefined)      n = shader(props.Shader, n);
@@ -1176,6 +1182,7 @@ export interface SgNamespace {
   intersectable: typeof intersectable;
   pixelSnapRadius: typeof pixelSnapRadius;
   pickPriority:    typeof pickPriority;
+  pickTag:         typeof pickTag;
   on:          typeof on;
   onClick:        typeof onClick;
   onPointerDown:  typeof onPointerDown;
@@ -1281,6 +1288,7 @@ export const Sg: SgNamespace = (() => {
   fn.intersectable = intersectable;
   fn.pixelSnapRadius = pixelSnapRadius;
   fn.pickPriority    = pickPriority;
+  fn.pickTag         = pickTag;
   fn.on          = on;
   fn.onClick        = onClick;
   fn.onPointerDown  = onPointerDown;

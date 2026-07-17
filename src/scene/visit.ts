@@ -77,6 +77,9 @@ export function forEachLeaf(
     case "PickPriority":
       forEachLeaf(node.child, state.pushPickPriority(node.value), visit);
       return;
+    case "PickTag":
+      forEachLeaf(node.child, state.pushPickTag(node.value), visit);
+      return;
     case "On":
       forEachLeaf(node.child, state.pushHandlers(node.handlers), visit);
       return;

@@ -77,6 +77,8 @@ export interface SceneEventInit {
   readonly location: SceneEventLocation;
   readonly raw: PointerEvent | MouseEvent | WheelEvent | KeyboardEvent | FocusEvent | InputEvent;
   readonly pickId: PickId;
+  /** Opaque app row key from the hit scope's `<Sg PickTag>` (if any). */
+  readonly pickTag?: unknown;
   /** True iff the pick fragment was a Mode-B (negative slot 0) write. */
   readonly modeB?: boolean;
   // Pointer-derived events
@@ -139,6 +141,8 @@ export class SceneEvent {
   readonly location: SceneEventLocation;
   readonly raw: PointerEvent | MouseEvent | WheelEvent | KeyboardEvent | FocusEvent | InputEvent;
   readonly pickId: PickId;
+  /** Opaque app row key from the hit scope's `<Sg PickTag>`, or undefined. */
+  readonly pickTag: unknown;
   /** True iff the pick fragment was a Mode-B (negative slot 0) write. Defaults to `false`. */
   readonly modeB: boolean;
 
@@ -216,6 +220,7 @@ export class SceneEvent {
     this.location = init.location;
     this.raw = init.raw;
     this.pickId = init.pickId;
+    this.pickTag = init.pickTag;
     this.modeB = init.modeB ?? false;
     if (init.pointerId !== undefined) this.pointerId = init.pointerId;
     if (init.pointerType !== undefined) this.pointerType = init.pointerType;

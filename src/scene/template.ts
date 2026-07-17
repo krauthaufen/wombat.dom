@@ -342,6 +342,13 @@ function walk(node: SgNode, out: WalkOut): void {
       walk(node.child, out);
       return;
     }
+    case "PickTag":
+      // ALWAYS a hole — tags are per-row keys (often small ints);
+      // folding them into the key would explode one template per row.
+      parts.push("PT?");
+      out.holes.push((node as { value: unknown }).value);
+      walk((node as { child: SgNode }).child, out);
+      return;
     case "Instanced": {
       out.hasInstancing = true;
       parts.push("I(");
