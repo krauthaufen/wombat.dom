@@ -338,11 +338,28 @@ function lower(
       // child. Without this, every `cset.remove` leaked pickIds in
       // `PickRegistry` (and a corresponding `_pickObjects` slot for
       // BVH-path scopes).
+      // Fused single reader layer (instance-tables 4b): the mapping
+      // produces the RenderTree directly and cleanup rides a side
+      // WeakMap — the old `.map(wc => wc.tree)` added a SECOND
+      // refcounting reader (per-element CountingHashSet state) for
+      // nothing. Trees are identity-unique per lowering EXCEPT the
+      // shared `RenderTree.empty` constant, which never has cleanup
+      // (a child collapsing to empty acquired no pickIds).
+      const cleanups = new WeakMap<object, () => void>();
       const children: aset<RenderTree> = ASet.mapUse(
-        (child: SgNode) => lowerRowOrClassic(child, state, opts),
-        (wc) => wc.dispose(),
+        (child: SgNode) => {
+          const wc = lowerRowOrClassic(child, state, opts);
+          if (wc.dispose !== _NOOP_DISPOSE && wc.tree.kind !== "Empty") {
+            cleanups.set(wc.tree, wc.dispose);
+          }
+          return wc.tree;
+        },
+        (tree) => {
+          const d = cleanups.get(tree);
+          if (d !== undefined) { cleanups.delete(tree); d(); }
+        },
         node.children,
-      ).map(wc => wc.tree);
+      );
       return RenderTree.unorderedFromSet(children);
     }
 
