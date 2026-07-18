@@ -65,6 +65,7 @@ export type SgNode =
   | SgView
   | SgProj
   | SgDelay
+  | SgRow
   // Phase 1 — render-state scopes (override semantics)
   | SgDepthTest
   | SgDepthMask
@@ -148,6 +149,30 @@ export type TrafoValue =
   | Trafo3d
   | aval<Trafo3d>
   | ReadonlyArray<Trafo3d | aval<Trafo3d>>;
+
+/**
+ * A pre-staged row (the M3 construction bypass): `rowWrap` wraps
+ * collection mapping functions and replaces each produced subtree with
+ * this thin node carrying its staged (template, holes) — the subtree
+ * itself is NOT retained. Fast-row lowering consumes `staged`
+ * directly; every path that needs the real tree calls `build` lazily
+ * and caches it on `tree` (so classic-path rows cost what they cost
+ * today, no more). `build` re-runs the user's mapping function — the
+ * rebuilt tree is staged afresh by its consumer, never mixed with the
+ * construction-time `staged`.
+ */
+export interface SgRow {
+  readonly kind: "Row";
+  readonly staged: import("./template.js").StagedNode;
+  readonly build: () => SgNode;
+  tree?: SgNode;
+  srcLoc?: string;
+}
+
+/** Materialize a Row's real subtree (cached — later callers share it). */
+export function materializeRowSg(node: SgRow): SgNode {
+  return (node.tree ??= node.build());
+}
 
 export interface SgTrafo {
   readonly kind: "Trafo";

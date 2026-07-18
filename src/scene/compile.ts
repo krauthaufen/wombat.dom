@@ -56,6 +56,7 @@ import type {
   ModeValue,
   SgLeaf, SgNode, TrafoValue,
 } from "./sg.js";
+import { materializeRowSg } from "./sg.js";
 import { TraversalState, UniformScopeChain, composeTrafoValue } from "./traversalState.js";
 import { applyInstancing, validateInstancingSubtree } from "./instancing.js";
 import { isITexture, resolveTextureAval } from "./textureResolver.js";
@@ -237,7 +238,17 @@ function sceneUsesPassStatic(node: SgNode): boolean {
       catch { return false; }
     case "Instanced":
       return sceneUsesPassStatic(node.child);
+    case "Row":
+      // The staged key records every node kind on the spine — answer
+      // without materializing (Pass inside a row template is rare).
+      return rowKeyHasPass(node.staged.template.key);
   }
+}
+
+/** Does a staged template's key contain a `Pass` scope? Kinds are
+ *  encoded verbatim as `Kind(` parts joined by NUL. */
+function rowKeyHasPass(key: string): boolean {
+  return key.startsWith("Pass(") || key.includes("\u0000Pass(");
 }
 
 /**
@@ -303,6 +314,14 @@ function collectPassValues(node: SgNode, pass: number, out: Set<number>): Set<nu
       try { return collectPassValues(node.create(TraversalState.empty), pass, out); }
       catch { return out; }
     }
+    case "Row":
+      // A row IS a leaf for pass discovery — a `Pass` scope INSIDE the
+      // row's template (rare) forces materialization instead.
+      if (rowKeyHasPass(node.staged.template.key)) {
+        return collectPassValues(materializeRowSg(node), pass, out);
+      }
+      out.add(pass);
+      return out;
     default: {
       // every remaining node kind is a single-child scope
       const child = (node as { child?: SgNode }).child;
@@ -322,6 +341,11 @@ function lower(
 
     case "Leaf":
       return lowerLeaf(node, state, opts);
+
+    case "Row":
+      // A row outside its fast path (ordered context, adaptive slot,
+      // …) is just its lazily-materialized subtree.
+      return lower(materializeRowSg(node), state, opts);
 
     case "Group": {
       // alist<SgNode> → alist<RenderTree>; outer is OrderedFromList.
@@ -788,7 +812,9 @@ function lowerGroupEntry(
   // walk, no per-row scope literals, no discarded RenderObject.
   if (_rowLowering && anchor.plan !== undefined && anchor.fast !== null && anchor.fast !== undefined) {
     try {
-      const staged = stageNode(child);
+      // Pre-staged rows (rowWrap / the M3 construction bypass) carry
+      // their (template, holes) — no tree exists and no restage runs.
+      const staged = child.kind === "Row" ? child.staged : stageNode(child);
       if (staged.template.fastRow !== undefined && !staged.template.hasDynamicUniforms) {
         const plan = getPlan(
           staged.template, state, anchor.plan.effect,
@@ -802,11 +828,16 @@ function lowerGroupEntry(
       // fall through to the authoritative classic walk
     }
   }
+  // Classic path — a Row materializes its real subtree here (cached);
+  // it is re-staged below so the lowered RO and its RowProvider holes
+  // come from the SAME tree (never mixed with the construction-time
+  // staging, whose avals belong to the dropped first build).
+  const real = child.kind === "Row" ? materializeRowSg(child) : child;
   // Capture the pick context while lowering a potential FIRST row.
   const capturing = _rowLowering && anchor.plan === undefined;
   const savedCapture = _fastCapture;
   if (capturing) _fastCapture = { noPick: true };
-  const wc = lowerWithCleanup(child, state, opts);
+  const wc = lowerWithCleanup(real, state, opts);
   const captured = capturing ? _fastCapture : undefined;
   _fastCapture = savedCapture;
   const classic = (): GroupEntry => ({ tree: wc.tree, dispose: wc.dispose });
@@ -822,7 +853,7 @@ function lowerGroupEntry(
   // the OIT build's rows lower like any others.)
   if (opts.autoUniforms === false) { recordRowBail("auto-uniforms-off", undefined, src); return classic(); }
   try {
-    const staged = stageNode(child);
+    const staged = stageNode(real);
     if (staged.template.hasDynamicUniforms) { recordRowBail("dynamic-uniform-bag", undefined, src); return classic(); }
     const obj = t.object as RenderObject & { uniforms: IUniformProvider };
     const plan = getPlan(

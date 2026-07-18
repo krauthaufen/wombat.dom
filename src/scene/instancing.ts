@@ -27,6 +27,7 @@ import { IBuffer, type BufferView, type DrawCall,
 import type { Effect } from "@aardworx/wombat.shader";
 import { instanceEffect } from "@aardworx/wombat.shader";
 import type { SgInstanced, SgLeaf, SgNode } from "./sg.js";
+import { materializeRowSg } from "./sg.js";
 import { markHostBufferAVal } from "./hostBuffers.js";
 
 /**
@@ -74,6 +75,10 @@ export function validateInstancingSubtree(child: SgNode): void {
         // for the validation pass. If that throws, surface as-is.
         try { walk(node.create(undefined as never)); } catch { /* nothing to validate */ }
         return;
+      case "Row":
+        // Pre-staged rows inside an instancing scope are off the fast
+        // path anyway — validate the materialized subtree.
+        walk(materializeRowSg(node)); return;
       // Pass-through scopes — recurse into the child with no state
       // change as far as instancing validation cares.
       case "Trafo": case "Shader": case "Uniform": case "BlendMode":

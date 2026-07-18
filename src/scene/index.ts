@@ -57,6 +57,10 @@ export {
 } from "./compile.js";
 export { markHostBufferAVal, isMarkedHostBufferAVal } from "./hostBuffers.js";
 export {
+  rowWrap, maybeRowNode, rowNodesConstructed, resetRowNodesConstructed,
+} from "./rowFactory.js";
+export { materializeRowSg, type SgRow } from "./sg.js";
+export {
   stageNode, templateStats, resetTemplates,
   effectUniformNames, validateTemplateEffect, warnUnresolvedUniforms,
   sceneEfficiency, resetEfficiency,

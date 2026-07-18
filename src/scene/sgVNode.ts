@@ -26,4 +26,6 @@ export const SG_KINDS: ReadonlySet<string> = new Set<string>([
   "NoEvents", "ForcePixelPicking", "CanFocus", "PickContext",
   // Auto-instancing
   "Instanced",
+  // Pre-staged row (rowWrap / the M3 construction bypass)
+  "Row",
 ]);

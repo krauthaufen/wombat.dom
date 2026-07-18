@@ -15,6 +15,7 @@
 
 import { AVal } from "@aardworx/wombat.adaptive";
 import type { SgNode, SgLeaf } from "./sg.js";
+import { materializeRowSg } from "./sg.js";
 import { TraversalState } from "./traversalState.js";
 
 /**
@@ -96,6 +97,10 @@ export function forEachLeaf(
       // Run the creator with the accumulated state and recurse
       // into whatever sub-tree it returns — same state.
       forEachLeaf(node.create(state), state, visit);
+      return;
+    case "Row":
+      // Pre-staged row — visit its materialized subtree.
+      forEachLeaf(materializeRowSg(node), state, visit);
       return;
     case "Intersectable":
       forEachLeaf(node.child, state.pushIntersectable(node.intersectable), visit);

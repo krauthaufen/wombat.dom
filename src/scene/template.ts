@@ -32,6 +32,7 @@ import type { aval } from "@aardworx/wombat.adaptive";
 import type { Effect } from "@aardworx/wombat.shader";
 import type { BufferView } from "@aardworx/wombat.rendering";
 import { AVal, HashMap } from "@aardworx/wombat.adaptive";
+import { materializeRowSg } from "./sg.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -366,6 +367,12 @@ function walk(node: SgNode, out: WalkOut): void {
       parts.push("D?");
       holes.push(node.create);
       out.fastRowSafe = false;
+      return;
+    case "Row":
+      // A pre-staged row nested inside a LARGER staged shape (not the
+      // fast path — that consumes `node.staged` directly): stage its
+      // materialized subtree in place.
+      walk(materializeRowSg(node), out);
       return;
     case "Shader":
       // effect.id is a build-time stable template hash — static.
