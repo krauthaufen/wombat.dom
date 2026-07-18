@@ -92,12 +92,18 @@ describe("compileScene — lowering basics", () => {
     expect(lt.object.effect).toBe(fakeEffect2);
   });
 
-  it("Group → OrderedFromList; UnorderedGroup → UnorderedFromSet", () => {
+  it("Group → OrderedFromList; UnorderedGroup → Unordered[Rows, UnorderedFromSet]", () => {
     const ordered = Sg.shader(fakeEffect, Sg.group([leaf(), leaf()]));
     expect(singleRender(compileScene(ordered)).kind).toBe("OrderedFromList");
 
+    // Row store: an unordered group now emits its RowSet alongside the
+    // classic child-set container.
     const unordered = Sg.shader(fakeEffect, Sg.unordered([leaf(), leaf()]));
-    expect(singleRender(compileScene(unordered)).kind).toBe("UnorderedFromSet");
+    const rt = singleRender(compileScene(unordered));
+    expect(rt.kind).toBe("Unordered");
+    if (rt.kind === "Unordered") {
+      expect(rt.children.map((c) => c.kind).sort()).toEqual(["Rows", "UnorderedFromSet"]);
+    }
   });
 
   it("AdaptiveGroup → Adaptive(aval<RenderTree>)", () => {

@@ -40,6 +40,7 @@ import {
 } from "@aardworx/wombat.adaptive";
 import { M44f, Trafo3d, V3d, V3f } from "@aardworx/wombat.base";
 import { RenderTree, UniformProvider, AttributeProvider } from "@aardworx/wombat.rendering/core";
+import type { RenderRow, RenderRowSet } from "@aardworx/wombat.rendering/core";
 import { isDerivedRule } from "@aardworx/wombat.rendering/runtime";
 import type {
   BlendState, BufferView,
@@ -64,7 +65,7 @@ import type { PickRegistry } from "./picking/registry.js";
 import {
   recordRowBail, recordRowLowered, sgSourceOf, stageNode, warnUnresolvedUniforms,
 } from "./template.js";
-import { getPlan, RowProvider } from "./templatePlan.js";
+import { getPlan, RowProvider, type TemplatePlan } from "./templatePlan.js";
 
 // ---------------------------------------------------------------------------
 // Options + entry point
@@ -347,22 +348,26 @@ function lower(
       // nothing. Trees are identity-unique per lowering EXCEPT the
       // shared `RenderTree.empty` constant, which never has cleanup
       // (a child collapsing to empty acquired no pickIds).
-      const cleanups = new WeakMap<object, () => void>();
-      const children: aset<RenderTree> = ASet.mapUse(
-        (child: SgNode) => {
-          const wc = lowerRowOrClassic(child, state, opts);
-          if (wc.dispose !== _NOOP_DISPOSE && wc.tree.kind !== "Empty") {
-            cleanups.set(wc.tree, wc.dispose);
-          }
-          return wc.tree;
-        },
-        (tree) => {
-          const d = cleanups.get(tree);
-          if (d !== undefined) { cleanups.delete(tree); d(); }
-        },
+      // Row store (instance-tables M2 proper): children that lower to
+      // heap-asserted rows against ONE shared plan become THIN
+      // `RenderRow`s in a `RenderRowSet` the hybrid renderer consumes
+      // directly; everything else stays a classic subtree. Entries
+      // carry their dispose so removals release pickIds either way.
+      const anchor: RowAnchor = {
+        plan: undefined,
+        set: undefined as unknown as RenderRowSet,
+      };
+      const entries: aset<GroupEntry> = ASet.mapUse(
+        (child: SgNode) => lowerGroupEntry(child, state, opts, anchor),
+        (e) => { e.dispose(); },
         node.children,
       );
-      return RenderTree.unorderedFromSet(children);
+      const rows = entries.choose((e) => e.row);
+      anchor.set = { template: undefined, rows };
+      const classicTrees = entries.choose((e) => e.tree);
+      return RenderTree.unordered(
+        RenderTree.rows(anchor.set),
+        RenderTree.unorderedFromSet(classicTrees));
     }
 
     case "AdaptiveGroup":
@@ -616,26 +621,45 @@ function assertHeapIfSafe(ro: RenderObject): void {
   }
 }
 
-function lowerRowOrClassic(
+/** One lowered child of an unordered group: either a THIN row for the
+ *  group's RowSet (plan-matched, heap-asserted) or a classic subtree.
+ *  `dispose` releases the child's acquired pickIds either way. */
+interface GroupEntry {
+  readonly tree?: RenderTree;
+  readonly row?: RenderRow;
+  readonly dispose: () => void;
+}
+
+/** Per-group row-store anchor: the FIRST successful row fixes the
+ *  plan and seeds the RowSet's prototype template (that first RO —
+ *  its per-row fields act as defaults every row overrides). */
+interface RowAnchor {
+  plan: TemplatePlan | undefined;
+  set: RenderRowSet;
+}
+
+function lowerGroupEntry(
   child: SgNode,
   state: TraversalState,
   opts: CompileSceneOptions,
-): LoweredChild {
+  anchor: RowAnchor,
+): GroupEntry {
   const wc = lowerWithCleanup(child, state, opts);
-  if (!_rowLowering) return wc;
+  const classic = (): GroupEntry => ({ tree: wc.tree, dispose: wc.dispose });
+  if (!_rowLowering) return classic();
   const src = sgSourceOf(child);
   const t = wc.tree;
   if (t.kind !== "Leaf") {
     if (t.kind !== "Empty") recordRowBail("multi-leaf-subtree", undefined, src);
-    return wc;
+    return classic();
   }
   // autoUniforms:false disables the auto derivation rows assume —
-  // rare, pass-level. (Pass-level INJECTED uniforms are plan state
-  // now: the OIT build's rows lower like any others.)
-  if (opts.autoUniforms === false) { recordRowBail("auto-uniforms-off", undefined, src); return wc; }
+  // rare, pass-level. (Pass-level INJECTED uniforms are plan state:
+  // the OIT build's rows lower like any others.)
+  if (opts.autoUniforms === false) { recordRowBail("auto-uniforms-off", undefined, src); return classic(); }
   try {
     const staged = stageNode(child);
-    if (staged.template.hasDynamicUniforms) { recordRowBail("dynamic-uniform-bag", undefined, src); return wc; }
+    if (staged.template.hasDynamicUniforms) { recordRowBail("dynamic-uniform-bag", undefined, src); return classic(); }
     const obj = t.object as RenderObject & { uniforms: IUniformProvider };
     const plan = getPlan(
       staged.template, state, obj.effect,
@@ -645,14 +669,43 @@ function lowerRowOrClassic(
     recordRowLowered();
     if (staged.template.spineEffectId !== undefined) {
       // rows still work, but per-item effect application defeats the
-      // upcoming row-store bucketing — advisory, quantified.
+      // row-store bucketing — advisory, quantified.
       recordRowBail("per-leaf-effect-scope", staged.template.spineEffectId, src);
     }
+    // ─── Row-store admission ────────────────────────────────────────
+    // The RowSet carries THIN rows only for children that (a) the
+    // producer can assert heap-safe and (b) share the group's first
+    // established plan (v1: ONE row set per group; a second shape
+    // lowers classically and the efficiency report says so). The
+    // classic result stays authoritative for everything else —
+    // correctness never depends on admission.
+    if (obj.heapAsserted !== true) return classic();
+    if (anchor.plan === undefined) {
+      anchor.plan = plan;
+      // The first row's RO IS the prototype template: shared fields
+      // (effect, pipeline, vertex attrs, textures, injectedStorage,
+      // heapAsserted) are identical across the plan by construction;
+      // its per-row fields are defaults that every row (including
+      // this one) overrides via Object.create.
+      anchor.set.template = obj;
+    } else if (anchor.plan !== plan) {
+      recordRowBail("mixed-plan-group", undefined, src);
+      return classic();
+    }
+    const row: RenderRow = {
+      uniforms: obj.uniforms,
+      drawCall: obj.drawCall,
+      ...(obj.instanceAttributes !== undefined ? { instanceAttributes: obj.instanceAttributes } : {}),
+      ...(obj.pickId !== undefined ? { pickId: obj.pickId } : {}),
+      ...(obj.modelChain !== undefined ? { modelChain: obj.modelChain } : {}),
+      ...(obj.active !== undefined ? { active: obj.active } : {}),
+    };
+    return { row, dispose: wc.dispose };
   } catch {
     recordRowBail("staging-failed", undefined, src);
     // staging must never break lowering — keep the classic result
+    return classic();
   }
-  return wc;
 }
 
 function lowerWithCleanup(

@@ -11,7 +11,7 @@ import { stage, type Effect } from "@aardworx/wombat.shader";
 import { parseShader, type EntryRequest } from "@aardworx/wombat.shader/frontend";
 import { Tf32, Vec, type Type } from "@aardworx/wombat.shader/ir";
 import type { BufferView, DrawCall, RenderTree } from "@aardworx/wombat.rendering/core";
-import { ElementType } from "@aardworx/wombat.rendering/core";
+import { ElementType, materializeRow } from "@aardworx/wombat.rendering/core";
 
 import { Sg, compileScene, PickRegistry, __setRowLowering } from "../src/scene/index.js";
 import { resetTemplates } from "../src/scene/template.js";
@@ -78,6 +78,16 @@ function leafObjects(tree: RenderTree): Array<RenderTree & { kind: "Leaf" }> {
   const out: Array<RenderTree & { kind: "Leaf" }> = [];
   const walk = (t: RenderTree): void => {
     if (t.kind === "Leaf") { out.push(t as RenderTree & { kind: "Leaf" }); return; }
+    if (t.kind === "Ordered" || t.kind === "Unordered") {
+      for (const c of (t as { children: readonly RenderTree[] }).children) walk(c);
+      return;
+    }
+    if (t.kind === "Rows") {
+      const set = (t as RenderTree & { kind: "Rows" }).set;
+      const rows = AVal.force((set.rows as unknown as { content: never }).content) as Iterable<never>;
+      for (const r of rows) out.push({ kind: "Leaf", object: materializeRow(set, r) } as never);
+      return;
+    }
     if (t.kind === "UnorderedFromSet") {
       const content = AVal.force((t as unknown as { children: { content: never } }).children.content) as Iterable<RenderTree>;
       for (const c of content) walk(c);
