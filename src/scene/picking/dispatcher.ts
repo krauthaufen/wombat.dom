@@ -1135,6 +1135,7 @@ export class PickDispatcher implements SceneEventDispatch {
       ...(extras?.deltaTime !== undefined ? { deltaTime: extras.deltaTime } : {}),
       ...(extras?.movementX !== undefined ? { movementX: extras.movementX } : {}),
       ...(extras?.movementY !== undefined ? { movementY: extras.movementY } : {}),
+      pickTag: scope.tag,
       scope,
       dispatch: this,
     });
