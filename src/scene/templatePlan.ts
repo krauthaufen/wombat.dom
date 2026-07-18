@@ -34,6 +34,11 @@ export interface TemplatePlan {
   readonly effect: Effect;
   /** Shared parent context — the state at the group, NOT per row. */
   readonly parent: TraversalState;
+  /** Pass-level injected uniforms (e.g. the OIT build's) — identical
+   *  for every row of a pass BY CONSTRUCTION, hence plan state. A
+   *  subtree rendered in N passes holds N plans; that's a few shared
+   *  objects per scene, never per row. */
+  readonly injected: IUniformProvider | undefined;
   readonly slots: ReadonlyMap<string, UniformSlot>;
 }
 
@@ -44,32 +49,43 @@ function computePlan(
   template: SceneTemplate,
   parent: TraversalState,
   effect: Effect,
+  injected: IUniformProvider | undefined,
 ): TemplatePlan {
   const slots = new Map<string, UniformSlot>();
   for (const name of effectUniformNames(effect)) {
     const hole = template.uniformHoles.get(name);
     slots.set(name, hole !== undefined ? HOLE(hole) : PARENT);
   }
-  return { template, effect, parent, slots };
+  return { template, effect, parent, injected, slots };
 }
 
-// Plans cached per parent state (weak) × (template, effect).
+// Plans cached per parent state (weak) × (template, effect, injected).
 const _plans = new WeakMap<TraversalState, Map<string, TemplatePlan>>();
+// Stable small ids for injected providers (cache-key axis).
+const _injectedIds = new WeakMap<object, number>();
+let _nextInjectedId = 1;
+function injectedIdOf(p: IUniformProvider | undefined): number {
+  if (p === undefined) return 0;
+  let id = _injectedIds.get(p);
+  if (id === undefined) { id = _nextInjectedId++; _injectedIds.set(p, id); }
+  return id;
+}
 
 export function getPlan(
   template: SceneTemplate,
   parent: TraversalState,
   effect: Effect,
+  injected?: IUniformProvider,
 ): TemplatePlan {
   let byKey = _plans.get(parent);
   if (byKey === undefined) {
     byKey = new Map();
     _plans.set(parent, byKey);
   }
-  const key = `${template.id}|${effect.id}`;
+  const key = `${template.id}|${effect.id}|${injectedIdOf(injected)}`;
   let plan = byKey.get(key);
   if (plan === undefined) {
-    plan = computePlan(template, parent, effect);
+    plan = computePlan(template, parent, effect, injected);
     byKey.set(key, plan);
   }
   return plan;
@@ -130,6 +146,13 @@ export class RowProvider implements IUniformProvider {
     const p = this.plan.parent;
     const scoped = p.uniforms.tryFind(name);
     if (scoped !== undefined) return scoped;
+    // Pass-level injected uniforms sit BETWEEN scopes and autos —
+    // exactly the classic provider's shadowing order (scopes win,
+    // injected shadows the auto-derived names).
+    if (this.plan.injected !== undefined) {
+      const inj = this.plan.injected.tryGet(name);
+      if (inj !== undefined) return inj as aval<unknown>;
+    }
     return deriveAutoUniform(name, this.rowModel(), p.view, p.proj, p.viewport);
   }
 

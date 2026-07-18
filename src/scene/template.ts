@@ -617,7 +617,6 @@ export function sgSourceOf(node: unknown): string | undefined {
 
 export type RowBailReason =
   | "dynamic-uniform-bag"
-  | "injected-uniforms-pass"
   | "auto-uniforms-off"
   | "multi-leaf-subtree"
   | "per-leaf-effect-scope"
@@ -695,7 +694,6 @@ export interface EfficiencyReport {
 
 const HINTS: Record<RowBailReason, string> = {
   "dynamic-uniform-bag": "an amap-backed Sg.Uniform prevents row lowering — use per-key avals in a static bag if the key set is fixed",
-  "injected-uniforms-pass": "pass-level injected uniforms (OIT build) route rows through the classic path for that pass only",
   "auto-uniforms-off": "autoUniforms:false disables the derivations rows rely on",
   "multi-leaf-subtree": "children lowering to several leaves aren't rows — split the collection so each child is one leaf",
   "per-leaf-effect-scope": "Sg.Effect applied per child — apply it ONCE above the collection",

@@ -108,6 +108,39 @@ beforeEach(() => __setRowLowering(true));
 afterEach(() => __setRowLowering(true));
 
 describe("row lowering — formal parity vs classic", () => {
+  it("pass-level injected uniforms resolve identically (OIT shape)", () => {
+    const inject = HashMap.empty<string, aval<unknown>>()
+      .add("OitPassFlag", AVal.constant(7) as aval<unknown>)
+      // must NOT override a scope entry:
+      .add("GlobalTint", AVal.constant(-99) as aval<unknown>);
+    const lower = (rows: boolean) => {
+      resetTemplates();
+      __setRowLowering(rows);
+      const eff = buildUserEffect();
+      const registry = new PickRegistry();
+      const scene = Sg.shader(eff,
+        Sg.uniform({ GlobalTint: AVal.init(7) },
+          Sg.unordered([child(1), child(2)])));
+      const cmds = compileScene(scene, { picking: { registry }, injectUniforms: inject });
+      const list = AVal.force(cmds.content);
+      const r = list.toArray().find((c: { kind: string }) => c.kind === "Render") as { tree: RenderTree };
+      return leafObjects(r.tree);
+    };
+    const classic = lower(false);
+    const rows = lower(true);
+    expect(rows.length).toBe(2);
+    for (let i = 0; i < rows.length; i++) {
+      const cu = classic[i]!.object.uniforms;
+      const ru = rows[i]!.object.uniforms;
+      // injected name: both resolve to the injected value
+      expect(AVal.force(ru.tryGet("OitPassFlag") as never)).toBe(7);
+      expect(AVal.force(cu.tryGet("OitPassFlag") as never)).toBe(7);
+      // scope shadowing: the scope value wins over injection on both paths
+      expect(AVal.force(ru.tryGet("GlobalTint") as never)).toBe(7);
+      expect(AVal.force(cu.tryGet("GlobalTint") as never)).toBe(7);
+    }
+  });
+
   it("uniform resolution, shadowing, trafo family and pick counts match", () => {
     const classic = lowerScene(false);
     const rows = lowerScene(true);

@@ -629,16 +629,17 @@ function lowerRowOrClassic(
     if (t.kind !== "Empty") recordRowBail("multi-leaf-subtree", undefined, src);
     return wc;
   }
-  // Injected uniforms ride between scope and state in the classic
-  // provider; rows don't model them — and autoUniforms:false disables
-  // the auto derivation rows assume. Both are rare, pass-level options.
-  if (opts.injectUniforms !== undefined) { recordRowBail("injected-uniforms-pass", undefined, src); return wc; }
+  // autoUniforms:false disables the auto derivation rows assume —
+  // rare, pass-level. (Pass-level INJECTED uniforms are plan state
+  // now: the OIT build's rows lower like any others.)
   if (opts.autoUniforms === false) { recordRowBail("auto-uniforms-off", undefined, src); return wc; }
   try {
     const staged = stageNode(child);
     if (staged.template.hasDynamicUniforms) { recordRowBail("dynamic-uniform-bag", undefined, src); return wc; }
     const obj = t.object as RenderObject & { uniforms: IUniformProvider };
-    const plan = getPlan(staged.template, state, obj.effect);
+    const plan = getPlan(
+      staged.template, state, obj.effect,
+      opts.injectUniforms !== undefined ? getInjectedProvider(opts.injectUniforms) : undefined);
     (obj as { uniforms: IUniformProvider }).uniforms = new RowProvider(plan, staged.holes);
     assertHeapIfSafe(obj);
     recordRowLowered();
