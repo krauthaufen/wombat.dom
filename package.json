@@ -1,6 +1,6 @@
 {
   "name": "@aardworx/wombat.dom",
-  "version": "0.20.10",
+  "version": "0.20.11",
   "description": "Adaptive DOM + 3D scene-graph DSL for the Wombat TypeScript stack — direct-DOM JSX over @aardworx/wombat.adaptive, with optional WebGPU scene-graph extensions.",
   "license": "MIT",
   "author": "krauthaufen",
