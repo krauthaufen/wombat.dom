@@ -806,6 +806,20 @@ function lowerGroupEntry(
   opts: CompileSceneOptions,
   anchor: RowAnchor,
 ): GroupEntry {
+  // Pre-staged rows in a PASS-FILTERED compile: the leaf's render pass
+  // is the state's (the template carries no Pass scope — key check),
+  // so the filter decision needs no tree. Without this, a pass that
+  // excludes the rows (the OIT opaque compile, per-pass lowerByPass)
+  // would materialize EVERY row just to lower it to Empty — and the
+  // cached trees would resurrect the retention rowWrap exists to kill.
+  if (
+    child.kind === "Row"
+    && opts.passFilter !== undefined
+    && !rowKeyHasPass(child.staged.template.key)
+    && !opts.passFilter(state.renderPass)
+  ) {
+    return { tree: RenderTree.empty, dispose: _NOOP_DISPOSE };
+  }
   // Fast path (the runtime half of M3): once the group's plan is
   // established and the pick context captured, plan-matched children
   // are constructed straight from (template, holes) — no classic
@@ -846,6 +860,9 @@ function lowerGroupEntry(
   const t = wc.tree;
   if (t.kind !== "Leaf") {
     if (t.kind !== "Empty") recordRowBail("multi-leaf-subtree", undefined, src);
+    // A Row that lowered to Empty retains nothing — release the
+    // materialized tree instead of caching it (rebuilt if ever needed).
+    if (child.kind === "Row" && t.kind === "Empty") child.tree = undefined;
     return classic();
   }
   // autoUniforms:false disables the auto derivation rows assume —

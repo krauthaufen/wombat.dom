@@ -165,7 +165,7 @@ export interface SgRow {
   readonly kind: "Row";
   readonly staged: import("./template.js").StagedNode;
   readonly build: () => SgNode;
-  tree?: SgNode;
+  tree?: SgNode | undefined;
   srcLoc?: string;
 }
 

@@ -213,6 +213,17 @@ describe("SgRow lowering", () => {
     expect(AVal.force((leaves[0]!.uniforms as unknown as { tryGet(n: string): never }).tryGet("LineColor"))).toBe(5);
   });
 
+  it("a pass-filtered compile drops Rows WITHOUT materializing them", () => {
+    const f = rowWrap("Test.fs:14", 1, (i) => rowChild(i as number));
+    const wrapped = [f(1), f(2), f(3)] as SgNode[];
+    const scene = Sg.shader(eff(), Sg.unordered(wrapped)) as SgNode;
+    const cmds = compileScene(scene, { passFilter: (rp) => rp === 1000 });
+    const list = AVal.force(cmds.content);
+    const render = list.toArray().find((c: { kind: string }) => c.kind === "Render") as { tree: RenderTree };
+    expect(leavesOf(render.tree).length).toBe(0);
+    for (const w of wrapped) expect((w as SgRow).tree).toBeUndefined();
+  });
+
   it("rows off → Rows materialize through the classic path", () => {
     __setRowLowering(false);
     const f = rowWrap("Test.fs:13", 1, (i) => rowChild(i as number));
