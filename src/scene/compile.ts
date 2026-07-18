@@ -54,9 +54,9 @@ import type { Effect } from "@aardworx/wombat.shader";
 import type {
   ColorMaskValue,
   ModeValue,
-  SgLeaf, SgNode,
+  SgLeaf, SgNode, TrafoValue,
 } from "./sg.js";
-import { TraversalState, UniformScopeChain } from "./traversalState.js";
+import { TraversalState, UniformScopeChain, composeTrafoValue } from "./traversalState.js";
 import { applyInstancing, validateInstancingSubtree } from "./instancing.js";
 import { isITexture, resolveTextureAval } from "./textureResolver.js";
 import { ISampler as ISamplerImpl } from "@aardworx/wombat.rendering/core";
@@ -64,6 +64,7 @@ import { composePickChainWithChoiceCached } from "./picking/pickChain.js";
 import type { PickRegistry } from "./picking/registry.js";
 import {
   recordRowBail, recordRowLowered, sgSourceOf, stageNode, warnUnresolvedUniforms,
+  type StagedNode,
 } from "./template.js";
 import { getPlan, RowProvider, type TemplatePlan } from "./templatePlan.js";
 
@@ -356,6 +357,8 @@ function lower(
       const anchor: RowAnchor = {
         plan: undefined,
         set: undefined as unknown as RenderRowSet,
+        fast: undefined,
+        dc0: undefined,
       };
       const entries: aset<GroupEntry> = ASet.mapUse(
         (child: SgNode) => lowerGroupEntry(child, state, opts, anchor),
@@ -630,12 +633,147 @@ interface GroupEntry {
   readonly dispose: () => void;
 }
 
+/** Captured pick context from the FIRST row's classic lowering —
+ *  everything the fast constructor needs to register subsequent rows
+ *  without walking them (a plan-shared scope prototype + the pick
+ *  chain's mode). `portal` disables the fast path (portal scopes
+ *  carry per-leaf sub-context). */
+interface FastPickCapture {
+  noPick: boolean;
+  portal?: boolean;
+  proto?: object;
+  mode?: "A" | "B";
+}
+let _fastCapture: FastPickCapture | undefined;
+
 /** Per-group row-store anchor: the FIRST successful row fixes the
- *  plan and seeds the RowSet's prototype template (that first RO —
- *  its per-row fields act as defaults every row overrides). */
+ *  plan, seeds the RowSet's prototype template (that first RO — its
+ *  per-row fields act as defaults every row overrides) and captures
+ *  the fast-construction context. `fast === null` means the group's
+ *  shape can't fast-construct (rows still lower classically). */
 interface RowAnchor {
   plan: TemplatePlan | undefined;
   set: RenderRowSet;
+  fast: FastPickCapture | null | undefined;
+  /** Cached constant leaf drawCall shape for the instancing rebuild. */
+  dc0: DrawCall | undefined;
+}
+
+/**
+ * The runtime half of M3: construct a row for a plan-matched child
+ * WITHOUT the classic lowering walk — everything comes from
+ * (template roles, holes, the group state, the captured pick
+ * context). Returns undefined when any per-row evidence is missing
+ * (unproven adaptive buffer, unexpected drawCall shape, …): the
+ * caller falls back to the classic walk, which remains authoritative.
+ */
+function constructFastRow(
+  anchor: RowAnchor,
+  staged: StagedNode,
+  state: TraversalState,
+  opts: CompileSceneOptions,
+): GroupEntry | undefined {
+  const t = staged.template;
+  const fr = t.fastRow;
+  const fast = anchor.fast;
+  if (fr === undefined || fast === null || fast === undefined) return undefined;
+  const plan = anchor.plan!;
+  const holes = staged.holes;
+
+  // Host-provable view (same evidence rules as assertHeapIfSafe:
+  // isConstant may be forced, adaptive needs the construction proof).
+  const hostOk = (v: BufferView | undefined): boolean => {
+    if (v === undefined) return false;
+    const b = v.buffer as aval<IBuffer> & { __sgHostBuffer?: true };
+    if (b.__sgHostBuffer === true) return true;
+    if (!b.isConstant) return false;
+    // Why force here: constant — immutable by definition.
+    return b.force().kind === "host";
+  };
+  for (const { hole } of fr.vertexAttrHoles) {
+    if (!hostOk(holes[hole] as BufferView)) return undefined;
+  }
+  for (const { hole } of fr.instanceAttrHoles) {
+    if (!hostOk(holes[hole] as BufferView)) return undefined;
+  }
+  if (fr.indexHole !== undefined) {
+    const v = holes[fr.indexHole] as BufferView;
+    if (!hostOk(v)) return undefined;
+    const fmt = v.elementType.indexFormat;
+    if (fmt !== "uint32" && fmt !== "uint16") return undefined;
+  }
+
+  const dcAval = holes[fr.drawCallHole!] as aval<DrawCall>;
+  let drawCall: aval<DrawCall>;
+  let instanceAttributes: IAttributeProvider | undefined;
+  if (t.hasInstancing) {
+    if (fr.countHole === undefined || !dcAval.isConstant) return undefined;
+    if (anchor.dc0 === undefined) {
+      // Why force here: constant — immutable by definition.
+      anchor.dc0 = dcAval.force();
+    }
+    const dc0 = anchor.dc0;
+    if (dc0.firstInstance !== 0) return undefined;
+    if (dc0.kind === "indexed" ? fr.indexHole === undefined : fr.indexHole !== undefined || dc0.firstVertex !== 0) return undefined;
+    const countAval = holes[fr.countHole] as aval<number>;
+    drawCall = countAval.map((n) => ({ ...dc0, instanceCount: n }));
+    // Construction proof — identical to the instancing layer's marker.
+    (drawCall as { __sgHeapSafeDraw?: { kind: DrawCall["kind"]; count: aval<number> } })
+      .__sgHeapSafeDraw = { kind: dc0.kind, count: countAval };
+    const bag: Record<string, BufferView> = {};
+    for (const { name, hole } of fr.instanceAttrHoles) bag[name] = holes[hole] as BufferView;
+    instanceAttributes = AttributeProvider.ofObject(bag);
+  } else {
+    if (!dcAval.isConstant) return undefined;
+    // Why force here: constant — immutable by definition.
+    const dc = dcAval.force();
+    if (dc.firstInstance !== 0) return undefined;
+    if (dc.kind === "indexed" ? fr.indexHole === undefined : fr.indexHole !== undefined || dc.firstVertex !== 0) return undefined;
+    drawCall = dcAval;
+  }
+
+  const rp = new RowProvider(plan, holes);
+
+  // Model chain — mirror pushTrafo's prepend + constant-run folding
+  // over the GROUP's chain, per spine trafo hole in outer→inner order
+  // (pushInstancing does not touch the chain).
+  let chain: readonly aval<Trafo3d>[] = state.modelChain;
+  const prependTrafo = (holeIdx: number): void => {
+    const composed = composeTrafoValue(holes[holeIdx] as TrafoValue);
+    const head = chain[0];
+    if (composed.isConstant && head !== undefined && head.isConstant) {
+      // Why force here: constant — immutable by definition (the same
+      // fold pushTrafo performs).
+      chain = [AVal.constant(composed.force().mul(head.force())), ...chain.slice(1)];
+    } else {
+      chain = [composed, ...chain];
+    }
+  };
+  for (const i of t.preTrafoHoles) prependTrafo(i);
+  for (const i of t.postTrafoHoles) prependTrafo(i);
+
+  // Pick registration — plan-shared prototype + per-row own fields.
+  let pickId: number | undefined;
+  let dispose: () => void = _NOOP_DISPOSE;
+  if (!fast.noPick && opts.picking !== undefined) {
+    const scope = Object.create(fast.proto as object) as Record<string, unknown>;
+    scope["model"] = () => rp.model();
+    if (fr.tagHole !== undefined) scope["tag"] = holes[fr.tagHole];
+    const registry = opts.picking.registry;
+    const pid = registry.acquire(scope as never, fast.mode);
+    pickId = pid;
+    dispose = () => { registry.release(pid); };
+  }
+
+  recordRowLowered();
+  const row: RenderRow = {
+    uniforms: rp,
+    drawCall,
+    ...(instanceAttributes !== undefined ? { instanceAttributes } : {}),
+    ...(pickId !== undefined ? { pickId } : {}),
+    ...(chain.length > 0 ? { modelChain: chain } : {}),
+  };
+  return { row, dispose };
 }
 
 function lowerGroupEntry(
@@ -644,7 +782,33 @@ function lowerGroupEntry(
   opts: CompileSceneOptions,
   anchor: RowAnchor,
 ): GroupEntry {
+  // Fast path (the runtime half of M3): once the group's plan is
+  // established and the pick context captured, plan-matched children
+  // are constructed straight from (template, holes) — no classic
+  // walk, no per-row scope literals, no discarded RenderObject.
+  if (_rowLowering && anchor.plan !== undefined && anchor.fast !== null && anchor.fast !== undefined) {
+    try {
+      const staged = stageNode(child);
+      if (staged.template.fastRow !== undefined && !staged.template.hasDynamicUniforms) {
+        const plan = getPlan(
+          staged.template, state, anchor.plan.effect,
+          opts.injectUniforms !== undefined ? getInjectedProvider(opts.injectUniforms) : undefined);
+        if (plan === anchor.plan) {
+          const fastEntry = constructFastRow(anchor, staged, state, opts);
+          if (fastEntry !== undefined) return fastEntry;
+        }
+      }
+    } catch {
+      // fall through to the authoritative classic walk
+    }
+  }
+  // Capture the pick context while lowering a potential FIRST row.
+  const capturing = _rowLowering && anchor.plan === undefined;
+  const savedCapture = _fastCapture;
+  if (capturing) _fastCapture = { noPick: true };
   const wc = lowerWithCleanup(child, state, opts);
+  const captured = capturing ? _fastCapture : undefined;
+  _fastCapture = savedCapture;
   const classic = (): GroupEntry => ({ tree: wc.tree, dispose: wc.dispose });
   if (!_rowLowering) return classic();
   const src = sgSourceOf(child);
@@ -688,6 +852,10 @@ function lowerGroupEntry(
       // its per-row fields are defaults that every row (including
       // this one) overrides via Object.create.
       anchor.set.template = obj;
+      // Fast construction usable only when the capture is clean
+      // (portal scopes carry per-leaf sub-context → classic).
+      anchor.fast =
+        captured !== undefined && captured.portal !== true ? captured : null;
     } else if (anchor.plan !== plan) {
       recordRowBail("mixed-plan-group", undefined, src);
       return classic();
@@ -836,22 +1004,37 @@ function lowerLeaf(
     const composed = composePickChainWithChoiceCached(userEffect, geom.key, geom.has, portal);
     effect = composed.effect;
     const mode = composed.choice.final === "FinalB" ? "B" : "A";
-    const pid = opts.picking.registry.acquire({
+    // The SHARED part of the scope (everything except model/tag) —
+    // identical for every row of a whitelisted template, so the fast-
+    // row path captures it once as a prototype.
+    const sharedScope = {
       handlers: state.handlers,
       cursor: state.cursor,
       pickThrough: state.pickThrough,
       active: state.active,
       view: state.view,
       proj: state.proj,
-      model: state.modelLazy(),
       pixelSnapRadius: state.pixelSnapRadius,
       pickPriority: state.pickPriority,
-      ...(state.pickTag !== undefined ? { tag: state.pickTag } : {}),
       canFocus: state.canFocus,
       pickPath,
       ...(state.intersectable !== undefined ? { intersectable: state.intersectable } : {}),
       ...(composed.choice.final === "FinalPortal" && state.pickSubContext !== undefined
         ? { pickSubContext: state.pickSubContext } : {}),
+    };
+    if (_fastCapture !== undefined) {
+      if (composed.choice.final === "FinalPortal") {
+        _fastCapture.portal = true;
+      } else {
+        _fastCapture.noPick = false;
+        _fastCapture.proto = sharedScope;
+        _fastCapture.mode = mode;
+      }
+    }
+    const pid = opts.picking.registry.acquire({
+      ...sharedScope,
+      model: state.modelLazy(),
+      ...(state.pickTag !== undefined ? { tag: state.pickTag } : {}),
     }, mode);
     pickId = pid;
     if (opts.picking.onAcquire !== undefined) opts.picking.onAcquire(pid);

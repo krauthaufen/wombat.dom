@@ -135,6 +135,12 @@ export class RowProvider implements IUniformProvider {
     return m;
   }
 
+  /** The row's composed model (public for the fast-row pick scope —
+   *  `LeafPickScope.model` uses the same reconstruction). */
+  model(): aval<Trafo3d> {
+    return this.rowModel();
+  }
+
   tryGet(name: string): aval<unknown> | undefined {
     // Row-scoped uniforms shadow for ANY name (not only effect-declared
     // ones — derived-mode rules and diagnostics pull arbitrary names).

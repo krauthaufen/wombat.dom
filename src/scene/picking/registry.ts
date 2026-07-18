@@ -313,7 +313,12 @@ export class PickRegistry {
       const p = Math.max(-8, Math.min(7, Math.floor(AVal.force(scope.pickPriority))));
       if (p > this.maxPickPriority) this.maxPickPriority = p;
     }
-    const full: LeafPickScope = { pickId, ...scope };
+    // Object.create, NOT spread: fast-row scopes are prototype-chained
+    // (a plan-shared proto + per-row own model/tag) — a spread would
+    // copy only OWN fields and drop the shared ones. Property reads
+    // fall through the chain identically for flat classic literals.
+    const full: LeafPickScope = Object.create(scope as object) as LeafPickScope;
+    (full as { pickId: number }).pickId = pickId;
     this.entries.set(pickId, full);
     this.modes.set(pickId, mode);
     this.observer?.register(full, mode);

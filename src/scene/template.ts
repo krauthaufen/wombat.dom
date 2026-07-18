@@ -63,8 +63,34 @@ export interface SceneTemplate {
   /** effect.id of the innermost Shader scope ON the spine (per-item
    *  effect application — usually hoistable), or undefined. */
   readonly spineEffectId: string | undefined;
+  /**
+   * Fast-row construction metadata (the runtime half of M3): hole
+   * indices BY ROLE for the whitelisted spine shape (uniform scopes /
+   * PickTag / Trafo / attribute-instancing / folded scopes / leaf).
+   * Present only when EVERY per-row piece a lowered leaf needs can be
+   * reconstructed from (plan, holes) — anything else (per-row
+   * handlers, holed scope values, nested groups, trafo-instancing,
+   * storage buffers) leaves it undefined and rows lower classically.
+   */
+  readonly fastRow: FastRowInfo | undefined;
   /** Instances staged against this template (stats). */
   instances: number;
+}
+
+export interface FastRowInfo {
+  /** PickTag value hole, if the spine carries one. */
+  readonly tagHole: number | undefined;
+  /** Instanced count hole (adaptive counts only — a folded constant
+   *  count disables fastRow instead). */
+  readonly countHole: number | undefined;
+  /** Instanced per-name attribute view holes. */
+  readonly instanceAttrHoles: ReadonlyArray<{ readonly name: string; readonly hole: number }>;
+  /** Leaf vertex-attribute view holes. */
+  readonly vertexAttrHoles: ReadonlyArray<{ readonly name: string; readonly hole: number }>;
+  /** Leaf index-view hole, if indexed. */
+  readonly indexHole: number | undefined;
+  /** Leaf drawCall hole (object-valued avals never fold). */
+  readonly drawCallHole: number | undefined;
 }
 
 export interface StagedNode {
@@ -256,6 +282,14 @@ interface WalkOut {
   readonly postTrafoHoles: number[];
   hasInstancing: boolean;
   spineEffectId: string | undefined;
+  // fast-row role tracking (see FastRowInfo)
+  fastRowSafe: boolean;
+  frTagHole: number | undefined;
+  frCountHole: number | undefined;
+  frInstanceAttrHoles: { name: string; hole: number }[];
+  frVertexAttrHoles: { name: string; hole: number }[];
+  frIndexHole: number | undefined;
+  frDrawCallHole: number | undefined;
 }
 
 function walk(node: SgNode, out: WalkOut): void {
@@ -268,17 +302,27 @@ function walk(node: SgNode, out: WalkOut): void {
       parts.push("L(va:");
       for (const n of sortedNames(node.vertexAttributes)) {
         parts.push(n + "?");
+        out.frVertexAttrHoles.push({ name: n, hole: holes.length });
         holes.push(node.vertexAttributes.tryFind(n) as BufferView);
       }
       if (node.instanceAttributes !== undefined) {
+        // Leaf-own instance attributes merge with the Instanced
+        // scope's in the classic lowering — reconstruction doesn't
+        // model the merge, so such leaves stay classic.
+        out.fastRowSafe = false;
         parts.push(";ia:");
         for (const n of sortedNames(node.instanceAttributes)) {
           parts.push(n + "?");
           holes.push(node.instanceAttributes.tryFind(n));
         }
       }
-      if (node.indices !== undefined) { parts.push(";ix?"); holes.push(node.indices); }
+      if (node.indices !== undefined) {
+        parts.push(";ix?");
+        out.frIndexHole = holes.length;
+        holes.push(node.indices);
+      }
       if (node.storageBuffers !== undefined) {
+        out.fastRowSafe = false;
         parts.push(";sb:");
         for (const n of sortedNames(node.storageBuffers)) {
           parts.push(n + "?");
@@ -286,7 +330,12 @@ function walk(node: SgNode, out: WalkOut): void {
         }
       }
       parts.push(";dc");
-      encodeValue(node.drawCall, holes, parts);
+      {
+        const before = holes.length;
+        encodeValue(node.drawCall, holes, parts);
+        if (holes.length > before) out.frDrawCallHole = before;
+        else out.fastRowSafe = false; // folded drawCall (never happens for object avals)
+      }
       parts.push(")");
       return;
     }
@@ -305,15 +354,18 @@ function walk(node: SgNode, out: WalkOut): void {
         parts.push(node.kind === "Group" ? "G?" : "UG?");
         holes.push(children);
       }
+      out.fastRowSafe = false; // nested collections are multi-leaf
       return;
     }
     case "AdaptiveGroup":
       parts.push("A?");
       holes.push(node.child);
+      out.fastRowSafe = false;
       return;
     case "Delay":
       parts.push("D?");
       holes.push(node.create);
+      out.fastRowSafe = false;
       return;
     case "Shader":
       // effect.id is a build-time stable template hash — static.
@@ -326,6 +378,9 @@ function walk(node: SgNode, out: WalkOut): void {
       walk(node.child, out);
       return;
     case "On":
+      // Per-row handlers change the pick scope per row — the capture-
+      // based fast path shares ONE scope prototype, so stay classic.
+      out.fastRowSafe = false;
       parts.push("On(");
       encodeHandlerBag(node.handlers, holes, parts);
       parts.push(")");
@@ -351,17 +406,28 @@ function walk(node: SgNode, out: WalkOut): void {
       // ALWAYS a hole — tags are per-row keys (often small ints);
       // folding them into the key would explode one template per row.
       parts.push("PT?");
+      out.frTagHole = out.holes.length;
       out.holes.push((node as { value: unknown }).value);
       walk((node as { child: SgNode }).child, out);
       return;
     case "Instanced": {
       out.hasInstancing = true;
       parts.push("I(");
-      encodeValue(node.count, holes, parts);
-      if (node.trafos !== undefined) { parts.push(";tr?"); holes.push(node.trafos); }
+      {
+        const before = holes.length;
+        encodeValue(node.count, holes, parts);
+        if (holes.length > before) out.frCountHole = before;
+        else out.fastRowSafe = false; // folded constant count — classic
+      }
+      if (node.trafos !== undefined) {
+        // trafo-instancing pre-merges CPU-side per row — classic only.
+        out.fastRowSafe = false;
+        parts.push(";tr?"); holes.push(node.trafos);
+      }
       parts.push(";at:");
       for (const n of sortedNames(node.attributes)) {
         parts.push(n + "?");
+        out.frInstanceAttrHoles.push({ name: n, hole: holes.length });
         holes.push(node.attributes.tryFind(n));
       }
       parts.push(")");
@@ -377,6 +443,7 @@ function walk(node: SgNode, out: WalkOut): void {
       const rec = node as unknown as Record<string, unknown>;
       parts.push(`${node.kind}(`);
       const keys = Object.keys(rec).filter((k) => k !== "kind" && k !== "child").sort();
+      const holesBefore = holes.length;
       for (const k of keys) {
         if (k === "attributes" || k === "index") {
           // VertexAttributes / InstanceAttributes scopes & Index override.
@@ -393,6 +460,10 @@ function walk(node: SgNode, out: WalkOut): void {
         parts.push(k + "=");
         encodeValue(rec[k], holes, parts);
       }
+      // A HOLED value on a generic scope (Active, render-state, pick
+      // flags, View/Proj, …) varies per row in ways the capture-based
+      // fast path can't model — folded (constant) values are fine.
+      if (holes.length > holesBefore) out.fastRowSafe = false;
       parts.push(")");
       const child = (node as unknown as { child?: SgNode }).child;
       if (child !== undefined) walk(child, out);
@@ -411,6 +482,9 @@ export function stageNode(node: SgNode): StagedNode {
     parts: [], holes: [], provided: new Set(), uniformHoles: new Map(),
     hasDynamicUniforms: false, preTrafoHoles: [], postTrafoHoles: [],
     hasInstancing: false, spineEffectId: undefined,
+    fastRowSafe: true, frTagHole: undefined, frCountHole: undefined,
+    frInstanceAttrHoles: [], frVertexAttrHoles: [],
+    frIndexHole: undefined, frDrawCallHole: undefined,
   };
   walk(node, out);
   const key = out.parts.join("\u0000");
@@ -427,6 +501,17 @@ export function stageNode(node: SgNode): StagedNode {
       postTrafoHoles: out.postTrafoHoles,
       hasInstancing: out.hasInstancing,
       spineEffectId: out.spineEffectId,
+      fastRow:
+        out.fastRowSafe && !out.hasDynamicUniforms && out.frDrawCallHole !== undefined
+          ? {
+              tagHole: out.frTagHole,
+              countHole: out.frCountHole,
+              instanceAttrHoles: out.frInstanceAttrHoles,
+              vertexAttrHoles: out.frVertexAttrHoles,
+              indexHole: out.frIndexHole,
+              drawCallHole: out.frDrawCallHole,
+            }
+          : undefined,
       instances: 0,
     };
     registry.set(key, t);

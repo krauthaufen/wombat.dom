@@ -59,6 +59,10 @@ const ALLOWLIST: readonly string[] = [
   // adaptive avals qualify solely via construction-level proofs.
   "const dc = dcAv.force();",
   "return b.force().kind === \"host\";",
+  // constructFastRow — the same constant-only evidence rules.
+  "anchor.dc0 = dcAval.force();",
+  "const dc = dcAval.force();",
+  "chain = [AVal.constant(composed.force().mul(head.force())), ...chain.slice(1)];",
 ];
 
 describe("compile.ts — zero force on the live render path", () => {
