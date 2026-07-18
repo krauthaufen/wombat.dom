@@ -229,8 +229,12 @@ export function applyInstancing(
       dc0.firstInstance === 0 &&
       (dc0.kind === "indexed" || dc0.firstVertex === 0)
     ) {
-      (drawCall as { __sgHeapSafeDraw?: { kind: DrawCall["kind"] } })
-        .__sgHeapSafeDraw = { kind: dc0.kind };
+      // The marker also carries the LIVE count aval: the heap binds it
+      // as the spec's adaptive instanceCount, so count ticks (epoch
+      // morphing, point add/remove) rewrite the drawTable in place —
+      // no wrapper aval, no draw add/remove churn.
+      (drawCall as { __sgHeapSafeDraw?: { kind: DrawCall["kind"]; count: aval<number> } })
+        .__sgHeapSafeDraw = { kind: dc0.kind, count: inst.count };
     }
   } else {
     drawCall = AVal.zip(leaf.drawCall, inst.count).map((dc, n) => ({
