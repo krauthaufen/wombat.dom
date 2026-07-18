@@ -5,7 +5,7 @@
 // scopes, and shadow parent scopes identically.
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { AVal, HashMap } from "@aardworx/wombat.adaptive";
+import { AVal, HashMap, type aval } from "@aardworx/wombat.adaptive";
 import { Trafo3d, V3d } from "@aardworx/wombat.base";
 import { stage, type Effect } from "@aardworx/wombat.shader";
 import { parseShader, type EntryRequest } from "@aardworx/wombat.shader/frontend";
