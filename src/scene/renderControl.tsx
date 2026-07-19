@@ -631,6 +631,10 @@ async function initialise(
   // path is otherwise only reachable by starving a real GPU; a harness can
   // `__wombatDevice.destroy()` to exercise it.
   (globalThis as Record<string, unknown>).__wombatDevice = device;
+  // Debug handle for the compiled render task: `__wombatRenderTask
+  // .validateHeap()` is the GPU-verified liveness probe for streaming
+  // scenes (dead-draw forensics on devices without a console).
+  (globalThis as Record<string, unknown>).__wombatRenderTask = producer.task;
 
   props.onReady?.({
     canvas, device, runtime,

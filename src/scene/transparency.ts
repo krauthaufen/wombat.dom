@@ -405,6 +405,10 @@ export function transparencyTask(
         for (const b of fboCache.values()) b.destroy();
         fboCache.clear();
       },
+      // debug forwards (dead-draw forensics) — opaque task carries the
+      // heap-batched streaming draws
+      validateHeap: () => (opaqueTask as unknown as { validateHeap?: () => Promise<unknown> }).validateHeap?.(),
+      heapBucketCount: () => (opaqueTask as unknown as { heapBucketCount?: () => number }).heapBucketCount?.() ?? 0,
     } as unknown as IRenderTask;
   }
 
@@ -521,5 +525,9 @@ export function transparencyTask(
       counter.destroy(); nDepth.destroy(); nColor.destroy(); nNext.destroy();
       if (headBufGpu !== undefined) headBufGpu.destroy();
     },
+    // debug forwards (dead-draw forensics) — opaque task carries the
+    // heap-batched streaming draws
+    validateHeap: () => (opaqueTask as unknown as { validateHeap?: () => Promise<unknown> }).validateHeap?.(),
+    heapBucketCount: () => (opaqueTask as unknown as { heapBucketCount?: () => number }).heapBucketCount?.() ?? 0,
   } as unknown as IRenderTask;
 }
