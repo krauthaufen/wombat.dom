@@ -22,6 +22,14 @@ both **shipped** — they're no longer open.
   exact path is a lock-free atomic linked list, not aardvark's interlocked
   k-buffer). Full design: `docs/transparency-oit.md`.
 
+### Unified DOM ↔ scene event propagation (designed, not built)
+- One capture-down-DOM → scene capture/bubble → bubble-out-DOM walk; any
+  callback (DOM or 3D) can stopPropagation. Makes `<Sg>` a true DOM
+  extension; "stop the camera during a drag" becomes a consequence, not a
+  feature. Today DOM handlers (attr.ts) use native `addEventListener`
+  OUTSIDE the scene walk, so a scene handler can't stop the camera. Full
+  design + semantics-to-pin: `docs/unified-event-propagation.md`.
+
 ### Picking / focus (deferred)
 - HTML/JS focus integration (tab-nav into scene scopes) + focus-ring outline
   rendering.
