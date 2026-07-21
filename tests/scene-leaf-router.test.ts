@@ -31,6 +31,7 @@ function acquire(reg: PickRegistry, h: EventHandlers): number {
     cursor: undefined, pickThrough: false, active: AVal.constant(true),
     view: AVal.constant(Trafo3d.identity), proj: AVal.constant(Trafo3d.identity),
     model: () => AVal.constant(Trafo3d.identity), pixelSnapRadius: AVal.constant(1),
+    canFocus: AVal.constant(true),
   });
 }
 
@@ -122,6 +123,23 @@ describe("RenderControl canvas as the router's scene leaf", () => {
     await flush();
 
     expect(log).toEqual(["scene"]); // camera suppressed
+    detach();
+  });
+
+  it("keyboard on the focused canvas routes to the focused scene scope through the leaf", async () => {
+    const { ancestor, canvas, router, reg, d } = harness();
+    const log: string[] = [];
+    const id = acquire(reg, { bubble: { OnKeyDown: (e) => { log.push(`scene:${e.key}`); } } });
+    reg.setFocus(id);
+    router.registerHandler(ancestor, "bubble", "keydown", () => { log.push("ancestor.bub"); });
+    const detach = d.attach(canvas, async () => noPixel(), { region: router });
+
+    const ev = new KeyboardEvent("keydown", { key: "a", bubbles: true, cancelable: true });
+    canvas.dispatchEvent(ev);
+    await flush();
+
+    // Scene scope gets the key; the ancestor keydown bubbles after it.
+    expect(log).toEqual(["scene:a", "ancestor.bub"]);
     detach();
   });
 

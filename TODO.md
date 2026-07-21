@@ -36,8 +36,6 @@ both **shipped** — they're no longer open.
   `FreeFlyController.attach(…, {input})`. Tests: `event-router`,
   `scene-leaf-router`, `pick-dom-participant`, `controller-unified-input`.
   Design + "what is built": `docs/unified-event-propagation.md`.
-- **Remaining follow-up (wombat.dom):** keyboard/focus unification (keys
-  route to the focused scope, not the pointer path) — currently native.
 - **Remaining (app, TileRenderer repo):** wire the app camera through
   `info.input`; markers → `Sg.OnDrag*`/`OnTap`; delete the Drag module's
   CPU projection + capture-phase hack; app e2e + deploy.

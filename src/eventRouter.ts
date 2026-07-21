@@ -24,16 +24,18 @@
 
 /**
  * Unified interactive events. Deliberately only BUBBLING pointer / mouse
- * / wheel events — the ones where DOM and scene handlers actually
- * collide. Everything else (`input`, `change`, `focus`, `blur`,
- * `pointerenter`, and — for now — `keydown`/`keyup`) stays native:
- * routing non-bubbling events through a root walk would invent a bubble
- * phase they don't have, and keyboard/focus unification (keys route to
- * the focused scope, not the pointer path) is a deliberate follow-up.
+ * / wheel / keyboard events — the ones where DOM and scene handlers
+ * actually collide. Everything else (`input`, `change`, `focus`, `blur`,
+ * `pointerenter`, …) stays native: routing non-bubbling events through a
+ * root walk would invent a bubble phase they don't have, and they never
+ * interact with the scene. Keyboard events target the focused element,
+ * so `keydown`/`keyup`/`keypress` walk root → focused element — when that
+ * is the canvas, the scene leaf routes them to the focused scene scope.
  */
 export const UNIFIED_EVENTS = [
   "pointerdown", "pointerup", "pointermove", "pointercancel",
   "wheel", "click", "dblclick", "contextmenu",
+  "keydown", "keyup", "keypress",
 ] as const;
 
 export type UnifiedEventName = (typeof UNIFIED_EVENTS)[number];

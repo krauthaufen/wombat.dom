@@ -1,10 +1,12 @@
 # Unified DOM ↔ Scene Event Propagation
 
 *Status: IMPLEMENTED in wombat.dom — the full router model (whole mount
-subtree unified; RenderControl canvas is the async scene-leaf) plus the
-camera wiring. Keyboard/focus unification and the app migration
-(TileRenderer markers/Drag module) are the remaining steps — see "What is
-built" at the bottom.*
+subtree unified; RenderControl canvas is the async scene-leaf), keyboard
+included, plus the camera wiring. The app migration (TileRenderer
+markers/Drag module) is the remaining step — see "What is built" at the
+bottom. (Unified TAB traversal + focus-ring rendering across HTML and
+scene stays a separate deferred item — the pre-existing "Picking / focus"
+TODO — not part of this walk.)*
 
 ## The principle
 
@@ -211,9 +213,15 @@ so the router bubbles DOM ancestors *after* the pick, and threads the
 shared `prop` so a scene stop suppresses the ancestor bubble. The router
 takes canvas events over synchronously (`ev.stopPropagation()` up front,
 so they don't also reach the host) since the async pick can't stop native
-propagation retroactively. Keyboard/focus/beforeinput/pointerleave stay
-native on the canvas in both modes. Standalone (no region) keeps the
-original native-listener path — so the pick unit tests are unchanged.
+propagation retroactively. Keyboard (`keydown`/`keyup`/`keypress`) is unified
+too: it targets the focused element, so it walks root → focused element,
+and when that is the canvas the leaf routes it to the focused scene scope
+(exactly as native mode did) — a DOM ancestor can now capture/stop a key,
+and the shared `prop` lets a scene key handler suppress the ancestor
+bubble. `beforeinput` (IME) + `pointerleave` + the scene focus/blur
+subscription stay native on the canvas in both modes. Standalone (no
+region) keeps the original native-listener path — so the pick unit tests
+are unchanged.
 
 The camera stays a `PickDispatcher` DOM participant (below), now driven
 through the leaf — nothing about its wiring changed.

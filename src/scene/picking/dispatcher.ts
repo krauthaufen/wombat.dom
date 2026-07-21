@@ -572,35 +572,10 @@ export class PickDispatcher implements SceneEventDispatch {
       canvas.addEventListener("wheel", onWheel as unknown as EventListener, opts);
     }
 
-    // Region mode: register the canvas as the async scene leaf. The router
-    // runs the DOM ancestor phases around this; `dispatch` returns the
-    // scene walk's promise so the router bubbles ancestors after the pick,
-    // and threads the shared `prop` so a scene stop suppresses that bubble.
-    let leafOff: (() => void) | undefined;
-    if (region !== undefined) {
-      const leaf: SceneLeaf = {
-        dispatch: (name: UnifiedEventName, ev: Event, prop): void | Promise<void> => {
-          switch (name) {
-            case "pointerdown": return handle(ev as PointerEvent, "OnPointerDown", prop);
-            case "pointerup":   return handle(ev as PointerEvent, "OnPointerUp", prop);
-            case "pointermove": return handle(ev as PointerEvent, "OnPointerMove", prop);
-            case "click":       return handle(ev as PointerEvent, "OnClick", prop);
-            case "dblclick":    return handle(ev as PointerEvent, "OnDoubleClick", prop);
-            case "wheel":       return onWheel(ev as WheelEvent, prop);
-            case "pointercancel": onCancel(ev as PointerEvent); return;
-            // The canvas owns its context menu (right-drag = zoom); the
-            // scene doesn't dispatch it — just suppress the browser menu.
-            case "contextmenu": if (ev.cancelable) ev.preventDefault(); return;
-          }
-        },
-      };
-      leafOff = region.registerSceneLeaf(canvas, leaf);
-    }
-
     // Phase 5 — keyboard. Routed to focused scope's handler chain.
     // The canvas needs to be focusable for a real DOM `focus` to
     // direct keys to it; the renderControl sets `tabindex=0`.
-    const onKey = (kind: SceneEventKind) => (ev: KeyboardEvent): void => {
+    const onKey = (kind: SceneEventKind) => (ev: KeyboardEvent, extProp?: WalkProp): void => {
       const focused = AVal.force(this.registry.focusedPickId);
       if (focused === undefined) return;
       const scope = this.registry.lookup(focused);
@@ -616,15 +591,47 @@ export class PickDispatcher implements SceneEventDispatch {
         key: ev.key, code: ev.code, repeat: ev.repeat,
         ctrl: ev.ctrlKey, shift: ev.shiftKey, alt: ev.altKey, meta: ev.metaKey,
         scope, dispatch: this,
-      });
+      }, extProp);
       this.runCaptureBubble(scope.handlers, sceneEv);
     };
     const onKeyDown  = onKey("OnKeyDown");
     const onKeyUp    = onKey("OnKeyUp");
     const onKeyPress = onKey("OnKeyPress");
-    canvas.addEventListener("keydown",  onKeyDown  as EventListener, opts);
-    canvas.addEventListener("keyup",    onKeyUp    as EventListener, opts);
-    canvas.addEventListener("keypress", onKeyPress as EventListener, opts);
+    if (region === undefined) {
+      canvas.addEventListener("keydown",  onKeyDown  as EventListener, opts);
+      canvas.addEventListener("keyup",    onKeyUp    as EventListener, opts);
+      canvas.addEventListener("keypress", onKeyPress as EventListener, opts);
+    }
+
+    // Region mode: register the canvas as the async scene leaf. The router
+    // runs the DOM ancestor phases around this; `dispatch` returns the
+    // scene walk's promise so the router bubbles ancestors after the pick,
+    // and threads the shared `prop` so a scene stop suppresses that bubble.
+    // Keyboard reaches here only when the canvas is the focused element;
+    // the leaf routes it to the focused SCENE scope (as native mode does).
+    let leafOff: (() => void) | undefined;
+    if (region !== undefined) {
+      const leaf: SceneLeaf = {
+        dispatch: (name: UnifiedEventName, ev: Event, prop): void | Promise<void> => {
+          switch (name) {
+            case "pointerdown": return handle(ev as PointerEvent, "OnPointerDown", prop);
+            case "pointerup":   return handle(ev as PointerEvent, "OnPointerUp", prop);
+            case "pointermove": return handle(ev as PointerEvent, "OnPointerMove", prop);
+            case "click":       return handle(ev as PointerEvent, "OnClick", prop);
+            case "dblclick":    return handle(ev as PointerEvent, "OnDoubleClick", prop);
+            case "wheel":       return onWheel(ev as WheelEvent, prop);
+            case "pointercancel": onCancel(ev as PointerEvent); return;
+            case "keydown":     onKeyDown(ev as KeyboardEvent, prop); return;
+            case "keyup":       onKeyUp(ev as KeyboardEvent, prop); return;
+            case "keypress":    onKeyPress(ev as KeyboardEvent, prop); return;
+            // The canvas owns its context menu (right-drag = zoom); the
+            // scene doesn't dispatch it — just suppress the browser menu.
+            case "contextmenu": if (ev.cancelable) ev.preventDefault(); return;
+          }
+        },
+      };
+      leafOff = region.registerSceneLeaf(canvas, leaf);
+    }
 
     // Text input → OnKeyInput on the focused scope (Aardvark models text
     // input as SceneEventKind.KeyInput from the DOM InputEvent). Fires
@@ -703,9 +710,11 @@ export class PickDispatcher implements SceneEventDispatch {
       }
       leafOff?.();
       canvas.removeEventListener("pointerleave", onLeave);
-      canvas.removeEventListener("keydown",  onKeyDown  as EventListener);
-      canvas.removeEventListener("keyup",    onKeyUp    as EventListener);
-      canvas.removeEventListener("keypress", onKeyPress as EventListener);
+      if (region === undefined) {
+        canvas.removeEventListener("keydown",  onKeyDown  as EventListener);
+        canvas.removeEventListener("keyup",    onKeyUp    as EventListener);
+        canvas.removeEventListener("keypress", onKeyPress as EventListener);
+      }
       canvas.removeEventListener("beforeinput", onInput as EventListener);
       focusUnsub.dispose();
       // Cancel any pending long-press timers so the disposer is clean.
