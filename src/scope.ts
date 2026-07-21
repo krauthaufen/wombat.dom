@@ -75,7 +75,20 @@ export class Scope implements Disposable {
 // render-pass machinery (we just have one initial run).
 // ---------------------------------------------------------------------------
 
-const scopeStack: Scope[] = [];
+// The active-scope stack is process-global, NOT module-local. A bundler
+// (notably Vite's optimizeDeps) can pre-bundle `@aardworx/wombat.dom` and
+// the `/scene` subpath into SEPARATE chunks, each with its own copy of
+// this module — so `mountComponent`'s `pushScope` (main chunk) and a
+// scene component's `useScope` (scene chunk) would otherwise touch
+// different stacks, and `useScope()` throws "outside a component body"
+// even though a scope is active. Anchoring the stack on `globalThis`
+// makes every duplicated copy share one stack. (The same applies to any
+// component reading `scope.region` — the unified event region only
+// reaches scene components because they now find the pushed scope.)
+const SCOPE_STACK_KEY = "__wombat_dom_scope_stack__";
+const scopeStack: Scope[] =
+  ((globalThis as Record<string, unknown>)[SCOPE_STACK_KEY] as Scope[] | undefined) ??
+  ((globalThis as Record<string, unknown>)[SCOPE_STACK_KEY] = [] as Scope[]);
 
 /** @internal — used by `mount.ts`'s `mountComponent`. */
 export function pushScope(scope: Scope): void {
