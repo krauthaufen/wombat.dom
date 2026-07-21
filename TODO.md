@@ -22,18 +22,22 @@ both **shipped** — they're no longer open.
   exact path is a lock-free atomic linked list, not aardvark's interlocked
   k-buffer). Full design: `docs/transparency-oit.md`.
 
-### Unified DOM ↔ scene event propagation (mechanism + camera BUILT)
-- One capture-down-DOM → scene capture/bubble → bubble-out-DOM walk; any
-  callback (DOM or 3D) can stopPropagation. Makes `<Sg>` a true DOM
-  extension; "stop the camera during a drag" is a consequence, not a
-  feature. **Shipped in wombat.dom:** `PickDispatcher.registerDomParticipant`
-  + the unified `runUnified` walk (shared stop-flag; `return false` ==
-  `stopPropagation`), DOM pointer-capture orbit fast-path (moves skip the
-  pick, click preserved), synchronous `preventDefault` takeover, exposed
-  via `RenderControl` onReady `input`; `FreeFlyController.attach(…, {input})`
-  joins as a bubble participant. Tests: `pick-dom-participant`,
-  `controller-unified-input`. Full design + "what is built":
-  `docs/unified-event-propagation.md`.
+### Unified DOM ↔ scene event propagation (full router model BUILT)
+- wombat owns propagation over the WHOLE mount subtree; the RenderControl
+  canvas is the async scene-leaf. One capture-down-DOM → scene → bubble-
+  out-DOM walk; any callback (DOM or 3D) stops it, one meaning. The host
+  page sees the subtree as one opaque node. Makes the whole thing a true
+  DOM extension; "stop the camera during a drag" is a consequence.
+  **Shipped in wombat.dom:** `RegionRouter` on the mount root +
+  `attr.ts` auto-registration + `Scope.region`; canvas registered as the
+  region `SceneLeaf`, `PickDispatcher.attach(…, {region})` router-driven;
+  `registerDomParticipant` orbit walk (shared stop-flag; `return false` ==
+  `stopPropagation`; capture-skips-pick; click preserved); camera via
+  `FreeFlyController.attach(…, {input})`. Tests: `event-router`,
+  `scene-leaf-router`, `pick-dom-participant`, `controller-unified-input`.
+  Design + "what is built": `docs/unified-event-propagation.md`.
+- **Remaining follow-up (wombat.dom):** keyboard/focus unification (keys
+  route to the focused scope, not the pointer path) — currently native.
 - **Remaining (app, TileRenderer repo):** wire the app camera through
   `info.input`; markers → `Sg.OnDrag*`/`OnTap`; delete the Drag module's
   CPU projection + capture-phase hack; app e2e + deploy.

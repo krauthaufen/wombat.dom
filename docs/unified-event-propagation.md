@@ -1,8 +1,10 @@
 # Unified DOM ↔ Scene Event Propagation
 
-*Status: IMPLEMENTED in wombat.dom (the mechanism + camera wiring). App
-migration (TileRenderer markers/Drag module) is the remaining step — see
-"What is built" at the bottom.*
+*Status: IMPLEMENTED in wombat.dom — the full router model (whole mount
+subtree unified; RenderControl canvas is the async scene-leaf) plus the
+camera wiring. Keyboard/focus unification and the app migration
+(TileRenderer markers/Drag module) are the remaining steps — see "What is
+built" at the bottom.*
 
 ## The principle
 
@@ -179,8 +181,42 @@ One walk per event:
 
 ## What is built (wombat.dom)
 
-The mechanism and the camera wiring landed in wombat.dom; the app-side
-migration is the only remaining step.
+The full router model landed: wombat owns propagation over the entire
+mount subtree, with the RenderControl canvas as the async scene-leaf. The
+app-side migration is the only remaining step.
+
+**The region router — `RegionRouter` (`src/eventRouter.ts`).** One
+capture-phase listener per unified event (pointer/mouse/wheel) on the
+**mount root**. On first sight (`__wombatSeen` dedup) it runs wombat's own
+walk over the DOM ancestor chain: capture root→target, then — if the
+target is a registered scene-leaf — the scene sub-walk, then bubble
+target→root. `attr.ts` auto-registers every `on*` (and `onFooCapture` for
+the capture phase) with the enclosing region instead of `addEventListener`;
+`Scope.region` is set on the mount root and inherited by `child()` scopes,
+so dynamically-added rows join the walk. `mount()` installs the router.
+Any handler stops the walk (`return false` or `stopPropagation()`), one
+meaning across the subtree. **Boundary:** an unstopped event continues
+natively and bubbles out of the root (the host page sees the subtree as
+one opaque node); a stopped one is halted at the root. Foreign native
+listeners inside the subtree still fire when nothing stops. Only BUBBLING
+pointer/mouse/wheel events unify; keyboard/focus and non-bubbling events
+stay native (deliberate follow-up).
+
+**The canvas as scene-leaf.** `RenderControl` registers its canvas as the
+region's `SceneLeaf`; `PickDispatcher.attach(canvas, resolvePixel,
+{ region })` then does NOT install native pointer/wheel listeners — the
+router drives it via the leaf's `dispatch(name, ev, prop)`, which runs the
+pick + scene (+ camera participant) walk, returns the scene walk's promise
+so the router bubbles DOM ancestors *after* the pick, and threads the
+shared `prop` so a scene stop suppresses the ancestor bubble. The router
+takes canvas events over synchronously (`ev.stopPropagation()` up front,
+so they don't also reach the host) since the async pick can't stop native
+propagation retroactively. Keyboard/focus/beforeinput/pointerleave stay
+native on the canvas in both modes. Standalone (no region) keeps the
+original native-listener path — so the pick unit tests are unchanged.
+
+The camera stays a `PickDispatcher` DOM participant (below), now driven
+through the leaf — nothing about its wiring changed.
 
 **Mechanism — `PickDispatcher` (`src/scene/picking/dispatcher.ts`).**
 - `registerDomParticipant(p: DomParticipant): DomParticipantHandle`. A
@@ -220,12 +256,16 @@ handlers return void so a scene stop suppresses it. Keyboard, gamepad and
 per-frame integration stay native in both modes (they never conflict with
 picking).
 
-**Tests.** `tests/pick-dom-participant.test.ts` (walk order, scene-stops-
-camera via both `stopPropagation()` and `return false`, DOM-capture
-suppressing the scene, capture-skips-pick, click-preserved-through-orbit,
-wheel + sync preventDefault, no-participant parity) and
-`tests/controller-unified-input.test.ts` (camera orbits via the walk;
-a scene stop suppresses it). Full mock suite + typecheck + build green.
+**Tests.** `tests/event-router.test.tsx` (subtree capture/bubble order,
+stop, root-exit boundary, foreign-listener survival, dynamic rows);
+`tests/scene-leaf-router.test.ts` (ancestor DOM ↔ scene interleave both
+directions, ancestor-capture stops before the pick, camera-stop in region
+mode, overlay stays disjoint); `tests/pick-dom-participant.test.ts` (walk
+order, scene-stops-camera via both `stopPropagation()` and `return false`,
+DOM-capture suppressing the scene, capture-skips-pick, click-preserved-
+through-orbit, wheel + sync preventDefault, no-participant parity);
+`tests/controller-unified-input.test.ts` (camera orbits via the walk; a
+scene stop suppresses it). Full mock suite + typecheck + build green.
 
 **Remaining (app migration — task #21, TileRenderer-wombat repo, NOT
 wombat.dom).** Wire the app camera through `info.input`; move markers to

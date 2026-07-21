@@ -64,8 +64,11 @@ export interface SceneLeaf {
   dispatch(name: UnifiedEventName, ev: Event, prop: WalkProp): void | Promise<void>;
 }
 
-/** Shared stop flag threaded through one walk. */
-export interface WalkProp { stopped: boolean; }
+/** Shared stop/prevent flags threaded through one walk — the same shape
+ *  the scene dispatcher threads through its own capture/bubble, so the
+ *  router's prop passes straight into the leaf and a scene
+ *  `stopPropagation()` flows back out to suppress the DOM bubble. */
+export interface WalkProp { stopped: boolean; prevented: boolean; }
 
 /** The registration surface a `Scope` carries as its `region`. */
 export interface EventRegion {
@@ -152,7 +155,7 @@ export class RegionRouter implements EventRegion {
       if (l !== undefined) { leaf = l; break; }
     }
 
-    const prop: WalkProp = { stopped: false };
+    const prop: WalkProp = { stopped: false, prevented: false };
 
     // Capture: root → target.
     this.runPhase(path, "capture", name, ev, prop, /*reverse*/ false);

@@ -50,6 +50,7 @@ import {
 } from "./sceneEvent.js";
 import { SceneEventLocation } from "./sceneEventLocation.js";
 import { type ResolvedHit } from "./spiralHitTest.js";
+import type { EventRegion, SceneLeaf, UnifiedEventName } from "../../eventRouter.js";
 
 // --- Tap / long-press / double-tap detection thresholds ----------------
 // Sensible defaults. Exported so callers can read or — eventually —
@@ -410,10 +411,13 @@ export class PickDispatcher implements SceneEventDispatch {
   /**
    * Wire pointer listeners to the canvas. Returns a disposer.
    */
-  attach(canvas: HTMLCanvasElement, resolvePixel: ResolvePixel): () => void {
+  attach(canvas: HTMLCanvasElement, resolvePixel: ResolvePixel, attachOpts: { region?: EventRegion } = {}): () => void {
     this.canvasSize = () => new V2i(canvas.width, canvas.height);
     this.canvas = canvas;
-    const handle = (ev: PointerEvent, kind: SceneEventKind): void => {
+    // `extProp` is the region's shared walk-flag when the canvas is driven
+    // as a scene leaf (the router runs the DOM ancestor phases around this
+    // scene walk); undefined when standalone (own native listeners).
+    const handle = (ev: PointerEvent, kind: SceneEventKind, extProp?: WalkProp): void | Promise<void> => {
       const pointerId = ev.pointerId ?? 0;
       const domName = DOM_KIND[kind];
 
@@ -459,25 +463,25 @@ export class PickDispatcher implements SceneEventDispatch {
       // up/click) must always resolve — a double-click's first UP
       // otherwise loses its hit and the tap latch never arms.
       const coalesce = kind === "OnPointerMove";
-      void resolvePixel(devX, devY, coalesce).then(async (result) => {
+      return resolvePixel(devX, devY, coalesce).then(async (result) => {
         if (seq < this.lastSettledSeq) return;
         const hit = await this.resolve(result, devX, devY);
         // Portal recursion awaited — a newer event may have settled
         // meanwhile; drop stale results (same seq policy as above).
         if (seq < this.lastSettledSeq) return;
         this.lastSettledSeq = seq;
-        this.runUnified(ev, kind, domName, cssX, cssY, hit, rect, sx, sy, pointerId);
+        this.runUnified(ev, kind, domName, cssX, cssY, hit, rect, sx, sy, pointerId, extProp);
       });
     };
 
-    const onDown   = (e: PointerEvent): void => handle(e, "OnPointerDown");
-    const onUp     = (e: PointerEvent): void => handle(e, "OnPointerUp");
-    const onMove   = (e: PointerEvent): void => handle(e, "OnPointerMove");
-    const onClick  = (e: PointerEvent): void => handle(e, "OnClick");
+    const onDown   = (e: PointerEvent): void => { void handle(e, "OnPointerDown"); };
+    const onUp     = (e: PointerEvent): void => { void handle(e, "OnPointerUp"); };
+    const onMove   = (e: PointerEvent): void => { void handle(e, "OnPointerMove"); };
+    const onClick  = (e: PointerEvent): void => { void handle(e, "OnClick"); };
     // dblclick is a MouseEvent (no pointerId); the pipeline only reads the
     // pointer-ish fields it carries. Routed through the same pick resolve +
     // differential hover as every other pointer event (Aardvark parity).
-    const onDblClick = (e: MouseEvent): void => handle(e as PointerEvent, "OnDoubleClick");
+    const onDblClick = (e: MouseEvent): void => { void handle(e as PointerEvent, "OnDoubleClick"); };
     // NOTE: no canvas `pointerenter` listener — like Aardvark, scene
     // OnPointerEnter fires ONLY from the differential mechanism
     // (updateHover) on the first pointer event inside the canvas.
@@ -516,18 +520,27 @@ export class PickDispatcher implements SceneEventDispatch {
     // for touchmove / wheel on a canvas. Force non-passive so handlers
     // actually take effect.
     const opts: AddEventListenerOptions = { passive: false };
-    canvas.addEventListener("pointerdown", onDown, opts);
-    canvas.addEventListener("pointerup", onUp, opts);
-    canvas.addEventListener("pointermove", onMove, opts);
-    canvas.addEventListener("pointercancel", onCancel as unknown as EventListener, opts);
-    canvas.addEventListener("click", onClick as unknown as EventListener, opts);
-    canvas.addEventListener("dblclick", onDblClick as unknown as EventListener, opts);
+    // Region mode: the RegionRouter owns the pointer/wheel/click events
+    // and drives this dispatcher through the scene-leaf sink (registered
+    // below), so it must NOT ALSO install native listeners for them —
+    // that would double-handle every canvas event. Keyboard / focus /
+    // beforeinput / pointerleave are never routed by the region, so they
+    // stay native in both modes.
+    const region = attachOpts.region;
+    if (region === undefined) {
+      canvas.addEventListener("pointerdown", onDown, opts);
+      canvas.addEventListener("pointerup", onUp, opts);
+      canvas.addEventListener("pointermove", onMove, opts);
+      canvas.addEventListener("pointercancel", onCancel as unknown as EventListener, opts);
+      canvas.addEventListener("click", onClick as unknown as EventListener, opts);
+      canvas.addEventListener("dblclick", onDblClick as unknown as EventListener, opts);
+    }
     canvas.addEventListener("pointerleave", onLeave, opts);
 
     // Phase 4 — wheel events. Read pixel under cursor (same spiral
     // as pointer events), then dispatch via capture/bubble through
     // the hit's path. Non-passive so handlers can preventDefault().
-    const onWheel = (ev: WheelEvent): void => {
+    const onWheel = (ev: WheelEvent, extProp?: WalkProp): void | Promise<void> => {
       // The region owns its wheel: when a DOM participant (camera zoom)
       // is present, suppress page scroll synchronously — the participant
       // handler itself runs a microtask later (post pick-resolve), too
@@ -541,20 +554,48 @@ export class PickDispatcher implements SceneEventDispatch {
       const sy = rect.height > 0 ? canvas.height / rect.height : 1;
       const devX = Math.floor(cssX * sx);
       const devY = Math.floor(cssY * sy);
-      void resolvePixel(devX, devY).then(async (result) => {
+      return resolvePixel(devX, devY).then(async (result) => {
         if (seq < this.lastSettledSeq) return;
         const hit = await this.resolve(result, devX, devY);
         if (seq < this.lastSettledSeq) return;
         this.lastSettledSeq = seq;
         // Unified walk: DOM capture → scene wheel → DOM bubble (camera).
+        // extProp reuses the region's flag when driven as a scene leaf.
         const havePart = this.domParticipants.length > 0;
-        const prop: WalkProp = { stopped: false, prevented: false };
+        const prop: WalkProp = extProp ?? { stopped: false, prevented: false };
         if (havePart) this.runDomPhase("capture", "wheel", ev, prop);
         if (!prop.stopped) this.dispatchWheel(ev, cssX, cssY, hit, rect, sx, sy, prop);
         if (havePart && !prop.stopped) this.runDomPhase("bubble", "wheel", ev, prop);
       });
     };
-    canvas.addEventListener("wheel", onWheel as unknown as EventListener, opts);
+    if (region === undefined) {
+      canvas.addEventListener("wheel", onWheel as unknown as EventListener, opts);
+    }
+
+    // Region mode: register the canvas as the async scene leaf. The router
+    // runs the DOM ancestor phases around this; `dispatch` returns the
+    // scene walk's promise so the router bubbles ancestors after the pick,
+    // and threads the shared `prop` so a scene stop suppresses that bubble.
+    let leafOff: (() => void) | undefined;
+    if (region !== undefined) {
+      const leaf: SceneLeaf = {
+        dispatch: (name: UnifiedEventName, ev: Event, prop): void | Promise<void> => {
+          switch (name) {
+            case "pointerdown": return handle(ev as PointerEvent, "OnPointerDown", prop);
+            case "pointerup":   return handle(ev as PointerEvent, "OnPointerUp", prop);
+            case "pointermove": return handle(ev as PointerEvent, "OnPointerMove", prop);
+            case "click":       return handle(ev as PointerEvent, "OnClick", prop);
+            case "dblclick":    return handle(ev as PointerEvent, "OnDoubleClick", prop);
+            case "wheel":       return onWheel(ev as WheelEvent, prop);
+            case "pointercancel": onCancel(ev as PointerEvent); return;
+            // The canvas owns its context menu (right-drag = zoom); the
+            // scene doesn't dispatch it — just suppress the browser menu.
+            case "contextmenu": if (ev.cancelable) ev.preventDefault(); return;
+          }
+        },
+      };
+      leafOff = region.registerSceneLeaf(canvas, leaf);
+    }
 
     // Phase 5 — keyboard. Routed to focused scope's handler chain.
     // The canvas needs to be focusable for a real DOM `focus` to
@@ -651,14 +692,17 @@ export class PickDispatcher implements SceneEventDispatch {
     });
 
     return () => {
-      canvas.removeEventListener("pointerdown", onDown);
-      canvas.removeEventListener("pointerup", onUp);
-      canvas.removeEventListener("pointermove", onMove);
-      canvas.removeEventListener("pointercancel", onCancel as unknown as EventListener);
-      canvas.removeEventListener("click", onClick as unknown as EventListener);
-      canvas.removeEventListener("dblclick", onDblClick as unknown as EventListener);
+      if (region === undefined) {
+        canvas.removeEventListener("pointerdown", onDown);
+        canvas.removeEventListener("pointerup", onUp);
+        canvas.removeEventListener("pointermove", onMove);
+        canvas.removeEventListener("pointercancel", onCancel as unknown as EventListener);
+        canvas.removeEventListener("click", onClick as unknown as EventListener);
+        canvas.removeEventListener("dblclick", onDblClick as unknown as EventListener);
+        canvas.removeEventListener("wheel", onWheel as unknown as EventListener);
+      }
+      leafOff?.();
       canvas.removeEventListener("pointerleave", onLeave);
-      canvas.removeEventListener("wheel", onWheel as unknown as EventListener);
       canvas.removeEventListener("keydown",  onKeyDown  as EventListener);
       canvas.removeEventListener("keyup",    onKeyUp    as EventListener);
       canvas.removeEventListener("keypress", onKeyPress as EventListener);
@@ -693,9 +737,12 @@ export class PickDispatcher implements SceneEventDispatch {
     sx: number,
     sy: number,
     pointerId: number,
+    extProp?: WalkProp,
   ): void {
     const havePart = this.domParticipants.length > 0 && domName !== undefined;
-    const prop: WalkProp = { stopped: false, prevented: false };
+    // Reuse the region's walk-flag when driven as a scene leaf, so a scene
+    // stop flows back out and suppresses the router's DOM ancestor bubble.
+    const prop: WalkProp = extProp ?? { stopped: false, prevented: false };
     // A scene scope already holding capture (marker mid-drag) owns the
     // pointer; keep the DOM (camera) side out for the whole gesture.
     const sceneOwns = this.capturedScopes.has(pointerId);

@@ -501,7 +501,14 @@ async function initialise(
     () => canvas.getBoundingClientRect(),
     props.tapThresholds,
   );
-  const detach = dispatcher.attach(canvas, producer.pickPixel);
+  // Unified walk: when this control is mounted inside a wombat region
+  // (the normal case), register the canvas as that region's async scene
+  // leaf — the RegionRouter runs DOM ancestor capture/bubble around the
+  // pick, and pointer/wheel come through the router, not native canvas
+  // listeners. Standalone (no region) keeps native listeners. `scope`
+  // descends from the mount root, so it carries the region.
+  const detach = dispatcher.attach(canvas, producer.pickPixel,
+    scope.region !== undefined ? { region: scope.region } : {});
   scope.onDispose(detach);
 
   // Programmatic pick — same path as pointer events (arbitrate +
