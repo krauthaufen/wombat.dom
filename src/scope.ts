@@ -2,6 +2,8 @@
 // mounted DOM ops). Disposing a scope cascades to its children and
 // runs cleanups in LIFO order.
 
+import type { EventRegion } from "./eventRouter.js";
+
 export interface Disposable {
   dispose(): void;
 }
@@ -9,6 +11,15 @@ export interface Disposable {
 export class Scope implements Disposable {
   private _disposables: Disposable[] = [];
   private _disposed = false;
+
+  /**
+   * The unified event region (RegionRouter) this scope belongs to, set on
+   * the mount root and inherited by every child scope. `attr.ts` reads it
+   * to route `on*` handlers through the region walk instead of native
+   * `addEventListener`. Undefined for scopes created outside a mount
+   * (e.g. bare unit tests) — those fall back to native listeners.
+   */
+  region?: EventRegion;
 
   /** Register a cleanup to run on dispose. */
   add(d: Disposable): void {
@@ -24,9 +35,12 @@ export class Scope implements Disposable {
     this.add({ dispose: fn });
   }
 
-  /** Open a child scope. Disposing this scope disposes the child. */
+  /** Open a child scope. Disposing this scope disposes the child. The
+   *  event `region` is inherited so handlers bound in dynamically-added
+   *  subtrees (alist rows, aval child swaps) still join the walk. */
   child(): Scope {
     const c = new Scope();
+    if (this.region !== undefined) c.region = this.region;
     this.add(c);
     return c;
   }

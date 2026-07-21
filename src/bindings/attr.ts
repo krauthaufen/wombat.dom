@@ -15,6 +15,7 @@ import { isAVal } from "../guards.js";
 import type { Scope } from "../scope.js";
 import type { UIScheduler } from "../scheduler.js";
 import type { Binding } from "../scheduler.js";
+import { isUnifiedEvent, type UnifiedEventName, type WalkPhase } from "../eventRouter.js";
 
 type EventLike = EventListenerOrEventListenerObject;
 
@@ -106,15 +107,36 @@ function bindEvent(
   value: unknown,
   scope: Scope,
 ): void {
-  const evt = name.slice(2).toLowerCase();
+  // `onFooCapture` → the capture phase of `foo`; `onFoo` → bubble.
+  let raw = name.slice(2);
+  let phase: WalkPhase = "bubble";
+  if (raw.length > 7 && raw.endsWith("Capture")) {
+    phase = "capture";
+    raw = raw.slice(0, -7);
+  }
+  const evt = raw.toLowerCase();
+
+  // Current listener value (a mutable slot so an aval handler prop can be
+  // swapped without re-registering).
   let cur: EventLike | undefined;
-  const listener: EventListener = (e) => {
+  const invoke = (e: Event): boolean | void => {
     if (cur === undefined) return;
-    if (typeof cur === "function") cur(e);
-    else cur.handleEvent(e);
+    if (typeof cur === "function") return (cur as (e: Event) => boolean | void)(e);
+    cur.handleEvent(e);
   };
-  el.addEventListener(evt, listener);
-  scope.onDispose(() => el.removeEventListener(evt, listener));
+
+  // Unified walk: when this element sits inside a wombat mount region and
+  // the event is one wombat owns, register with the region instead of a
+  // native listener — so a scene handler (or another DOM handler) can
+  // stop it under one propagation model. Everything else stays native.
+  if (scope.region !== undefined && isUnifiedEvent(evt)) {
+    const off = scope.region.registerHandler(el, phase, evt as UnifiedEventName, invoke);
+    scope.onDispose(off);
+  } else {
+    const listener: EventListener = (e) => { invoke(e); };
+    el.addEventListener(evt, listener);
+    scope.onDispose(() => el.removeEventListener(evt, listener));
+  }
 
   if (isAVal(value)) {
     const v = value as aval<unknown>;

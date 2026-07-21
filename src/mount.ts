@@ -4,6 +4,7 @@
 
 import { installTapEvents } from "./tap.js";
 import { Scope, pushScope, popScope } from "./scope.js";
+import { RegionRouter } from "./eventRouter.js";
 import { UIScheduler, defaultScheduler } from "./scheduler.js";
 import {
   isVNode,
@@ -52,6 +53,16 @@ export function mount(
   }
   const scheduler = opts.scheduler ?? defaultScheduler;
   const scope = new Scope();
+  // Unified event region: wombat owns propagation inside the subtree it
+  // generates. `attr.ts` routes `on*` through this instead of native
+  // listeners; a `<RenderControl>` canvas registers as the async scene
+  // leaf. Needs an Element root to host the capture listeners — a
+  // non-Element root (rare) falls back to native listeners.
+  if (root instanceof Element) {
+    const router = new RegionRouter(root);
+    scope.region = router;
+    scope.onDispose(() => router.dispose());
+  }
   mountInto(root, null, vnode, scope, scheduler);
   return {
     scope,
