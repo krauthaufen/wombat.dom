@@ -19,6 +19,7 @@ import {
   type aval, type ChangeableValue, type IDisposable,
 } from "@aardworx/wombat.adaptive";
 import { Rot3d, Trafo3d, V2d, V3d } from "@aardworx/wombat.base";
+import type { DomParticipantHost, DomParticipantHandle } from "../picking/dispatcher.js";
 
 // ---------------------------------------------------------------------------
 // Config + state
@@ -209,6 +210,18 @@ export interface FreeFlyAttachOptions {
   keysOnWindow?: boolean;
   /** When true, mount on-canvas virtual joystick overlays (left=move, right=look) for touch devices. */
   virtualSticks?: boolean;
+  /**
+   * Join the unified DOM ↔ scene event walk instead of installing native
+   * pointer/wheel listeners. Pass the RenderControl `onReady` `input`
+   * host. The camera then participates as a DOM-world **bubble**
+   * handler, so a scene handler that stops propagation suppresses it —
+   * "stop the camera during a drag" with no app-side hit-testing. It
+   * claims the pointer on press (moves skip the scene pick), and a
+   * no-move press still delivers its click/tap to the scene. Keyboard,
+   * gamepad and per-frame integration stay native either way. See
+   * `docs/unified-event-propagation.md`.
+   */
+  input?: DomParticipantHost;
 }
 
 export class FreeFlyController {
@@ -314,6 +327,21 @@ export class FreeFlyController {
   attach(target: HTMLElement, time: aval<number>, opts: FreeFlyAttachOptions = {}): () => void {
     const cfg = (): FreeFlyConfig => this.state.value.Config;
 
+    // Pointer capture is claimed on press. Native mode captures the
+    // browser pointer (so off-target moves keep flowing); unified mode
+    // (opts.input) claims the dispatcher's DOM pointer capture, which
+    // ALSO makes subsequent moves skip the scene pick (orbit fast path).
+    let partHandle: DomParticipantHandle | undefined;
+    const capture = opts.input !== undefined
+      ? {
+          set: (id: number): void => partHandle?.capturePointer(id),
+          release: (id: number): void => partHandle?.releasePointer(id),
+        }
+      : {
+          set: (id: number): void => { try { (target as Element).setPointerCapture?.(id); } catch { /* inactive pointer */ } },
+          release: (id: number): void => { try { (target as Element).releasePointerCapture?.(id); } catch { /* ignore */ } },
+        };
+
     // ---- Mouse + wheel ----
     let rotDown = false, panDown = false, zoomDown = false;
     let panStartDepth: number | undefined;
@@ -330,7 +358,7 @@ export class FreeFlyController {
         panStartDepth = opts.pickDepth?.(e.clientX, e.clientY);
         panDown = true;
       } else if (e.button === 2) zoomDown = true;
-      (target as Element).setPointerCapture?.(("pointerId" in e ? e.pointerId : 0) as number);
+      capture.set(("pointerId" in e ? e.pointerId : 0) as number);
       e.preventDefault();
     };
     const onMouseUp = (e: MouseEvent | PointerEvent): void => {
@@ -339,6 +367,7 @@ export class FreeFlyController {
       else if (e.button === 1) { panDown = false; panStartDepth = undefined; }
       else if (e.button === 2) zoomDown = false;
       mouseLast.delete("pointerId" in e ? e.pointerId : 0);
+      capture.release(("pointerId" in e ? e.pointerId : 0) as number);
     };
     const onMouseMove = (e: MouseEvent | PointerEvent): void => {
       if ("pointerType" in e && e.pointerType !== "mouse") return;
@@ -430,7 +459,7 @@ export class FreeFlyController {
       if (e.pointerType === "mouse") return;
       touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
       recomputeRefs();
-      (target as Element).setPointerCapture?.(e.pointerId);
+      capture.set(e.pointerId);
       e.preventDefault();
     };
     const onTouchMove = (e: PointerEvent): void => {
@@ -481,7 +510,7 @@ export class FreeFlyController {
       if (e.pointerType === "mouse") return;
       touches.delete(e.pointerId);
       recomputeRefs();
-      (target as Element).releasePointerCapture?.(e.pointerId);
+      capture.release(e.pointerId);
     };
 
     // ---- Gamepad state (button transitions tracked across polls) ----
@@ -661,11 +690,29 @@ export class FreeFlyController {
     const onPointerUp = (e: PointerEvent): void => {
       if (e.pointerType === "mouse") onMouseUp(e); else onTouchUp(e);
     };
-    target.addEventListener("pointerdown", onPointerDown as EventListener);
-    target.addEventListener("pointermove", onPointerMove as EventListener);
-    target.addEventListener("pointerup", onPointerUp as EventListener);
-    target.addEventListener("pointercancel", onPointerUp as EventListener);
-    target.addEventListener("wheel", onWheel, { passive: false });
+    if (opts.input !== undefined) {
+      // Unified walk: the camera is a DOM-world BUBBLE participant, so an
+      // inner scene handler that stops propagation runs first and can
+      // suppress it. Handlers return void — the camera never stops the
+      // walk itself.
+      partHandle = opts.input.registerDomParticipant({
+        bubble: {
+          pointerdown:   (e) => { onPointerDown(e as PointerEvent); },
+          pointermove:   (e) => { onPointerMove(e as PointerEvent); },
+          pointerup:     (e) => { onPointerUp(e as PointerEvent); },
+          pointercancel: (e) => { onPointerUp(e as PointerEvent); },
+          wheel:         (e) => { onWheel(e as WheelEvent); },
+        },
+      });
+    } else {
+      target.addEventListener("pointerdown", onPointerDown as EventListener);
+      target.addEventListener("pointermove", onPointerMove as EventListener);
+      target.addEventListener("pointerup", onPointerUp as EventListener);
+      target.addEventListener("pointercancel", onPointerUp as EventListener);
+      target.addEventListener("wheel", onWheel, { passive: false });
+    }
+    // Non-pointer input is native in both modes (it never conflicts with
+    // scene picking): keys, gamepad and the per-frame integration.
     target.addEventListener("contextmenu", onContextMenu);
     target.addEventListener("blur", onBlur);
     const keyTarget: EventTarget = (opts.keysOnWindow ?? true) ? window : target;
@@ -676,11 +723,15 @@ export class FreeFlyController {
       cb.dispose();
       for (const el of virtualStickEls) el.parentNode?.removeChild(el);
       virtualStickEls.length = 0;
-      target.removeEventListener("pointerdown", onPointerDown as EventListener);
-      target.removeEventListener("pointermove", onPointerMove as EventListener);
-      target.removeEventListener("pointerup", onPointerUp as EventListener);
-      target.removeEventListener("pointercancel", onPointerUp as EventListener);
-      target.removeEventListener("wheel", onWheel);
+      if (partHandle !== undefined) {
+        partHandle.release();
+      } else {
+        target.removeEventListener("pointerdown", onPointerDown as EventListener);
+        target.removeEventListener("pointermove", onPointerMove as EventListener);
+        target.removeEventListener("pointerup", onPointerUp as EventListener);
+        target.removeEventListener("pointercancel", onPointerUp as EventListener);
+        target.removeEventListener("wheel", onWheel);
+      }
       target.removeEventListener("contextmenu", onContextMenu);
       target.removeEventListener("blur", onBlur);
       keyTarget.removeEventListener("keydown", onKeyDown as EventListener);

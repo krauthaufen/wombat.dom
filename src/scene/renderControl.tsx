@@ -41,7 +41,7 @@ import type { OitMode } from "./transparency.js";
 import { createGtaoPass, gtaoConfig, type GtaoOption, type GtaoPass } from "./gtao.js";
 import type { SgNode } from "./sg.js";
 import { TraversalState } from "./traversalState.js";
-import { PickDispatcher, type TapThresholds } from "./picking/dispatcher.js";
+import { PickDispatcher, type TapThresholds, type DomParticipantHost } from "./picking/dispatcher.js";
 import type { PickRegistry } from "./picking/registry.js";
 import { arbitratePick, resolveThroughPortals } from "./picking/pickArbitrate.js";
 import type { PortalPickHit } from "./picking/pickContext.js";
@@ -232,6 +232,15 @@ export interface RenderControlReadyInfo {
    * (`OrbitController.attach(..., { picker })`).
    */
   readonly pickAt: (x: number, y: number) => Promise<PortalPickHit | undefined>;
+  /**
+   * Join the unified DOM ↔ scene event walk as a DOM-world participant —
+   * the seam a camera controller (or overlay UI) uses so a scene handler
+   * that stops propagation can suppress it ("stop the camera during a
+   * drag"). See `docs/unified-event-propagation.md`. Prefer
+   * `FreeFlyController.attachToInput(info.input, …)` over the standalone
+   * `attach`, which installs its own native listeners outside the walk.
+   */
+  readonly input: DomParticipantHost;
 }
 
 // ---------------------------------------------------------------------------
@@ -644,6 +653,7 @@ async function initialise(
     time: getGlobalTime(),
     picking: registry,
     pickAt,
+    input: dispatcher,
   });
 }
 

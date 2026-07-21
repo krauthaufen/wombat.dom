@@ -1,7 +1,8 @@
 # Unified DOM ↔ Scene Event Propagation
 
-*Status: DESIGN (not yet implemented). This pins the semantics before
-touching the shared event core.*
+*Status: IMPLEMENTED in wombat.dom (the mechanism + camera wiring). App
+migration (TileRenderer markers/Drag module) is the remaining step — see
+"What is built" at the bottom.*
 
 ## The principle
 
@@ -175,3 +176,61 @@ One walk per event:
   case: line-body selection shipped on the pixel path.)
 - No app-side re-implementation of hit-testing or camera suppression.
   Those are consequences of the unified walk, not features to add.
+
+## What is built (wombat.dom)
+
+The mechanism and the camera wiring landed in wombat.dom; the app-side
+migration is the only remaining step.
+
+**Mechanism — `PickDispatcher` (`src/scene/picking/dispatcher.ts`).**
+- `registerDomParticipant(p: DomParticipant): DomParticipantHandle`. A
+  participant has `capture` / `bubble` handler maps keyed by raw DOM
+  event name (`pointerdown/up/move/cancel`, `wheel`, `click`,
+  `dblclick`). Participants are kept OUTER→INNER in registration order:
+  capture fires front→back, bubble back→front, so the first-registered
+  (the camera) is the outermost bubble handler and runs LAST.
+- One walk per raw event, post pick-resolve (`runUnified`): DOM capture →
+  scene `runCaptureBubble` → DOM bubble, all sharing one stop-flag
+  (`WalkProp`, threaded into the MAIN scene event). A scene handler's
+  `stopPropagation()` — or an equivalent `return false`, now unified in
+  `runCaptureBubble` — halts the DOM bubble, so an inner marker suppresses
+  the outer camera. A scene scope holding pointer capture (an active
+  drag) owns the pointer outright: the DOM side stays suppressed for the
+  whole gesture.
+- DOM pointer capture (`handle.capturePointer` / `releasePointer`): while
+  a participant holds a pointer, MOVES route straight to it and skip the
+  scene pick (orbit fast path); the dispatcher holds the browser capture
+  underneath so off-canvas moves keep flowing. A no-move press still
+  delivers its `pointerup` through the full walk, so a click/tap on scene
+  geometry survives an orbit-claim.
+- `seenByWombat`-style takeover: when participants are present, the
+  dispatcher `preventDefault`s pointerdown/wheel synchronously (the
+  participant handler itself runs a microtask later, too late to stop
+  page scroll). With NO participant registered the path is byte-identical
+  to before — the whole feature is gated on registration.
+- Surfaced through `RenderControl` `onReady` as `info.input`
+  (`DomParticipantHost`).
+
+**Camera — `FreeFlyController.attach(target, time, { input })`
+(`src/scene/controllers/freefly.ts`).** Passing `input` (the onReady
+host) makes the camera a DOM-world **bubble** participant instead of
+installing native pointer/wheel listeners; it claims the pointer on press
+(via the dispatcher's DOM capture) so orbit moves skip the pick, and its
+handlers return void so a scene stop suppresses it. Keyboard, gamepad and
+per-frame integration stay native in both modes (they never conflict with
+picking).
+
+**Tests.** `tests/pick-dom-participant.test.ts` (walk order, scene-stops-
+camera via both `stopPropagation()` and `return false`, DOM-capture
+suppressing the scene, capture-skips-pick, click-preserved-through-orbit,
+wheel + sync preventDefault, no-participant parity) and
+`tests/controller-unified-input.test.ts` (camera orbits via the walk;
+a scene stop suppresses it). Full mock suite + typecheck + build green.
+
+**Remaining (app migration — task #21, TileRenderer-wombat repo, NOT
+wombat.dom).** Wire the app camera through `info.input`; move markers to
+`Sg.OnDragStart/OnDrag/OnDragEnd` (return false to stop the camera) +
+`Sg.OnTap`; delete the Drag module's CPU screen-space projection and its
+capture-phase DOM listener hack. End-to-end orbit-vs-scene-click and
+marker-drag-stops-camera want a real-browser check (the mock suite proves
+the routing, not the pixels). Gate: app e2e + deploy.

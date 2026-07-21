@@ -201,6 +201,10 @@ export {
   type SceneEventKind,
   type SceneEventInit,
   type SceneEventDispatch,
+  type DomEventName,
+  type DomParticipant,
+  type DomParticipantHandle,
+  type DomParticipantHost,
 } from "./picking/index.js";
 
 export type {

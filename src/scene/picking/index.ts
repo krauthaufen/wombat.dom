@@ -103,4 +103,8 @@ export {
   HOVER_DELAY_MS,
   type ResolvePixel,
   type TapThresholds,
+  type DomEventName,
+  type DomParticipant,
+  type DomParticipantHandle,
+  type DomParticipantHost,
 } from "./dispatcher.js";

@@ -22,13 +22,21 @@ both **shipped** — they're no longer open.
   exact path is a lock-free atomic linked list, not aardvark's interlocked
   k-buffer). Full design: `docs/transparency-oit.md`.
 
-### Unified DOM ↔ scene event propagation (designed, not built)
+### Unified DOM ↔ scene event propagation (mechanism + camera BUILT)
 - One capture-down-DOM → scene capture/bubble → bubble-out-DOM walk; any
   callback (DOM or 3D) can stopPropagation. Makes `<Sg>` a true DOM
-  extension; "stop the camera during a drag" becomes a consequence, not a
-  feature. Today DOM handlers (attr.ts) use native `addEventListener`
-  OUTSIDE the scene walk, so a scene handler can't stop the camera. Full
-  design + semantics-to-pin: `docs/unified-event-propagation.md`.
+  extension; "stop the camera during a drag" is a consequence, not a
+  feature. **Shipped in wombat.dom:** `PickDispatcher.registerDomParticipant`
+  + the unified `runUnified` walk (shared stop-flag; `return false` ==
+  `stopPropagation`), DOM pointer-capture orbit fast-path (moves skip the
+  pick, click preserved), synchronous `preventDefault` takeover, exposed
+  via `RenderControl` onReady `input`; `FreeFlyController.attach(…, {input})`
+  joins as a bubble participant. Tests: `pick-dom-participant`,
+  `controller-unified-input`. Full design + "what is built":
+  `docs/unified-event-propagation.md`.
+- **Remaining (app, TileRenderer repo):** wire the app camera through
+  `info.input`; markers → `Sg.OnDrag*`/`OnTap`; delete the Drag module's
+  CPU projection + capture-phase hack; app e2e + deploy.
 
 ### Picking / focus (deferred)
 - HTML/JS focus integration (tab-nav into scene scopes) + focus-ring outline

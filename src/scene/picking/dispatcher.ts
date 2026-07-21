@@ -92,6 +92,92 @@ export interface TapThresholds {
   readonly hoverDelayMs?: number;
 }
 
+// ---------------------------------------------------------------------------
+// Unified DOM ↔ scene event propagation (see docs/unified-event-propagation.md)
+//
+// A DOM-world handler (canonically the camera controller) is not a scene
+// node — it lives on the render-control element (an ancestor of, or the
+// same element as, the canvas). To make "stop the camera during a drag"
+// fall out of the one propagation model, such handlers register as
+// `DomParticipant`s with the dispatcher instead of installing their own
+// native listeners. The dispatcher then owns the single native listener
+// and runs ONE walk per raw event:
+//
+//     DOM capture (outer→inner)
+//         → scene capture/bubble  (pick-resolved; existing runCaptureBubble)
+//         → DOM bubble (inner→outer)
+//
+// A scene handler that stops propagation therefore halts the DOM bubble,
+// so an inner marker's OnDragStart naturally prevents the outer camera
+// bubble handler from ever running. The camera is just one participant;
+// the mechanism is general (overlay HTML UI can register the same way).
+// ---------------------------------------------------------------------------
+
+/** Raw DOM event names a `DomParticipant` can intercept through the walk. */
+export type DomEventName =
+  | "pointerdown"
+  | "pointerup"
+  | "pointermove"
+  | "pointercancel"
+  | "wheel"
+  | "click"
+  | "dblclick";
+
+/** SceneEventKind → the raw DOM event name it originated from. */
+const DOM_KIND: Partial<Record<SceneEventKind, DomEventName>> = {
+  OnPointerDown: "pointerdown",
+  OnPointerUp: "pointerup",
+  OnPointerMove: "pointermove",
+  OnClick: "click",
+  OnDoubleClick: "dblclick",
+};
+
+/** A handler for one raw DOM event in the unified walk. Returning `false`
+ *  (or calling the underlying event's stop, which the walk also honours
+ *  via the shared prop) halts the rest of the walk. */
+export type DomWalkHandler = (ev: Event) => boolean | void;
+
+/**
+ * A DOM-world participant in the unified walk. `capture` handlers fire
+ * outer→inner before the scene; `bubble` handlers fire inner→outer after
+ * the scene. The camera registers `bubble` handlers so any inner scene
+ * handler that stops propagation suppresses it.
+ */
+export interface DomParticipant {
+  readonly capture?: Partial<Record<DomEventName, DomWalkHandler>>;
+  readonly bubble?: Partial<Record<DomEventName, DomWalkHandler>>;
+}
+
+/** Handle returned from `registerDomParticipant`. */
+export interface DomParticipantHandle {
+  /** Remove this participant from the walk. */
+  release(): void;
+  /**
+   * Claim the active pointer so subsequent events route straight to this
+   * participant, skipping the scene pick — the camera-orbit fast path
+   * (no GPU readback per move). Released automatically on pointerup /
+   * pointercancel, or explicitly via `releasePointer`.
+   */
+  capturePointer(pointerId: number): void;
+  /** Drop a prior `capturePointer`. */
+  releasePointer(pointerId: number): void;
+}
+
+/**
+ * The surface a camera controller (or overlay) uses to join the unified
+ * walk. Implemented by `PickDispatcher`; surfaced through the
+ * RenderControl `onReady` info so app code never touches the dispatcher
+ * directly.
+ */
+export interface DomParticipantHost {
+  registerDomParticipant(p: DomParticipant): DomParticipantHandle;
+}
+
+/** Shared stop/prevent flag threaded across the DOM↔scene boundary so a
+ *  scene handler's `stopPropagation()` halts the DOM bubble (and vice
+ *  versa). Same shape SceneEvent shares across its transformed copies. */
+interface WalkProp { stopped: boolean; prevented: boolean; }
+
 /**
  * Resolve the single best pick pixel under `(x, y)` (device pixels) via
  * the GPU argmin kernel. The renderControl wires this to a
@@ -157,6 +243,15 @@ export class PickDispatcher implements SceneEventDispatch {
 
   private readonly capturedScopes: Map<number, LeafPickScope> = new Map();
   private lastMove: LastMoveInfo | undefined;
+
+  // Unified DOM↔scene walk. `domParticipants` is kept in registration
+  // order = OUTER→INNER (the camera, registered first, is the outermost
+  // handler): capture fires front→back, bubble fires back→front, so the
+  // camera bubble runs LAST. `domCaptured` is the DOM-side pointer
+  // capture (camera orbit) — while a pointer is here, its events route
+  // straight to the owning participant and skip the scene pick.
+  private readonly domParticipants: DomParticipant[] = [];
+  private readonly domCaptured: Map<number, DomParticipant> = new Map();
 
   // Tap / long-press synthesis. Per-pointer press state created on
   // pointerdown, finalised at pointerup (or cancelled on big move /
@@ -253,6 +348,65 @@ export class PickDispatcher implements SceneEventDispatch {
     this.tHoverDelay     = thresholds?.hoverDelayMs     ?? HOVER_DELAY_MS;
   }
 
+  // --- Unified DOM↔scene walk: participants -------------------------------
+
+  /**
+   * Register a DOM-world participant (canonically the camera controller)
+   * in the unified walk. Its `capture` handlers fire before the scene,
+   * its `bubble` handlers after — so a scene handler that stops
+   * propagation suppresses the bubble. See
+   * `docs/unified-event-propagation.md`.
+   */
+  registerDomParticipant(p: DomParticipant): DomParticipantHandle {
+    this.domParticipants.push(p);
+    return {
+      release: () => {
+        const i = this.domParticipants.indexOf(p);
+        if (i >= 0) this.domParticipants.splice(i, 1);
+        for (const [id, owner] of [...this.domCaptured]) {
+          if (owner === p) this.domCaptured.delete(id);
+        }
+      },
+      capturePointer: (pointerId: number) => {
+        this.domCaptured.set(pointerId, p);
+        // Keep receiving moves even when the cursor leaves the canvas —
+        // the dispatcher owns the browser capture on behalf of the
+        // participant (an orbit that drifts off-canvas must not stall).
+        try { this.canvas?.setPointerCapture(pointerId); } catch { /* happy-dom / inactive pointer */ }
+      },
+      releasePointer: (pointerId: number) => {
+        if (this.domCaptured.get(pointerId) === p) this.domCaptured.delete(pointerId);
+        try { this.canvas?.releasePointerCapture(pointerId); } catch { /* ignore */ }
+      },
+    };
+  }
+
+  /** Fire one phase of the DOM participants for a raw event. Capture is
+   *  outer→inner (front→back); bubble is inner→outer (back→front). A
+   *  handler returning `false` or setting `prop.stopped` halts. */
+  private runDomPhase(phase: "capture" | "bubble", name: DomEventName, ev: Event, prop: WalkProp): void {
+    const n = this.domParticipants.length;
+    if (n === 0) return;
+    for (let k = 0; k < n; k++) {
+      const p = this.domParticipants[phase === "capture" ? k : n - 1 - k]!;
+      const h = (phase === "capture" ? p.capture : p.bubble)?.[name];
+      if (h === undefined) continue;
+      let r: boolean | void;
+      try { r = h(ev); } catch (err) { console.error(`[PickDispatcher] DOM ${phase} ${name} threw:`, err); continue; }
+      if (r === false) prop.stopped = true;
+      if (prop.stopped) return;
+    }
+  }
+
+  /** Route a raw event straight to the participant holding this pointer's
+   *  DOM capture (camera orbit) — both phases, no scene pick. */
+  private runDomCaptured(p: DomParticipant, name: DomEventName, ev: Event): void {
+    const cap = p.capture?.[name];
+    if (cap !== undefined) { try { cap(ev); } catch (err) { console.error(`[PickDispatcher] DOM capture ${name} threw:`, err); } }
+    const bub = p.bubble?.[name];
+    if (bub !== undefined) { try { bub(ev); } catch (err) { console.error(`[PickDispatcher] DOM bubble ${name} threw:`, err); } }
+  }
+
   /**
    * Wire pointer listeners to the canvas. Returns a disposer.
    */
@@ -260,6 +414,37 @@ export class PickDispatcher implements SceneEventDispatch {
     this.canvasSize = () => new V2i(canvas.width, canvas.height);
     this.canvas = canvas;
     const handle = (ev: PointerEvent, kind: SceneEventKind): void => {
+      const pointerId = ev.pointerId ?? 0;
+      const domName = DOM_KIND[kind];
+
+      // Unified walk fast path: a pointer captured by a DOM participant
+      // (camera orbit) routes straight to it — no scene pick, no GPU
+      // readback per move.
+      if (this.domParticipants.length > 0 && domName !== undefined) {
+        const owner = this.domCaptured.get(pointerId);
+        if (owner !== undefined) {
+          if (kind === "OnPointerMove") {
+            // Orbit move: straight to the camera, skip the scene pick.
+            this.runDomCaptured(owner, domName, ev);
+            return;
+          }
+          // pointerup (or click/dblclick) while captured: drop the DOM
+          // capture and fall through to the FULL walk, so the scene still
+          // sees the up (a no-move press is a click/tap on scene geometry)
+          // and the camera's own bubble up runs exactly once — not twice.
+          if (this.domCaptured.get(pointerId) === owner) this.domCaptured.delete(pointerId);
+          try { canvas.releasePointerCapture(pointerId); } catch { /* ignore */ }
+        }
+        // `seenByWombat`-style takeover on a fresh press: hold the browser
+        // capture for the whole gesture (off-canvas moves keep flowing)
+        // and suppress the native default (text-select / gesture) up
+        // front — the scene/camera decision resolves a microtask later.
+        if (kind === "OnPointerDown") {
+          try { canvas.setPointerCapture(pointerId); } catch { /* ignore */ }
+          if (ev.cancelable) ev.preventDefault();
+        }
+      }
+
       const seq = ++this.seq;
       const rect = this.getCanvasRect();
       const cssX = ev.clientX - rect.left;
@@ -281,7 +466,7 @@ export class PickDispatcher implements SceneEventDispatch {
         // meanwhile; drop stale results (same seq policy as above).
         if (seq < this.lastSettledSeq) return;
         this.lastSettledSeq = seq;
-        this.dispatch(ev, kind, cssX, cssY, hit, rect, sx, sy);
+        this.runUnified(ev, kind, domName, cssX, cssY, hit, rect, sx, sy, pointerId);
       });
     };
 
@@ -297,6 +482,16 @@ export class PickDispatcher implements SceneEventDispatch {
     // OnPointerEnter fires ONLY from the differential mechanism
     // (updateHover) on the first pointer event inside the canvas.
     const onCancel = (e: PointerEvent): void => {
+      // Unified walk: a DOM participant holding this pointer (camera
+      // orbit) gets the cancel to reset its gesture, then releases.
+      if (this.domParticipants.length > 0) {
+        const owner = this.domCaptured.get(e.pointerId);
+        if (owner !== undefined) {
+          this.runDomCaptured(owner, "pointercancel", e);
+          this.domCaptured.delete(e.pointerId);
+          try { canvas.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+        }
+      }
       // Phase 6 — fire OnDragEnd if a drag was active. We don't have
       // fresh cursor coords, so reuse the press's original down pos.
       const press = this.presses.get(e.pointerId);
@@ -333,6 +528,11 @@ export class PickDispatcher implements SceneEventDispatch {
     // as pointer events), then dispatch via capture/bubble through
     // the hit's path. Non-passive so handlers can preventDefault().
     const onWheel = (ev: WheelEvent): void => {
+      // The region owns its wheel: when a DOM participant (camera zoom)
+      // is present, suppress page scroll synchronously — the participant
+      // handler itself runs a microtask later (post pick-resolve), too
+      // late to preventDefault.
+      if (this.domParticipants.length > 0 && ev.cancelable) ev.preventDefault();
       const seq = ++this.seq;
       const rect = this.getCanvasRect();
       const cssX = ev.clientX - rect.left;
@@ -346,7 +546,12 @@ export class PickDispatcher implements SceneEventDispatch {
         const hit = await this.resolve(result, devX, devY);
         if (seq < this.lastSettledSeq) return;
         this.lastSettledSeq = seq;
-        this.dispatchWheel(ev, cssX, cssY, hit, rect, sx, sy);
+        // Unified walk: DOM capture → scene wheel → DOM bubble (camera).
+        const havePart = this.domParticipants.length > 0;
+        const prop: WalkProp = { stopped: false, prevented: false };
+        if (havePart) this.runDomPhase("capture", "wheel", ev, prop);
+        if (!prop.stopped) this.dispatchWheel(ev, cssX, cssY, hit, rect, sx, sy, prop);
+        if (havePart && !prop.stopped) this.runDomPhase("bubble", "wheel", ev, prop);
       });
     };
     canvas.addEventListener("wheel", onWheel as unknown as EventListener, opts);
@@ -468,6 +673,41 @@ export class PickDispatcher implements SceneEventDispatch {
     };
   }
 
+  /**
+   * The unified walk for one raw pointer event, post pick-resolve:
+   * DOM capture (outer→inner) → scene capture/bubble → DOM bubble
+   * (inner→outer). A scene handler's `stopPropagation()` sets the shared
+   * `prop` and halts the DOM bubble, so an inner marker suppresses the
+   * outer camera. A scene scope holding pointer capture (an active drag)
+   * owns the pointer outright — the DOM bubble stays suppressed for the
+   * whole gesture.
+   */
+  private runUnified(
+    ev: PointerEvent,
+    kind: SceneEventKind,
+    domName: DomEventName | undefined,
+    cssX: number,
+    cssY: number,
+    hit: ResolvedHit | undefined,
+    rect: DOMRect,
+    sx: number,
+    sy: number,
+    pointerId: number,
+  ): void {
+    const havePart = this.domParticipants.length > 0 && domName !== undefined;
+    const prop: WalkProp = { stopped: false, prevented: false };
+    // A scene scope already holding capture (marker mid-drag) owns the
+    // pointer; keep the DOM (camera) side out for the whole gesture.
+    const sceneOwns = this.capturedScopes.has(pointerId);
+    if (havePart && !sceneOwns) this.runDomPhase("capture", domName!, ev, prop);
+    if (!prop.stopped) this.dispatch(ev, kind, cssX, cssY, hit, rect, sx, sy, prop);
+    // Re-read: a scene handler may have just claimed the pointer (drag
+    // start). If nothing stopped and nothing owns it, the camera runs.
+    if (havePart && !prop.stopped && !this.capturedScopes.has(pointerId)) {
+      this.runDomPhase("bubble", domName!, ev, prop);
+    }
+  }
+
   private dispatchWheel(
     ev: WheelEvent,
     cssX: number,
@@ -476,6 +716,7 @@ export class PickDispatcher implements SceneEventDispatch {
     _rect: DOMRect,
     _sx: number,
     _sy: number,
+    prop?: WalkProp,
   ): void {
     if (hit === undefined) return;
     const { scope, viewPos, viewNormal, partIndex, isPixel } = hit;
@@ -500,7 +741,7 @@ export class PickDispatcher implements SceneEventDispatch {
       ctrl: ev.ctrlKey, shift: ev.shiftKey, alt: ev.altKey, meta: ev.metaKey,
       scope,
       dispatch: this,
-    });
+    }, prop);
     this.runCaptureBubble(scope.handlers, sceneEv);
   }
 
@@ -604,6 +845,11 @@ export class PickDispatcher implements SceneEventDispatch {
     rect: DOMRect,
     sx: number,
     sy: number,
+    /** Shared stop-flag from the unified walk. Threaded into the MAIN
+     *  scene event (captured-route + hit-route) so a scene handler's
+     *  `stopPropagation()` also halts the outer DOM bubble (camera).
+     *  Undefined for synthetic-move replays (self-contained). */
+    prop?: WalkProp,
   ): void {
     const pointerId = ev.pointerId ?? 0;
 
@@ -679,7 +925,7 @@ export class PickDispatcher implements SceneEventDispatch {
       const viewPos: V3d | undefined = hit?.viewPos;
       const viewNormal: V3d | undefined = hit?.viewNormal;
       const modeB = this.registry.modeOf(captured.pickId) === "B";
-      const sceneEv = this.makeEvent(kind, ev, cssX, cssY, captured, captured.pickId, modeB, viewPos, viewNormal);
+      const sceneEv = this.makeEvent(kind, ev, cssX, cssY, captured, captured.pickId, modeB, viewPos, viewNormal, 0, undefined, prop);
       this.runCaptureBubble(captured.handlers, sceneEv);
       if (kind === "OnPointerMove") {
         this.applyCursor(captured);
@@ -782,7 +1028,7 @@ export class PickDispatcher implements SceneEventDispatch {
     const modeB = hit !== undefined && hit.isPixel
       ? this.regOf(hit).modeOf(hitScope.pickId) === "B"
       : false;
-    const sceneEv = this.makeEvent(kind, ev, cssX, cssY, hitScope, hitScope.pickId, modeB, viewPos, viewNormal, partIndex);
+    const sceneEv = this.makeEvent(kind, ev, cssX, cssY, hitScope, hitScope.pickId, modeB, viewPos, viewNormal, partIndex, undefined, prop);
     this.runCaptureBubble(hitScope.handlers, sceneEv);
 
     if (kind === "OnPointerMove") {
@@ -990,7 +1236,11 @@ export class PickDispatcher implements SceneEventDispatch {
         const localEv = ev.transformedAt(local, path[i]);
         let r: boolean | void;
         try { r = h(localEv); } catch (err) { console.error(`[PickDispatcher] capture ${ev.kind} threw:`, err); continue; }
-        if (r === false || ev.propagationStopped) return;
+        // `return false` is Aardvark's stop — make it identical to
+        // stopPropagation() so it also sets the shared walk flag and
+        // halts the outer DOM bubble (camera), not just the scene walk.
+        if (r === false) ev.stopPropagation();
+        if (ev.propagationStopped) return;
       }
     }
     // Bubble phase: inner → outer
@@ -1001,7 +1251,8 @@ export class PickDispatcher implements SceneEventDispatch {
         const localEv = ev.transformedAt(local, path[i]);
         let r: boolean | void;
         try { r = h(localEv); } catch (err) { console.error(`[PickDispatcher] bubble ${ev.kind} threw:`, err); continue; }
-        if (r === false || ev.propagationStopped) return;
+        if (r === false) ev.stopPropagation();
+        if (ev.propagationStopped) return;
       }
     }
   }
@@ -1114,6 +1365,8 @@ export class PickDispatcher implements SceneEventDispatch {
     viewNormal?: V3d,
     partIndex: number = 0,
     extras?: { deltaTime?: number; movementX?: number; movementY?: number },
+    /** Shared stop/prevent flag from the unified walk (see `dispatch`). */
+    sharedProp?: WalkProp,
   ): SceneEvent {
     const vp = viewPos ?? V3d.zero;
     const vn = viewNormal ?? V3d.zero;
@@ -1138,7 +1391,7 @@ export class PickDispatcher implements SceneEventDispatch {
       pickTag: scope.tag,
       scope,
       dispatch: this,
-    });
+    }, sharedProp);
   }
 
   // --- Multi-touch gesture synthesis ---------------------------------------
