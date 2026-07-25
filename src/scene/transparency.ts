@@ -364,7 +364,14 @@ export function transparencyTask(
 
     let compBlends = HashMap.empty<string, PlainBlendState>().add("Colors", {
       color: { operation: "add", srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" },
-      alpha: { operation: "add", srcFactor: "zero", dstFactor: "one" }, writeMask: 0xf,
+      // Alpha must ADD the transparent coverage over the opaque alpha, not keep
+      // it (`zero/one` left dst.a untouched → a line over a transparent clear got
+      // premultiplied colour with alpha 0 and vanished under the premultiplied
+      // canvas / CSS background). `one / one-minus-src-alpha` gives
+      // a = (1-reveal) + dst.a*reveal = 1 - reveal*(1-a_opaque): full opacity over
+      // opaque geometry, line coverage over empty background. Matches the A-buffer
+      // resolve's `1 - (1-opaque.w)*T`.
+      alpha: { operation: "add", srcFactor: "one", dstFactor: "one-minus-src-alpha" }, writeMask: 0xf,
     });
     if (hasPick) compBlends = compBlends.add("pickId", { writeMask: 0 }); // write-mask-only: leave opaque pick intact
     const compRO: RenderObject = {
