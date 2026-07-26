@@ -139,5 +139,5 @@ export function resolveTextureAval(src: aval<ITexture>): aval<ITexture> {
 export function isITexture(v: unknown): v is ITexture {
   if (v === null || typeof v !== "object") return false;
   const k = (v as { kind?: unknown }).kind;
-  return k === "gpu" || k === "host" || k === "url";
+  return k === "gpu" || k === "host" || k === "url" || k === "cube";
 }
