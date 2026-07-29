@@ -86,6 +86,14 @@ export {
 } from "./gtao.js";
 
 export {
+  createPlaneFitPass,
+  planeFitConfig,
+  type PlaneFitOption,
+  type PlaneFitPass,
+  type PlaneFitSettings,
+} from "./planeFit.js";
+
+export {
   RenderControl,
   type RenderControlProps,
   type RenderControlReadyInfo,

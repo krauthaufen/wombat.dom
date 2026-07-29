@@ -1,0 +1,308 @@
+// Screen-space plane-fit shading driven by the pick attachment (same
+// G-buffer contract as gtao.ts: pickId slot .z carries NDC depth).
+//
+// Port of Aardvark.Rendering.PointSet's `blitPlaneFit` idea: for every
+// pixel, reconstruct view-space positions of a jittered pixel
+// neighbourhood, fit a plane (covariance + smallest eigenvector), and
+// light the pixel from the FITTED normal — the smoothing this produces
+// is what makes 1px/splat point clouds read as surfaces. Output is a
+// shade factor multiplied into the canvas colour (same pure-post-effect
+// contract as the AO pass; the two compose by multiplication).
+//
+// Reversed-Z safe for the same reason gtao is: reconstruction goes
+// through projInv, background depth rejected by the z guard.
+
+import { AVal, type aval } from "@aardworx/wombat.adaptive";
+import type { Trafo3d } from "@aardworx/wombat.base";
+import type { IFramebuffer } from "@aardworx/wombat.rendering/core";
+
+const FIT_WGSL = /* wgsl */ `
+struct U {
+  projInv: mat4x4f,
+  radiusPx: f32,
+  tolerance: f32,   // view-space gate, relative to |z|
+  ambient: f32,     // shade floor
+  strength: f32,    // 0..1 blend between flat and fitted shading
+  size: vec2u,
+}
+@group(0) @binding(0) var pick: texture_2d<f32>;
+@group(0) @binding(1) var outShade: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(2) var<uniform> u: U;
+
+fn viewPosAt(px: vec2i) -> vec4f {
+  let s = textureLoad(pick, px, 0);
+  let z = s.z;
+  if (z <= 0.0 || z >= 1.0) { return vec4f(0.0); }
+  let uv = (vec2f(px) + 0.5) / vec2f(u.size);
+  let ndc = vec4f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, z, 1.0);
+  let v = u.projInv * ndc;
+  return vec4f(v.xyz / v.w, 1.0);
+}
+
+// 24-sample Vogel disk (unit radius).
+const N = 24u;
+fn diskOffset(i: u32) -> vec2f {
+  let r = sqrt((f32(i) + 0.5) / f32(N));
+  let a = f32(i) * 2.3999632; // golden angle
+  return vec2f(cos(a), sin(a)) * r;
+}
+
+// Smallest eigenvector of a symmetric 3x3 matrix (Smith's trig method
+// for the eigenvalue, then row-cross for the vector).
+fn smallestEigenvector(a: mat3x3f) -> vec3f {
+  let p1 = a[0][1] * a[0][1] + a[0][2] * a[0][2] + a[1][2] * a[1][2];
+  if (p1 < 1e-12) {
+    // diagonal: pick the axis of the smallest diagonal entry
+    var mn = a[0][0]; var idx = 0;
+    if (a[1][1] < mn) { mn = a[1][1]; idx = 1; }
+    if (a[2][2] < mn) { idx = 2; }
+    if (idx == 0) { return vec3f(1.0, 0.0, 0.0); }
+    if (idx == 1) { return vec3f(0.0, 1.0, 0.0); }
+    return vec3f(0.0, 0.0, 1.0);
+  }
+  let q = (a[0][0] + a[1][1] + a[2][2]) / 3.0;
+  let d0 = a[0][0] - q; let d1 = a[1][1] - q; let d2 = a[2][2] - q;
+  let p2 = d0 * d0 + d1 * d1 + d2 * d2 + 2.0 * p1;
+  let p = sqrt(p2 / 6.0);
+  let bm = (1.0 / p) * mat3x3f(
+    vec3f(d0, a[0][1], a[0][2]),
+    vec3f(a[0][1], d1, a[1][2]),
+    vec3f(a[0][2], a[1][2], d2));
+  let detB = bm[0][0] * (bm[1][1] * bm[2][2] - bm[1][2] * bm[2][1])
+           - bm[0][1] * (bm[1][0] * bm[2][2] - bm[1][2] * bm[2][0])
+           + bm[0][2] * (bm[1][0] * bm[2][1] - bm[1][1] * bm[2][0]);
+  let r = clamp(detB / 2.0, -1.0, 1.0);
+  let phi = acos(r) / 3.0;
+  let eig1 = q + 2.0 * p * cos(phi);                       // largest
+  let eig3 = q + 2.0 * p * cos(phi + 2.0943951);           // smallest
+  let eig2 = 3.0 * q - eig1 - eig3;
+  // eigenvector for eig3: cross of two independent rows of (A - eig3*I)
+  let m0 = vec3f(a[0][0] - eig3, a[0][1], a[0][2]);
+  let m1 = vec3f(a[0][1], a[1][1] - eig3, a[1][2]);
+  let m2 = vec3f(a[0][2], a[1][2], a[2][2] - eig3);
+  var v = cross(m0, m1);
+  var l = dot(v, v);
+  let v2 = cross(m0, m2);
+  let l2 = dot(v2, v2);
+  if (l2 > l) { v = v2; l = l2; }
+  let v3 = cross(m1, m2);
+  let l3 = dot(v3, v3);
+  if (l3 > l) { v = v3; l = l3; }
+  if (l < 1e-16) { return vec3f(0.0, 0.0, 1.0); }
+  return normalize(v);
+}
+
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  if (gid.x >= u.size.x || gid.y >= u.size.y) { return; }
+  let px = vec2i(gid.xy);
+  let p = viewPosAt(px);
+  if (p.w == 0.0) { textureStore(outShade, px, vec4f(1.0)); return; }
+
+  let tol = max(0.05, u.tolerance * abs(p.z));
+
+  // gather neighbourhood
+  var sum = p.xyz;
+  var cnt = 1.0;
+  var pts: array<vec3f, 24>;
+  var np = 0u;
+  for (var i = 0u; i < N; i++) {
+    let off = diskOffset(i) * u.radiusPx;
+    let q = vec2i(vec2f(px) + off);
+    if (q.x < 0 || q.y < 0 || q.x >= i32(u.size.x) || q.y >= i32(u.size.y)) { continue; }
+    let vq = viewPosAt(q);
+    if (vq.w == 0.0) { continue; }
+    if (abs(vq.z - p.z) > tol) { continue; }
+    pts[np] = vq.xyz;
+    np++;
+    sum += vq.xyz;
+    cnt += 1.0;
+  }
+
+  var shade = 1.0;
+  if (np >= 5u) {
+    let c = sum / cnt;
+    var cov = mat3x3f(vec3f(0.0), vec3f(0.0), vec3f(0.0));
+    let d0 = p.xyz - c;
+    cov[0] += d0 * d0.x; cov[1] += d0 * d0.y; cov[2] += d0 * d0.z;
+    for (var i = 0u; i < np; i++) {
+      let d = pts[i] - c;
+      cov[0] += d * d.x; cov[1] += d * d.y; cov[2] += d * d.z;
+    }
+    let n = smallestEigenvector(cov);
+    let toCam = normalize(-p.xyz);
+    let ndl = abs(dot(n, toCam));
+    shade = u.ambient + (1.0 - u.ambient) * ndl;
+  }
+  shade = mix(1.0, shade, u.strength);
+  textureStore(outShade, px, vec4f(shade, shade, shade, 1.0));
+}
+`;
+
+const APPLY_WGSL = /* wgsl */ `
+@group(0) @binding(0) var shade: texture_2d<f32>;
+@group(0) @binding(1) var samp: sampler;
+
+struct VOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f }
+
+@vertex
+fn vs(@builtin(vertex_index) vi: u32) -> VOut {
+  var xy = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
+  let p = xy[vi];
+  var o: VOut;
+  o.pos = vec4f(p, 0.0, 1.0);
+  o.uv = vec2f(p.x * 0.5 + 0.5, 1.0 - (p.y * 0.5 + 0.5));
+  return o;
+}
+
+@fragment
+fn fs(i: VOut) -> @location(0) vec4f {
+  let s = textureSample(shade, samp, i.uv).x;
+  return vec4f(s, s, s, 1.0);
+}
+`;
+
+export interface PlaneFitSettings {
+  /** Neighbourhood radius in device pixels. Default 7. */
+  readonly radius?: number;
+  /** View-space depth gate relative to |z|. Default 0.01 (min 5 cm). */
+  readonly tolerance?: number;
+  /** Shade floor (ambient). Default 0.35. */
+  readonly ambient?: number;
+  /** Blend between unshaded and fitted shading, 0..1. Default 1. */
+  readonly strength?: number;
+}
+
+export type PlaneFitOption =
+  | boolean
+  | aval<boolean>
+  | (PlaneFitSettings & { readonly enabled?: boolean | aval<boolean> });
+
+export interface PlaneFitPass {
+  /** Call AFTER the scene rendered into `fb` (and typically before AO). */
+  run(fb: IFramebuffer, pickTexture: GPUTexture, proj: Trafo3d, colorName: string): void;
+  dispose(): void;
+}
+
+export function createPlaneFitPass(
+  device: GPUDevice,
+  colorFormat: GPUTextureFormat,
+  settings: PlaneFitSettings = {},
+): PlaneFitPass {
+  const pipeFit = device.createComputePipeline({
+    layout: "auto",
+    compute: { module: device.createShaderModule({ code: FIT_WGSL, label: "planeFit.fit" }), entryPoint: "main" },
+  });
+  const applyModule = device.createShaderModule({ code: APPLY_WGSL, label: "planeFit.apply" });
+  const pipeApply = device.createRenderPipeline({
+    layout: "auto",
+    vertex: { module: applyModule, entryPoint: "vs" },
+    fragment: {
+      module: applyModule,
+      entryPoint: "fs",
+      targets: [{
+        format: colorFormat,
+        // colour := colour × shade (same darkening contract as gtao.apply)
+        blend: {
+          color: { srcFactor: "zero", dstFactor: "src", operation: "add" },
+          alpha: { srcFactor: "zero", dstFactor: "one", operation: "add" },
+        },
+      }],
+    },
+    primitive: { topology: "triangle-list" },
+    label: "planeFit.apply",
+  });
+  const sampler = device.createSampler({ magFilter: "linear", minFilter: "linear", label: "planeFit.samp" });
+  const ubo = device.createBuffer({
+    size: 96, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "planeFit.u",
+  });
+
+  let tex: GPUTexture | undefined;
+  const ensureTexture = (w: number, h: number): void => {
+    if (tex !== undefined && tex.width === w && tex.height === h) return;
+    tex?.destroy();
+    tex = device.createTexture({
+      size: { width: w, height: h },
+      format: "rgba8unorm",
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+      label: "planeFit.shade",
+    });
+  };
+
+  return {
+    run(fb, pick, proj, colorName) {
+      const colorView = fb.colors.tryFind(colorName);
+      if (colorView === undefined) return;
+      const w = pick.width;
+      const h = pick.height;
+      ensureTexture(w, h);
+
+      const m = proj.backward;
+      const buf = new ArrayBuffer(96);
+      const f = new Float32Array(buf, 0, 20);
+      f.set([
+        m.M00, m.M10, m.M20, m.M30,
+        m.M01, m.M11, m.M21, m.M31,
+        m.M02, m.M12, m.M22, m.M32,
+        m.M03, m.M13, m.M23, m.M33,
+      ], 0);
+      f[16] = settings.radius ?? 7;
+      f[17] = settings.tolerance ?? 0.01;
+      f[18] = settings.ambient ?? 0.35;
+      f[19] = settings.strength ?? 1;
+      new Uint32Array(buf, 80, 2).set([w, h]);
+      device.queue.writeBuffer(ubo, 0, buf);
+
+      const enc = device.createCommandEncoder({ label: "planeFit.frame" });
+      {
+        const bg = device.createBindGroup({
+          layout: pipeFit.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: pick.createView() },
+            { binding: 1, resource: tex!.createView() },
+            { binding: 2, resource: { buffer: ubo } },
+          ],
+        });
+        const pass = enc.beginComputePass({ label: "planeFit.fit" });
+        pass.setPipeline(pipeFit);
+        pass.setBindGroup(0, bg);
+        pass.dispatchWorkgroups(Math.ceil(w / 8), Math.ceil(h / 8));
+        pass.end();
+      }
+      {
+        const bg = device.createBindGroup({
+          layout: pipeApply.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: tex!.createView() },
+            { binding: 1, resource: sampler },
+          ],
+        });
+        const pass = enc.beginRenderPass({
+          label: "planeFit.apply",
+          colorAttachments: [{ view: colorView, loadOp: "load", storeOp: "store" }],
+        });
+        pass.setPipeline(pipeApply);
+        pass.setBindGroup(0, bg);
+        pass.draw(3);
+        pass.end();
+      }
+      device.queue.submit([enc.finish()]);
+    },
+    dispose() {
+      tex?.destroy();
+      tex = undefined;
+      ubo.destroy();
+    },
+  };
+}
+
+/** Normalize the `planeFitShading` prop (same shape as `gtaoConfig`). */
+export function planeFitConfig(opt: PlaneFitOption): { enabled: aval<boolean>; settings: PlaneFitSettings } {
+  const asAval = (v: boolean | aval<boolean>): aval<boolean> =>
+    typeof v === "boolean" ? AVal.constant(v) : v;
+  if (typeof opt === "boolean" || typeof (opt as aval<boolean>).getValue === "function") {
+    return { enabled: asAval(opt as boolean | aval<boolean>), settings: {} };
+  }
+  const o = opt as PlaneFitSettings & { enabled?: boolean | aval<boolean> };
+  return { enabled: asAval(o.enabled ?? true), settings: o };
+}

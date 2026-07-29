@@ -39,6 +39,7 @@ import { useScope } from "../scope.js";
 import { Sg, collectSgChildren } from "./constructors.js";
 import type { OitMode } from "./transparency.js";
 import { createGtaoPass, gtaoConfig, type GtaoOption, type GtaoPass } from "./gtao.js";
+import { createPlaneFitPass, planeFitConfig, type PlaneFitOption, type PlaneFitPass } from "./planeFit.js";
 import type { SgNode } from "./sg.js";
 import { TraversalState } from "./traversalState.js";
 import { PickDispatcher, type TapThresholds, type DomParticipantHost } from "./picking/dispatcher.js";
@@ -91,6 +92,10 @@ export interface RenderControlProps {
    * Ignored under MSAA (`sampleCount > 1`).
    */
   readonly ambientOcclusion?: GtaoOption;
+  /** Screen-space plane-fit shading (point-cloud surface smoothing) —
+   *  lights every pixel from a plane fitted to its depth neighbourhood.
+   *  Same G-buffer + multiply-into-colour contract as ambientOcclusion. */
+  readonly planeFitShading?: PlaneFitOption;
 
   /**
    * View trafo (world → view). When unset, the scene's outermost
@@ -494,6 +499,27 @@ async function initialise(
     }
   }
 
+  // Plane-fit shading (opt-in) — same lifecycle as AO.
+  let planeFit: { readonly enabled: aval<boolean>; readonly pass: () => PlaneFitPass } | undefined;
+  if (props.planeFitShading !== undefined && props.planeFitShading !== false) {
+    const cfg = planeFitConfig(props.planeFitShading);
+    if (attachment.signature.sampleCount > 1) {
+      console.warn("[RenderControl] planeFitShading is ignored under MSAA (sampleCount > 1)");
+    } else {
+      let pass: PlaneFitPass | undefined;
+      planeFit = {
+        enabled: cfg.enabled,
+        pass: () => {
+          if (pass === undefined) {
+            pass = createPlaneFitPass(device, attachment.signature.colors.get("Colors"), cfg.settings);
+          }
+          return pass;
+        },
+      };
+      scope.onDispose(() => pass?.dispose());
+    }
+  }
+
   const dispatcher = new PickDispatcher(
     registry,
     () => AVal.force(view),
@@ -548,6 +574,16 @@ async function initialise(
     // AO post-pass. Reads the pick attachment the frame just wrote (normal +
     // depth) and multiplies the occlusion into the canvas colour. `enabled` is
     // pulled through the token, so flipping the toggle marks the frame loop.
+    // Plane-fit shading first (lighting), then AO (occlusion) — both are
+    // multiplies into the colour, order chosen to match the donor pipeline.
+    if (planeFit !== undefined && planeFit.enabled.getValue(token)) {
+      planeFit.pass().run(
+        producer.framebuffer.getValue(token),
+        producer.readbackPickTexture.getValue(token),
+        producer.proj.getValue(token),
+        "Colors",
+      );
+    }
     if (ao !== undefined && ao.enabled.getValue(token)) {
       ao.pass().run(
         producer.framebuffer.getValue(token),
