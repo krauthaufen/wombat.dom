@@ -23,6 +23,10 @@ struct U {
   tolerance: f32,   // view-space gate, relative to |z|
   ambient: f32,     // shade floor
   strength: f32,    // 0..1 blend between flat and fitted shading
+  aoRadius: f32,    // world-space AO radius (0 = AO off)
+  aoIntensity: f32,
+  projM11: f32,
+  _pad: f32,
   size: vec2u,
 }
 @group(0) @binding(0) var pick: texture_2d<f32>;
@@ -120,6 +124,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   var shade = 1.0;
+  var nrm = vec3f(0.0);
+  var haveN = false;
   if (np >= 5u) {
     let c = sum / cnt;
     var cov = mat3x3f(vec3f(0.0), vec3f(0.0), vec3f(0.0));
@@ -129,12 +135,43 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let d = pts[i] - c;
       cov[0] += d * d.x; cov[1] += d * d.y; cov[2] += d * d.z;
     }
-    let n = smallestEigenvector(cov);
+    var n = smallestEigenvector(cov);
     let toCam = normalize(-p.xyz);
+    if (dot(n, toCam) < 0.0) { n = -n; }   // orient toward the camera
+    nrm = n;
+    haveN = true;
     let ndl = abs(dot(n, toCam));
     shade = u.ambient + (1.0 - u.ambient) * ndl;
   }
   shade = mix(1.0, shade, u.strength);
+
+  // AO against the FITTED normal (the pick attachment's normal slot is
+  // effect-dependent and may be absent — the fit is the ground truth here).
+  if (u.aoRadius > 0.0 && haveN) {
+    let pixR = u.aoRadius * u.projM11 * f32(u.size.y) / (2.0 * max(0.1, abs(p.z)));
+    let stepPx = max(1.0, pixR / 4.0);
+    var occl = 0.0;
+    let rot = fract(sin(f32(gid.x) * 12.9898 + f32(gid.y) * 78.233) * 43758.5453) * 6.2831853;
+    for (var d = 0u; d < 8u; d++) {
+      let a = rot + f32(d) * (6.2831853 / 8.0);
+      let dir = vec2f(cos(a), sin(a));
+      var best = 0.0;
+      for (var st = 1u; st <= 4u; st++) {
+        let q = vec2i(vec2f(px) + dir * stepPx * f32(st));
+        if (q.x < 0 || q.y < 0 || q.x >= i32(u.size.x) || q.y >= i32(u.size.y)) { break; }
+        let vq = viewPosAt(q);
+        if (vq.w == 0.0) { continue; }
+        let dl = vq.xyz - p.xyz;
+        let dist = length(dl);
+        if (dist < 1e-4 || dist > u.aoRadius) { continue; }
+        let h = dot(nrm, dl / dist) - 0.08;
+        if (h > best) { best = h; }
+      }
+      occl += max(0.0, best);
+    }
+    let ao = clamp(1.0 - occl / 8.0 * u.aoIntensity, 0.0, 1.0);
+    shade = shade * ao;
+  }
   textureStore(outShade, px, vec4f(shade, shade, shade, 1.0));
 }
 `;
@@ -171,6 +208,11 @@ export interface PlaneFitSettings {
   readonly ambient?: number;
   /** Blend between unshaded and fitted shading, 0..1. Default 1. */
   readonly strength?: number;
+  /** World-space AO radius computed against the FITTED normal.
+   *  0 disables. Default 0.6. */
+  readonly aoRadius?: number;
+  /** AO strength. Default 2. */
+  readonly aoIntensity?: number;
 }
 
 export type PlaneFitOption =
@@ -214,7 +256,7 @@ export function createPlaneFitPass(
   });
   const sampler = device.createSampler({ magFilter: "linear", minFilter: "linear", label: "planeFit.samp" });
   const ubo = device.createBuffer({
-    size: 96, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "planeFit.u",
+    size: 112, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "planeFit.u",
   });
 
   let tex: GPUTexture | undefined;
@@ -238,8 +280,8 @@ export function createPlaneFitPass(
       ensureTexture(w, h);
 
       const m = proj.backward;
-      const buf = new ArrayBuffer(96);
-      const f = new Float32Array(buf, 0, 20);
+      const buf = new ArrayBuffer(112);
+      const f = new Float32Array(buf, 0, 24);
       f.set([
         m.M00, m.M10, m.M20, m.M30,
         m.M01, m.M11, m.M21, m.M31,
@@ -250,7 +292,11 @@ export function createPlaneFitPass(
       f[17] = settings.tolerance ?? 0.01;
       f[18] = settings.ambient ?? 0.35;
       f[19] = settings.strength ?? 1;
-      new Uint32Array(buf, 80, 2).set([w, h]);
+      f[20] = settings.aoRadius ?? 0.6;
+      f[21] = settings.aoIntensity ?? 2;
+      f[22] = proj.forward.M11;
+      f[23] = 0;
+      new Uint32Array(buf, 96, 2).set([w, h]);
       device.queue.writeBuffer(ubo, 0, buf);
 
       const enc = device.createCommandEncoder({ label: "planeFit.frame" });
