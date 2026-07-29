@@ -76,6 +76,27 @@ describe("row-store admission", () => {
     expect(classic.length).toBe(0);
   });
 
+  it("rows carry their OWN vertex attributes (LOD leaves: same template, distinct buffers)", () => {
+    // Three leaves intern into ONE template (same call-site shape) but
+    // each holds its own Positions buffer. materializeRow must not
+    // inherit the template row's geometry — every row carries its own.
+    const leaves = [leaf(), leaf(), leaf()];
+    const scene = Sg.shader(eff(), Sg.unordered(leaves.map((l, i) => Sg.uniform({ LineColor: AVal.init(i) }, l))));
+    const cmds = compileScene(scene, {});
+    const list = AVal.force(cmds.content);
+    const render = list.toArray().find((c: { kind: string }) => c.kind === "Render") as { tree: RenderTree };
+    const { rows } = parts(render.tree);
+    expect(rows.length).toBe(3);
+    const posViews = rows.map((r) => {
+      const va = (r as { vertexAttributes?: { tryGet(n: string): BufferView | undefined } }).vertexAttributes;
+      expect(va, "row.vertexAttributes").toBeDefined();
+      return va!.tryGet("Positions");
+    });
+    for (const v of posViews) expect(v).toBeDefined();
+    // all three buffers distinct — no row shares the template's geometry
+    expect(new Set(posViews.map((v) => v!.buffer)).size).toBe(3);
+  });
+
   it("a second shape lowers classically and is reported", () => {
     const a = (i: number) => Sg.uniform({ LineColor: AVal.init(i) }, leaf());
     const b = (i: number) => Sg.uniform({ OtherName: AVal.init(i) }, leaf()); // different template

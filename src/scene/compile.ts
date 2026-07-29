@@ -790,12 +790,18 @@ function constructFastRow(
   }
 
   recordRowLowered();
+  // Per-row geometry from the template's vertex-attr/index holes — the
+  // template only DEFAULTS these; LOD-style rows carry distinct buffers.
+  const vbag: Record<string, BufferView> = {};
+  for (const { name, hole } of fr.vertexAttrHoles) vbag[name] = holes[hole] as BufferView;
   const row: RenderRow = {
     uniforms: rp,
     drawCall,
     ...(instanceAttributes !== undefined ? { instanceAttributes } : {}),
     ...(pickId !== undefined ? { pickId } : {}),
     ...(chain.length > 0 ? { modelChain: chain } : {}),
+    vertexAttributes: AttributeProvider.ofObject(vbag),
+    ...(fr.indexHole !== undefined ? { indices: holes[fr.indexHole] as BufferView } : {}),
   };
   return { row, dispose };
 }
@@ -915,6 +921,12 @@ function lowerGroupEntry(
       ...(obj.pickId !== undefined ? { pickId: obj.pickId } : {}),
       ...(obj.modelChain !== undefined ? { modelChain: obj.modelChain } : {}),
       ...(obj.active !== undefined ? { active: obj.active } : {}),
+      // Per-row geometry: rows that intern into one template (same call
+      // site/shape) can still hold DISTINCT buffers (LOD leaves). The
+      // template's vertex attrs are only a default — carry the row's own
+      // so materializeRow doesn't render every row with row #1's data.
+      vertexAttributes: obj.vertexAttributes,
+      ...(obj.indices !== undefined ? { indices: obj.indices } : {}),
     };
     return { row, dispose: wc.dispose };
   } catch {
