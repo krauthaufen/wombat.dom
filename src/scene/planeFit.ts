@@ -27,7 +27,8 @@ struct U {
   aoIntensity: f32,
   projM11: f32,
   _pad: f32,
-  size: vec2u,
+  size: vec2u,       // pick texture (device px)
+  shadeSize: vec2u,  // output texture (may be scaled down)
 }
 @group(0) @binding(0) var pick: texture_2d<f32>;
 @group(0) @binding(1) var outShade: texture_storage_2d<rgba8unorm, write>;
@@ -98,10 +99,13 @@ fn smallestEigenvector(a: mat3x3f) -> vec3f {
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
-  if (gid.x >= u.size.x || gid.y >= u.size.y) { return; }
-  let px = vec2i(gid.xy);
+  if (gid.x >= u.shadeSize.x || gid.y >= u.shadeSize.y) { return; }
+  let opx = vec2i(gid.xy);
+  // map shade pixel -> pick pixel (identity at scale 1)
+  let sc = vec2f(u.size) / vec2f(u.shadeSize);
+  let px = vec2i((vec2f(gid.xy) + 0.5) * sc);
   let p = viewPosAt(px);
-  if (p.w == 0.0) { textureStore(outShade, px, vec4f(1.0)); return; }
+  if (p.w == 0.0) { textureStore(outShade, opx, vec4f(1.0)); return; }
 
   let tol = max(0.05, u.tolerance * abs(p.z));
 
@@ -172,7 +176,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let ao = clamp(1.0 - occl / 8.0 * u.aoIntensity, 0.0, 1.0);
     shade = shade * ao;
   }
-  textureStore(outShade, px, vec4f(shade, shade, shade, 1.0));
+  textureStore(outShade, opx, vec4f(shade, shade, shade, 1.0));
 }
 `;
 
@@ -213,6 +217,10 @@ export interface PlaneFitSettings {
   readonly aoRadius?: number;
   /** AO strength. Default 2. */
   readonly aoIntensity?: number;
+  /** Shade-buffer resolution as a fraction of the framebuffer. The
+   *  fit/AO are low-frequency — 0.5 is 4x cheaper and visually near-
+   *  identical (bilinear upsample on apply). Default 0.5. */
+  readonly resolutionScale?: number;
 }
 
 export type PlaneFitOption =
@@ -277,10 +285,13 @@ export function createPlaneFitPass(
       if (colorView === undefined) return;
       const w = pick.width;
       const h = pick.height;
-      ensureTexture(w, h);
+      const scale = Math.min(1, Math.max(0.2, settings.resolutionScale ?? 0.5));
+      const sw = Math.max(1, Math.round(w * scale));
+      const sh = Math.max(1, Math.round(h * scale));
+      ensureTexture(sw, sh);
 
       const m = proj.backward;
-      const buf = new ArrayBuffer(112);
+      const buf = new ArrayBuffer(112); // 64 mat + 32 scalars + 16 sizes
       const f = new Float32Array(buf, 0, 24);
       f.set([
         m.M00, m.M10, m.M20, m.M30,
@@ -296,7 +307,7 @@ export function createPlaneFitPass(
       f[21] = settings.aoIntensity ?? 2;
       f[22] = proj.forward.M11;
       f[23] = 0;
-      new Uint32Array(buf, 96, 2).set([w, h]);
+      new Uint32Array(buf, 96, 4).set([w, h, sw, sh]);
       device.queue.writeBuffer(ubo, 0, buf);
 
       const enc = device.createCommandEncoder({ label: "planeFit.frame" });
@@ -312,7 +323,7 @@ export function createPlaneFitPass(
         const pass = enc.beginComputePass({ label: "planeFit.fit" });
         pass.setPipeline(pipeFit);
         pass.setBindGroup(0, bg);
-        pass.dispatchWorkgroups(Math.ceil(w / 8), Math.ceil(h / 8));
+        pass.dispatchWorkgroups(Math.ceil(sw / 8), Math.ceil(sh / 8));
         pass.end();
       }
       {
