@@ -38,9 +38,13 @@ import type { Child } from "../vnode.js";
 import { useScope } from "../scope.js";
 import { Sg, collectSgChildren } from "./constructors.js";
 import type { OitMode } from "./transparency.js";
-import { createGtaoPass, gtaoConfig, type GtaoOption, type GtaoPass } from "./gtao.js";
-import { createPlaneFitPass, planeFitConfig, type PlaneFitOption, type PlaneFitPass } from "./planeFit.js";
-import { createVoronoiFillPass, voronoiFillConfig, type VoronoiFillOption, type VoronoiFillPass } from "./voronoiFill.js";
+import type { GtaoOption } from "./gtao.js";
+import type { PlaneFitOption } from "./planeFit.js";
+import type { VoronoiFillOption } from "./voronoiFill.js";
+import {
+  gtaoFramePass, planeFitFramePass, voronoiFillFramePass,
+  type FramePass, type FramePassInstance,
+} from "./framePass.js";
 import type { SgNode } from "./sg.js";
 import { TraversalState } from "./traversalState.js";
 import { PickDispatcher, type TapThresholds, type DomParticipantHost } from "./picking/dispatcher.js";
@@ -102,6 +106,12 @@ export interface RenderControlProps {
    *  maxRadius. Runs before planeFitShading, which then shades the
    *  FILLED surface. */
   readonly voronoiFill?: VoronoiFillOption;
+  /** Ordered custom screen-space passes appended after the built-in
+   *  sugar passes (voronoiFill, planeFitShading, ambientOcclusion).
+   *  See `framePass.ts` — the RenderControl extension point for
+   *  post-scene effects; pixel picking stays on the producer's own
+   *  pick texture regardless of what the chain does. */
+  readonly framePasses?: readonly FramePass[];
 
   /**
    * View trafo (world → view). When unset, the scene's outermost
@@ -482,70 +492,41 @@ async function initialise(
   const registry = producer.registry;
   scope.onDispose(() => producer.dispose());
 
-  // Ambient occlusion (opt-in). The pipelines are built on first ENABLED frame
-  // — a control that never turns AO on pays nothing. MSAA would need the pass
-  // to render into the multisampled colour target; not worth it, so skip.
-  let ao: { readonly enabled: aval<boolean>; readonly pass: () => GtaoPass } | undefined;
-  if (props.ambientOcclusion !== undefined && props.ambientOcclusion !== false) {
-    const cfg = gtaoConfig(props.ambientOcclusion);
+  // Screen-space frame-pass chain (see framePass.ts). The sugar props
+  // (voronoiFill, planeFitShading, ambientOcclusion) are just pre-wired
+  // entries, in that order; `props.framePasses` entries append after.
+  // Instances are built lazily on first ENABLED frame — a control that
+  // never enables a pass pays nothing. MSAA would need the passes to
+  // render into the multisampled colour target; not worth it, so skip.
+  const passOptions: FramePass[] = [];
+  if (props.voronoiFill !== undefined && props.voronoiFill !== false)
+    passOptions.push(voronoiFillFramePass(props.voronoiFill));
+  if (props.planeFitShading !== undefined && props.planeFitShading !== false)
+    passOptions.push(planeFitFramePass(props.planeFitShading));
+  if (props.ambientOcclusion !== undefined && props.ambientOcclusion !== false)
+    passOptions.push(gtaoFramePass(props.ambientOcclusion));
+  if (props.framePasses !== undefined) passOptions.push(...props.framePasses);
+  interface ChainEntry {
+    readonly fp: FramePass;
+    instance?: FramePassInstance;
+  }
+  const passChain: ChainEntry[] = [];
+  if (passOptions.length > 0) {
     if (attachment.signature.sampleCount > 1) {
-      console.warn("[RenderControl] ambientOcclusion is ignored under MSAA (sampleCount > 1)");
+      console.warn("[RenderControl] frame passes are ignored under MSAA (sampleCount > 1)");
     } else {
-      let pass: GtaoPass | undefined;
-      ao = {
-        enabled: cfg.enabled,
-        pass: () => {
-          if (pass === undefined) {
-            pass = createGtaoPass(device, attachment.signature.colors.get("Colors"), cfg.settings);
-          }
-          return pass;
-        },
-      };
-      scope.onDispose(() => pass?.dispose());
+      for (const fp of passOptions) {
+        const entry: ChainEntry = { fp };
+        passChain.push(entry);
+        scope.onDispose(() => entry.instance?.dispose());
+      }
     }
   }
-
-  // Voronoi fill (opt-in) — same lifecycle as AO.
-  let vfill: { readonly enabled: aval<boolean>; readonly pass: () => VoronoiFillPass } | undefined;
-  if (props.voronoiFill !== undefined && props.voronoiFill !== false) {
-    const cfg = voronoiFillConfig(props.voronoiFill);
-    if (attachment.signature.sampleCount > 1) {
-      console.warn("[RenderControl] voronoiFill is ignored under MSAA (sampleCount > 1)");
-    } else {
-      let pass: VoronoiFillPass | undefined;
-      vfill = {
-        enabled: cfg.enabled,
-        pass: () => {
-          if (pass === undefined) {
-            pass = createVoronoiFillPass(device, attachment.signature.colors.get("Colors"), cfg.settings);
-          }
-          return pass;
-        },
-      };
-      scope.onDispose(() => pass?.dispose());
-    }
-  }
-
-  // Plane-fit shading (opt-in) — same lifecycle as AO.
-  let planeFit: { readonly enabled: aval<boolean>; readonly pass: () => PlaneFitPass } | undefined;
-  if (props.planeFitShading !== undefined && props.planeFitShading !== false) {
-    const cfg = planeFitConfig(props.planeFitShading);
-    if (attachment.signature.sampleCount > 1) {
-      console.warn("[RenderControl] planeFitShading is ignored under MSAA (sampleCount > 1)");
-    } else {
-      let pass: PlaneFitPass | undefined;
-      planeFit = {
-        enabled: cfg.enabled,
-        pass: () => {
-          if (pass === undefined) {
-            pass = createPlaneFitPass(device, attachment.signature.colors.get("Colors"), cfg.settings);
-          }
-          return pass;
-        },
-      };
-      scope.onDispose(() => pass?.dispose());
-    }
-  }
+  const passEnabled = (fp: FramePass, token: unknown): boolean => {
+    if (fp.enabled === undefined) return true;
+    if (typeof fp.enabled === "boolean") return fp.enabled;
+    return fp.enabled.getValue(token as never);
+  };
 
   const dispatcher = new PickDispatcher(
     registry,
@@ -598,35 +579,27 @@ async function initialise(
       ? frameInfo(now) : undefined;
     if (info !== undefined) props.onBeforeRender?.(info);
     producer.run(token);
-    // AO post-pass. Reads the pick attachment the frame just wrote (normal +
-    // depth) and multiplies the occlusion into the canvas colour. `enabled` is
-    // pulled through the token, so flipping the toggle marks the frame loop.
-    // Voronoi fill first (holes get colour+depth), then plane-fit
-    // (lighting over the FILLED surface), then AO — all post effects
-    // over the same G-buffer.
-    let shadingPick: GPUTexture | undefined;
-    if (vfill !== undefined && vfill.enabled.getValue(token)) {
-      shadingPick = vfill.pass().run(
-        producer.framebuffer.getValue(token),
-        producer.readbackPickTexture.getValue(token),
-        "Colors",
-      );
-    }
-    if (planeFit !== undefined && planeFit.enabled.getValue(token)) {
-      planeFit.pass().run(
-        producer.framebuffer.getValue(token),
-        shadingPick ?? producer.readbackPickTexture.getValue(token),
-        producer.proj.getValue(token),
-        "Colors",
-      );
-    }
-    if (ao !== undefined && ao.enabled.getValue(token)) {
-      ao.pass().run(
-        producer.framebuffer.getValue(token),
-        producer.readbackPickTexture.getValue(token),
-        producer.proj.getValue(token),
-        "Colors",
-      );
+    // Frame-pass chain over the just-rendered G-buffer. Each pass may
+    // replace the pick-shaped texture downstream passes see (e.g.
+    // voronoi fill hands plane-fit a hole-filled depth); pointer picking
+    // keeps reading the producer's own texture regardless. `enabled` and
+    // `version` are pulled through the token, so toggles and version
+    // bumps (live tuning) mark the frame loop.
+    if (passChain.length > 0) {
+      const fb = producer.framebuffer.getValue(token);
+      const proj = producer.proj.getValue(token);
+      let pick = producer.readbackPickTexture.getValue(token);
+      for (const entry of passChain) {
+        entry.fp.version?.getValue(token);
+        if (!passEnabled(entry.fp, token)) continue;
+        entry.instance ??= entry.fp.create({
+          device,
+          colorFormat: attachment.signature.colors.get("Colors"),
+          colorName: "Colors",
+        });
+        const out = entry.instance.run({ framebuffer: fb, pick, proj, colorName: "Colors" });
+        if (out !== undefined) pick = out;
+      }
     }
     // onRendered handlers may transact() (the Aardvark.Dom pattern of a
     // camera controller stepping physics per frame). Marks fired inside

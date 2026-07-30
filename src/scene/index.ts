@@ -94,6 +94,16 @@ export {
 } from "./planeFit.js";
 
 export {
+  voronoiFillFramePass,
+  planeFitFramePass,
+  gtaoFramePass,
+  type FramePass,
+  type FramePassInstance,
+  type FramePassContext,
+  type FramePassFrame,
+} from "./framePass.js";
+
+export {
   createVoronoiFillPass,
   voronoiFillConfig,
   type VoronoiFillOption,

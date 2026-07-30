@@ -192,7 +192,6 @@ export function createVoronoiFillPass(
   colorFormat: GPUTextureFormat,
   settings: VoronoiFillSettings = {},
 ): VoronoiFillPass {
-  const maxRadius = Math.max(1, Math.min(64, settings.maxRadius ?? 24));
   const pipeInit = device.createComputePipeline({
     layout: "auto",
     compute: { module: device.createShaderModule({ code: INIT_WGSL, label: "vfill.init" }), entryPoint: "main" },
@@ -213,12 +212,6 @@ export function createVoronoiFillPass(
   const resolveUbo = device.createBuffer({
     size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "vfill.u",
   });
-  device.queue.writeBuffer(resolveUbo, 0, new Float32Array([
-    maxRadius * maxRadius,
-    settings.depthTolerance ?? 0.02,
-    (settings.reversedZ ?? true) ? 1 : 0,
-    0,
-  ]));
 
   let seedA: GPUTexture | undefined;
   let seedB: GPUTexture | undefined;
@@ -249,6 +242,14 @@ export function createVoronoiFillPass(
       const colorView = fb.colors.tryFind(colorName);
       const colorTex = fb.colorTextures?.tryFind?.(colorName);
       if (colorView === undefined || colorTex === undefined) return undefined;
+      // Settings are read per frame so callers can mutate the object live.
+      const maxRadius = Math.max(1, Math.min(64, settings.maxRadius ?? 24));
+      const reach = settings.occlusionReach ?? 10;
+      const tol = settings.depthTolerance ?? 0.02;
+      const revZ = settings.reversedZ ?? true;
+      device.queue.writeBuffer(resolveUbo, 0, new Float32Array([
+        maxRadius * maxRadius, tol, revZ ? 1 : 0, 0,
+      ]));
       const w = pick.width;
       const h = pick.height;
       ensure(w, h);
@@ -276,9 +277,6 @@ export function createVoronoiFillPass(
         const b = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
         stepUbos.push(b);
       }
-      const reach = settings.occlusionReach ?? 10;
-      const tol = settings.depthTolerance ?? 0.02;
-      const revZ = settings.reversedZ ?? true;
       let src = seedA!;
       let dst = seedB!;
       steps.forEach((s, i) => {
