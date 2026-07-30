@@ -32,7 +32,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 `;
 
 const STEP_WGSL = /* wgsl */ `
-struct U { step: i32, reversedZ: i32, beta2: f32, tol: f32 }
+struct U { step: i32, reversedZ: i32, reach2: f32, tol: f32 }
 @group(0) @binding(0) var seedIn: texture_2d<u32>;
 @group(0) @binding(1) var seedOut: texture_storage_2d<rg32uint, write>;
 @group(0) @binding(2) var<uniform> u: U;
@@ -68,16 +68,25 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       if (bestKey == 0xffffffffu) {
         take = true;
       } else {
-        // DEPTH-AWARE comparison: a seed on a distinctly nearer
-        // surface occludes a farther one (up to beta^2 x the rival's
-        // screen distance — bounds silhouette dilation); seeds on the
-        // same depth layer compete by pure 2D distance (Voronoi).
+        // DEPTH-AWARE comparison. A seed within the occlusion reach
+        // plausibly represents a continuous surface at this pixel, so
+        // among within-reach seeds the NEARER surface wins outright —
+        // regardless of 2D distance (a close-up surface projects its
+        // points sparsely while the background behind it is dense; pure
+        // 2D-nearest would make it see-through). A within-reach seed
+        // also beats any beyond-reach one. Only when both are beyond
+        // reach (spacing coarser than the reach, e.g. distant overview)
+        // does plain 2D Voronoi apply.
+        let cw = f32(d2) <= u.reach2;
+        let bw = f32(bestD2) <= u.reach2;
         let lc = distProxy(bitcast<f32>(cand.y));
         let lb = distProxy(bitcast<f32>(bestDepth));
         let cNearer = lc < lb * (1.0 - u.tol);
         let bNearer = lb < lc * (1.0 - u.tol);
-        if (cNearer && f32(d2) <= u.beta2 * f32(bestD2)) { take = true; }
-        else if (bNearer && f32(bestD2) <= u.beta2 * f32(d2)) { take = false; }
+        if (cw && !bw) { take = true; }
+        else if (bw && !cw) { take = false; }
+        else if (cw && bw && cNearer) { take = true; }
+        else if (cw && bw && bNearer) { take = false; }
         else { take = d2 < bestD2; }
       }
       if (take) {
@@ -94,7 +103,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 // Resolve: fill hole pixels' colour from their seed; also write the
 // filled pick-shaped depth texture (z slot) for downstream shading.
 const RESOLVE_WGSL = /* wgsl */ `
-struct U { maxR2: f32, _p0: f32, _p1: f32, _p2: f32 }
+struct U { maxR2: f32, tol: f32, reversedZ: f32, _p0: f32 }
 @group(0) @binding(0) var seed: texture_2d<u32>;
 @group(0) @binding(1) var colorCopy: texture_2d<f32>;
 @group(0) @binding(2) var pick: texture_2d<f32>;
@@ -113,26 +122,36 @@ fn vs(@builtin(vertex_index) vi: u32) -> VOut {
   return o;
 }
 
+fn distProxy(z: f32) -> f32 {
+  if (u.reversedZ != 0.0) { return 1.0 / max(z, 1e-6); }
+  return z;
+}
+
 @fragment
 fn fs(i: VOut) -> @location(0) vec4f {
   let px = vec2i(i.pos.xy);
   let own = textureLoad(pick, px, 0);
   let s = textureLoad(seed, px, 0);
+  let ownValid = own.z > 0.0 && own.z < 1.0;
   var outPick = own;
   var color = vec4f(0.0);
   var fill = false;
-  if (own.z > 0.0 && own.z < 1.0) {
-    // already a point — keep canvas as-is
-    outPick = own;
-  } else if (s.x != 0xffffffffu) {
+  if (s.x != 0xffffffffu) {
     let sx = i32(s.x >> 16);
     let sy = i32(s.x & 0xffffu);
     let dx = f32(sx - px.x);
     let dy = f32(sy - px.y);
     if (dx * dx + dy * dy <= u.maxR2) {
-      color = textureLoad(colorCopy, vec2i(sx, sy), 0);
-      outPick = vec4f(own.x, own.y, bitcast<f32>(s.y), own.w);
-      fill = true;
+      let sz = bitcast<f32>(s.y);
+      // Fill holes; ALSO overwrite rendered points that lie distinctly
+      // BEHIND the winning surface (screen-space hidden-point removal —
+      // background points otherwise speckle through close-up surfaces).
+      let seedNearer = distProxy(sz) < distProxy(own.z) * (1.0 - u.tol);
+      if (!ownValid || seedNearer) {
+        color = textureLoad(colorCopy, vec2i(sx, sy), 0);
+        outPick = vec4f(own.x, own.y, sz, own.w);
+        fill = true;
+      }
     }
   }
   textureStore(filledPick, px, outPick);
@@ -146,9 +165,10 @@ export interface VoronoiFillSettings {
   readonly maxRadius?: number;
   /** Reversed-Z depth convention (near -> 1). Default true. */
   readonly reversedZ?: boolean;
-  /** Occlusion reach: a nearer seed may claim a pixel up to beta x the
-   *  rival's screen distance. Default 3. */
-  readonly beta?: number;
+  /** Occlusion reach in device pixels: within this radius a nearer seed
+   *  represents a continuous surface and occludes farther seeds outright.
+   *  Choose a small multiple of the LOD target point spacing. Default 10. */
+  readonly occlusionReach?: number;
   /** Relative depth tolerance separating "same surface" from
    *  "occluding surface". Default 0.02. */
   readonly depthTolerance?: number;
@@ -193,7 +213,12 @@ export function createVoronoiFillPass(
   const resolveUbo = device.createBuffer({
     size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "vfill.u",
   });
-  device.queue.writeBuffer(resolveUbo, 0, new Float32Array([maxRadius * maxRadius, 0, 0, 0]));
+  device.queue.writeBuffer(resolveUbo, 0, new Float32Array([
+    maxRadius * maxRadius,
+    settings.depthTolerance ?? 0.02,
+    (settings.reversedZ ?? true) ? 1 : 0,
+    0,
+  ]));
 
   let seedA: GPUTexture | undefined;
   let seedB: GPUTexture | undefined;
@@ -251,7 +276,7 @@ export function createVoronoiFillPass(
         const b = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
         stepUbos.push(b);
       }
-      const beta = settings.beta ?? 3;
+      const reach = settings.occlusionReach ?? 10;
       const tol = settings.depthTolerance ?? 0.02;
       const revZ = settings.reversedZ ?? true;
       let src = seedA!;
@@ -259,7 +284,7 @@ export function createVoronoiFillPass(
       steps.forEach((s, i) => {
         const ub = new ArrayBuffer(16);
         new Int32Array(ub, 0, 2).set([s, revZ ? 1 : 0]);
-        new Float32Array(ub, 8, 2).set([beta * beta, tol]);
+        new Float32Array(ub, 8, 2).set([reach * reach, tol]);
         const ubo = stepUbos[i]!;
         device.queue.writeBuffer(ubo, 0, ub);
         const bg = device.createBindGroup({
