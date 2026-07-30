@@ -40,6 +40,7 @@ import { Sg, collectSgChildren } from "./constructors.js";
 import type { OitMode } from "./transparency.js";
 import { createGtaoPass, gtaoConfig, type GtaoOption, type GtaoPass } from "./gtao.js";
 import { createPlaneFitPass, planeFitConfig, type PlaneFitOption, type PlaneFitPass } from "./planeFit.js";
+import { createVoronoiFillPass, voronoiFillConfig, type VoronoiFillOption, type VoronoiFillPass } from "./voronoiFill.js";
 import type { SgNode } from "./sg.js";
 import { TraversalState } from "./traversalState.js";
 import { PickDispatcher, type TapThresholds, type DomParticipantHost } from "./picking/dispatcher.js";
@@ -96,6 +97,11 @@ export interface RenderControlProps {
    *  lights every pixel from a plane fitted to its depth neighbourhood.
    *  Same G-buffer + multiply-into-colour contract as ambientOcclusion. */
   readonly planeFitShading?: PlaneFitOption;
+  /** Screen-space Voronoi fill (jump flooding) for 1px point scenes:
+   *  hole pixels take the nearest rendered point's colour/depth within
+   *  maxRadius. Runs before planeFitShading, which then shades the
+   *  FILLED surface. */
+  readonly voronoiFill?: VoronoiFillOption;
 
   /**
    * View trafo (world → view). When unset, the scene's outermost
@@ -499,6 +505,27 @@ async function initialise(
     }
   }
 
+  // Voronoi fill (opt-in) — same lifecycle as AO.
+  let vfill: { readonly enabled: aval<boolean>; readonly pass: () => VoronoiFillPass } | undefined;
+  if (props.voronoiFill !== undefined && props.voronoiFill !== false) {
+    const cfg = voronoiFillConfig(props.voronoiFill);
+    if (attachment.signature.sampleCount > 1) {
+      console.warn("[RenderControl] voronoiFill is ignored under MSAA (sampleCount > 1)");
+    } else {
+      let pass: VoronoiFillPass | undefined;
+      vfill = {
+        enabled: cfg.enabled,
+        pass: () => {
+          if (pass === undefined) {
+            pass = createVoronoiFillPass(device, attachment.signature.colors.get("Colors"), cfg.settings);
+          }
+          return pass;
+        },
+      };
+      scope.onDispose(() => pass?.dispose());
+    }
+  }
+
   // Plane-fit shading (opt-in) — same lifecycle as AO.
   let planeFit: { readonly enabled: aval<boolean>; readonly pass: () => PlaneFitPass } | undefined;
   if (props.planeFitShading !== undefined && props.planeFitShading !== false) {
@@ -574,12 +601,21 @@ async function initialise(
     // AO post-pass. Reads the pick attachment the frame just wrote (normal +
     // depth) and multiplies the occlusion into the canvas colour. `enabled` is
     // pulled through the token, so flipping the toggle marks the frame loop.
-    // Plane-fit shading first (lighting), then AO (occlusion) — both are
-    // multiplies into the colour, order chosen to match the donor pipeline.
+    // Voronoi fill first (holes get colour+depth), then plane-fit
+    // (lighting over the FILLED surface), then AO — all post effects
+    // over the same G-buffer.
+    let shadingPick: GPUTexture | undefined;
+    if (vfill !== undefined && vfill.enabled.getValue(token)) {
+      shadingPick = vfill.pass().run(
+        producer.framebuffer.getValue(token),
+        producer.readbackPickTexture.getValue(token),
+        "Colors",
+      );
+    }
     if (planeFit !== undefined && planeFit.enabled.getValue(token)) {
       planeFit.pass().run(
         producer.framebuffer.getValue(token),
-        producer.readbackPickTexture.getValue(token),
+        shadingPick ?? producer.readbackPickTexture.getValue(token),
         producer.proj.getValue(token),
         "Colors",
       );

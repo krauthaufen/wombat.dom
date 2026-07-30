@@ -94,6 +94,14 @@ export {
 } from "./planeFit.js";
 
 export {
+  createVoronoiFillPass,
+  voronoiFillConfig,
+  type VoronoiFillOption,
+  type VoronoiFillPass,
+  type VoronoiFillSettings,
+} from "./voronoiFill.js";
+
+export {
   RenderControl,
   type RenderControlProps,
   type RenderControlReadyInfo,

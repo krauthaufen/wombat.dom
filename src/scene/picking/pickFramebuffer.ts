@@ -182,9 +182,12 @@ export function createPickFramebuffer(
     for (const [name, view] of fb.colors) colors = colors.add(name, view);
     colors = colors.add(PICK_NAME, pickView);
     void colorName; // colorName is informational; we copy whatever the canvas FB exposes.
+    let colorTextures = fb.colorTextures ?? HashMap.empty<string, GPUTexture>();
+    colorTextures = colorTextures.add(PICK_NAME, pick);
     const out: IFramebuffer = {
       signature,
       colors,
+      colorTextures,
       ...(fb.depthStencil !== undefined ? { depthStencil: fb.depthStencil } : {}),
       ...(fb.depthStencilTexture !== undefined ? { depthStencilTexture: fb.depthStencilTexture } : {}),
       width: fb.width,
