@@ -163,14 +163,15 @@ fn interior(px: vec2i, dim: vec2i, R: f32) -> bool {
     let a = f32(k) * 0.78539816;
     let q = vec2i(round(vec2f(px) + vec2f(cos(a), sin(a)) * R));
     if (q.x < 0 || q.y < 0 || q.x >= dim.x || q.y >= dim.y) { continue; }
-    let sd = textureLoad(seed, q, 0);
-    if (sd.x == 0xffffffffu) { continue; }
-    let d = vec2f(f32(i32(sd.x >> 16)), f32(i32(sd.x & 0xffffu))) - vec2f(px);
+    let sd = textureLoad(seed, q, 0).x;
+    if (sd == INVALID) { continue; }
+    // seeds are stored RELATIVE to the pixel holding them — rebase to us
+    let d = vec2f(seedOffset(sd) + (q - px));
     let len = length(d);
     if (len < 0.5) { return true; }        // a seed sits on us
     var ang = atan2(d.y, d.x);
     if (ang < 0.0) { ang = ang + 6.28318531; }
-    sectors = sectors | (1u << (u32(ang / 0.78539816) & 7u));
+    sectors = sectors | (1u << (u32(ang * 1.27323954) & 7u));
   }
   if (sectors == 0u) { return false; }
   // any 180deg window (4 of 8 sectors) containing every occupied sector
@@ -200,8 +201,10 @@ fn fs(i: VOut) -> @location(0) vec4f {
     let dy = f32(off.y);
     let d2 = dx * dx + dy * dy;
     let dd = sqrt(d2);
-    // near seeds fill unconditionally; only far ones can be extrapolation
-    let ok = u.support <= 0.0 || dd <= u.support || interior(px, dim, dd);
+    // Probe at the SUPPORT radius, not at the seed distance: probing at
+    // the seed distance lands inside that seed's own Voronoi cell and
+    // just reports it back. Pixels sitting on a point skip the test.
+    let ok = u.support <= 0.0 || dd <= 1.5 || interior(px, dim, u.support);
     if (d2 <= u.maxR2 && ok) {
       let sz = seedDepth(s);
       // Fill holes; ALSO overwrite rendered points that lie distinctly
