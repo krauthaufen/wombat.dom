@@ -28,23 +28,26 @@ import type { IFramebuffer } from "@aardworx/wombat.rendering/core";
 
 const CLEAR_WGSL = /* wgsl */ `
 @group(0) @binding(0) var<storage, read_write> counters: array<atomic<u32>>;
+@group(0) @binding(1) var<storage, read_write> fronts: array<atomic<u32>>;
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
   if (gid.x >= arrayLength(&counters)) { return; }
   atomicStore(&counters[gid.x], 0u);
+  atomicStore(&fronts[gid.x], 0u);
 }
 `;
 
 const APPEND_WGSL = /* wgsl */ `
 struct U {
   size: vec2u, tiles: vec2u,
-  tileSize: u32, capacity: u32, _p0: u32, _p1: u32,
+  tileSize: u32, capacity: u32, reversedZ: u32, _p1: u32,
 }
 @group(0) @binding(0) var pick: texture_2d<f32>;
 @group(0) @binding(1) var colorTex: texture_2d<f32>;
 @group(0) @binding(2) var<storage, read_write> counters: array<atomic<u32>>;
-@group(0) @binding(3) var<storage, read_write> points: array<u32>;
+@group(0) @binding(3) var<storage, read_write> points: array<vec4<u32>>;
 @group(0) @binding(4) var<uniform> u: U;
+@group(0) @binding(5) var<storage, read_write> fronts: array<atomic<u32>>;
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
@@ -54,6 +57,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   if (z <= 0.0 || z >= 1.0) { return; }          // no point on this pixel
   let tile = gid.xy / u.tileSize;
   let ti = tile.y * u.tiles.x + tile.x;
+  // "frontness": bigger = nearer, so one atomicMax per tile gives the
+  // front-most surface in it. f32 bits are monotonic for positive floats,
+  // so the integer max IS the float max. Used only as a THRESHOLD — no
+  // identity has to survive it.
+  var fness = z;
+  if (u.reversedZ == 0u) { fness = 1.0 - z; }
+  atomicMax(&fronts[ti], bitcast<u32>(fness));
   let slot = atomicAdd(&counters[ti], 1u);
   // Overflow drops the point. Safe by construction: a tile only overflows
   // when it is dense, and a dense tile's pixels are already covered — the
@@ -65,10 +75,32 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
            | (u32(clamp(c.g, 0.0, 1.0) * 255.0) << 16)
            | (u32(clamp(c.b, 0.0, 1.0) * 255.0) << 8)
            | 255u;
-  let base = (ti * u.capacity + slot) * 3u;
-  points[base + 0u] = (gid.x << 16u) | gid.y;
-  points[base + 1u] = bitcast<u32>(z);
-  points[base + 2u] = rgba;
+  points[ti * u.capacity + slot] = vec4u((gid.x << 16u) | gid.y, bitcast<u32>(z), rgba, 0u);
+}
+`;
+
+// Dilate the per-tile front depth over the reach neighbourhood ONCE per
+// tile, so the per-pixel front test is a single load instead of ~16.
+const DILATE_WGSL = /* wgsl */ `
+struct U { tiles: vec2u, radius: u32, _p: u32 }
+@group(0) @binding(0) var<storage, read> fronts: array<u32>;
+@group(0) @binding(1) var<storage, read_write> dilated: array<u32>;
+@group(0) @binding(2) var<uniform> u: U;
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  let n = u.tiles.x * u.tiles.y;
+  if (gid.x >= n) { return; }
+  let tx = i32(gid.x % u.tiles.x);
+  let ty = i32(gid.x / u.tiles.x);
+  let r = i32(u.radius);
+  var m = 0u;
+  for (var y = max(0, ty - r); y <= min(i32(u.tiles.y) - 1, ty + r); y = y + 1) {
+    for (var x = max(0, tx - r); x <= min(i32(u.tiles.x) - 1, tx + r); x = x + 1) {
+      m = max(m, fronts[u32(y) * u.tiles.x + u32(x)]);
+    }
+  }
+  dilated[gid.x] = m;
 }
 `;
 
@@ -81,9 +113,12 @@ struct U {
 // colour comes packed out of the point buffer, so no colour texture here
 @group(0) @binding(0) var pick: texture_2d<f32>;
 @group(0) @binding(2) var<storage, read> counters: array<u32>;
-@group(0) @binding(3) var<storage, read> points: array<u32>;
+@group(0) @binding(3) var<storage, read> points: array<vec4<u32>>;
 @group(0) @binding(4) var<uniform> u: U;
 @group(0) @binding(5) var filledPick: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(6) var<storage, read> fronts: array<u32>;
+@group(0) @binding(7) var<storage, read> dilated: array<u32>;
+@group(0) @binding(8) var<storage, read> dilatedFar: array<u32>;
 
 fn distProxy(z: f32) -> f32 {
   if (u.reversedZ != 0.0) { return 1.0 / max(z, 1e-6); }
@@ -106,51 +141,106 @@ fn fs(i: VOut) -> @location(0) vec4f {
   let own = textureLoad(pick, px, 0);
   let ownValid = own.z > 0.0 && own.z < 1.0;
 
-  let r = i32(ceil(sqrt(u.maxR2)));
   let ts = i32(u.tileSize);
-  let t0 = max(vec2i(0), (px - vec2i(r)) / ts);
-  let t1 = min(vec2i(i32(u.tiles.x) - 1, i32(u.tiles.y) - 1), (px + vec2i(r)) / ts);
+  let tmax = vec2i(i32(u.tiles.x) - 1, i32(u.tiles.y) - 1);
+  let reach = i32(ceil(sqrt(u.reach2)));
+
+  // --- prune 1: is this pixel already ON the front surface? -------------
+  // Nothing within reach can be distinctly nearer than the front-most
+  // surface around us, and our own point sits at distance 0, so it wins
+  // every same-depth tie. Reading ~25 tile fronts settles that without
+  // touching a single point. Conservative (the tile range is a superset
+  // of the reach disc), so a miss just falls through to the full scan.
+  let r0 = max(vec2i(0), (px - vec2i(reach)) / ts);
+  let r1 = min(tmax, (px + vec2i(reach)) / ts);
+  let myTile = (px / ts);
+  let mti = u32(myTile.y) * u.tiles.x + u32(myTile.x);
+
+  // --- prune 0: is there ANY point within the search radius? ------------
+  // Background pixels dominate a sparse view, and without this each one
+  // walks every tile in the radius (~49) only to find nothing. One read
+  // of the radius-dilated occupancy settles it.
+  if (dilatedFar[mti] == 0u) {
+    if (u.writePick != 0.0) { textureStore(filledPick, px, own); }
+    discard;
+  }
+  let frontness = bitcast<f32>(dilated[mti]);
+  var ownF = own.z;
+  if (u.reversedZ == 0.0) { ownF = 1.0 - own.z; }
+  if (ownValid && ownF >= frontness * (1.0 - u.tol)) {
+    if (u.writePick != 0.0) { textureStore(filledPick, px, own); }
+    discard;
+  }
 
   var bestD2 = 1e30;
   var bestZ = 0.0;
   var bestC = 0u;
   var found = false;
 
-  for (var ty = t0.y; ty <= t1.y; ty = ty + 1) {
-    for (var tx = t0.x; tx <= t1.x; tx = tx + 1) {
+  // nothing within reach at all -> skip straight to the outer ring
+  let anyNear = dilated[mti] != 0u;
+  // --- prune 2: scan the REACH disc first -------------------------------
+  // A beyond-reach candidate can never beat a within-reach one (the
+  // comparator returns "keep best" for that case), so if anything is
+  // found here the outer ring cannot change the answer and is skipped.
+  for (var ty = r0.y; ty <= r1.y && anyNear; ty = ty + 1) {
+    for (var tx = r0.x; tx <= r1.x; tx = tx + 1) {
       let ti = u32(ty) * u.tiles.x + u32(tx);
+      if (counters[ti] == 0u) { continue; }
+      // --- prune 3: whole-tile depth reject ----------------------------
+      // once we hold a within-reach best, a tile whose FRONT surface is
+      // distinctly behind it cannot contain a winner: no point of it can
+      // be depth-nearer, nor tie on depth and win on distance.
+      if (found) {
+        let tf = bitcast<f32>(fronts[ti]);
+        var bf = bestZ;
+        if (u.reversedZ == 0.0) { bf = 1.0 - bestZ; }
+        if (tf < bf * (1.0 - u.tol)) { continue; }
+      }
       let n = min(counters[ti], u.capacity);
       for (var k = 0u; k < n; k = k + 1u) {
-        let base = (ti * u.capacity + k) * 3u;
-        let xy = points[base + 0u];
-        let dx = f32(i32(xy >> 16u) - px.x);
-        let dy = f32(i32(xy & 0xffffu) - px.y);
+        let pt = points[ti * u.capacity + k];
+        let dx = f32(i32(pt.x >> 16u) - px.x);
+        let dy = f32(i32(pt.x & 0xffffu) - px.y);
         let d2 = dx * dx + dy * dy;
-        if (d2 > u.maxR2) { continue; }
-        let cz = bitcast<f32>(points[base + 1u]);
+        if (d2 > u.reach2) { continue; }
+        let cz = bitcast<f32>(pt.y);
         var take = false;
         if (!found) {
           take = true;
         } else {
-          // identical rule set to voronoiFill's STEP comparator: a
-          // candidate within the occlusion reach represents a continuous
-          // surface, so the NEARER one wins outright there; a
-          // within-reach candidate beats any beyond-reach one; only when
-          // both are beyond reach does plain 2D distance decide.
-          let cw = d2 <= u.reach2;
-          let bw = bestD2 <= u.reach2;
+          // both candidates are within reach here, so the comparator
+          // reduces to: nearer depth wins, else nearer in 2D
           let lc = distProxy(cz);
           let lb = distProxy(bestZ);
-          let cNearer = lc < lb * (1.0 - u.tol);
-          let bNearer = lb < lc * (1.0 - u.tol);
-          if (cw && !bw) { take = true; }
-          else if (bw && !cw) { take = false; }
-          else if (cw && bw && cNearer) { take = true; }
-          else if (cw && bw && bNearer) { take = false; }
+          if (lc < lb * (1.0 - u.tol)) { take = true; }
+          else if (lb < lc * (1.0 - u.tol)) { take = false; }
           else { take = d2 < bestD2; }
         }
-        if (take) {
-          bestD2 = d2; bestZ = cz; bestC = points[base + 2u]; found = true;
+        if (take) { bestD2 = d2; bestZ = cz; bestC = pt.z; found = true; }
+      }
+    }
+  }
+
+  // --- outer ring: only reached when nothing is within reach ------------
+  if (!found) {
+    let r = i32(ceil(sqrt(u.maxR2)));
+    let t0 = max(vec2i(0), (px - vec2i(r)) / ts);
+    let t1 = min(tmax, (px + vec2i(r)) / ts);
+    for (var ty = t0.y; ty <= t1.y; ty = ty + 1) {
+      for (var tx = t0.x; tx <= t1.x; tx = tx + 1) {
+        let ti = u32(ty) * u.tiles.x + u32(tx);
+        let n = min(counters[ti], u.capacity);
+        for (var k = 0u; k < n; k = k + 1u) {
+          let pt = points[ti * u.capacity + k];
+          let dx = f32(i32(pt.x >> 16u) - px.x);
+          let dy = f32(i32(pt.x & 0xffffu) - px.y);
+          let d2 = dx * dx + dy * dy;
+          if (d2 > u.maxR2) { continue; }
+          // beyond reach on both sides -> plain 2D nearest
+          if (!found || d2 < bestD2) {
+            bestD2 = d2; bestZ = bitcast<f32>(pt.y); bestC = pt.z; found = true;
+          }
         }
       }
     }
@@ -217,6 +307,12 @@ export function createGridFillPass(
     layout: "auto",
     compute: { module: device.createShaderModule({ code: APPEND_WGSL, label: "grid.append" }), entryPoint: "main" },
   });
+  const pipeDilate = device.createComputePipeline({
+    layout: "auto",
+    compute: { module: device.createShaderModule({ code: DILATE_WGSL, label: "grid.dilate" }), entryPoint: "main" },
+  });
+  const dilateUbo = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  const dilateFarUbo = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const queryModule = device.createShaderModule({ code: QUERY_WGSL, label: "grid.query" });
   const pipeQuery = device.createRenderPipeline({
     layout: "auto",
@@ -230,6 +326,9 @@ export function createGridFillPass(
   const queryUbo = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
   let counters: GPUBuffer | undefined;
+  let fronts: GPUBuffer | undefined;
+  let dilated: GPUBuffer | undefined;
+  let dilatedFar: GPUBuffer | undefined;
   let pointBuf: GPUBuffer | undefined;
   let colorCopy: GPUTexture | undefined;
   let filledPick: GPUTexture | undefined;
@@ -237,15 +336,27 @@ export function createGridFillPass(
 
   const ensure = (w: number, h: number, ts: number, cap: number): void => {
     if (dims.w === w && dims.h === h && dims.ts === ts && dims.cap === cap) return;
-    counters?.destroy(); pointBuf?.destroy();
+    counters?.destroy(); fronts?.destroy(); dilated?.destroy(); dilatedFar?.destroy(); pointBuf?.destroy();
     colorCopy?.destroy(); filledPick?.destroy();
     const tx = Math.ceil(w / ts), ty = Math.ceil(h / ts);
     counters = device.createBuffer({
       size: Math.max(4, tx * ty * 4),
       usage: GPUBufferUsage.STORAGE, label: "grid.counters",
     });
+    fronts = device.createBuffer({
+      size: Math.max(4, tx * ty * 4),
+      usage: GPUBufferUsage.STORAGE, label: "grid.fronts",
+    });
+    dilated = device.createBuffer({
+      size: Math.max(4, tx * ty * 4),
+      usage: GPUBufferUsage.STORAGE, label: "grid.dilated",
+    });
+    dilatedFar = device.createBuffer({
+      size: Math.max(4, tx * ty * 4),
+      usage: GPUBufferUsage.STORAGE, label: "grid.dilatedFar",
+    });
     pointBuf = device.createBuffer({
-      size: Math.max(16, tx * ty * cap * 3 * 4),
+      size: Math.max(16, tx * ty * cap * 4 * 4),
       usage: GPUBufferUsage.STORAGE, label: "grid.points",
     });
     colorCopy = device.createTexture({
@@ -277,7 +388,7 @@ export function createGridFillPass(
       const { tx, ty } = dims;
 
       const ai = new ArrayBuffer(32);
-      new Uint32Array(ai).set([w, h, tx, ty, ts, cap, 0, 0]);
+      new Uint32Array(ai).set([w, h, tx, ty, ts, cap, revZ ? 1 : 0, 0]);
       device.queue.writeBuffer(appendUbo, 0, ai);
       const qi = new ArrayBuffer(64);
       new Uint32Array(qi, 0, 6).set([w, h, tx, ty, ts, cap]);
@@ -291,7 +402,10 @@ export function createGridFillPass(
       {
         const bg = device.createBindGroup({
           layout: pipeClear.getBindGroupLayout(0),
-          entries: [{ binding: 0, resource: { buffer: counters! } }],
+          entries: [
+            { binding: 0, resource: { buffer: counters! } },
+            { binding: 1, resource: { buffer: fronts! } },
+          ],
         });
         const p = enc.beginComputePass({ label: "grid.clear" });
         p.setPipeline(pipeClear); p.setBindGroup(0, bg);
@@ -306,11 +420,44 @@ export function createGridFillPass(
             { binding: 2, resource: { buffer: counters! } },
             { binding: 3, resource: { buffer: pointBuf! } },
             { binding: 4, resource: { buffer: appendUbo } },
+            { binding: 5, resource: { buffer: fronts! } },
           ],
         });
         const p = enc.beginComputePass({ label: "grid.append" });
         p.setPipeline(pipeAppend); p.setBindGroup(0, bg);
         p.dispatchWorkgroups(Math.ceil(w / 8), Math.ceil(h / 8)); p.end();
+      }
+      {
+        const di = new ArrayBuffer(16);
+        new Uint32Array(di).set([tx, ty, Math.ceil(reach / ts), 0]);
+        device.queue.writeBuffer(dilateUbo, 0, di);
+        const bg = device.createBindGroup({
+          layout: pipeDilate.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: fronts! } },
+            { binding: 1, resource: { buffer: dilated! } },
+            { binding: 2, resource: { buffer: dilateUbo } },
+          ],
+        });
+        const p = enc.beginComputePass({ label: "grid.dilate" });
+        p.setPipeline(pipeDilate); p.setBindGroup(0, bg);
+        p.dispatchWorkgroups(Math.ceil((tx * ty) / 64)); p.end();
+      }
+      {
+        const di = new ArrayBuffer(16);
+        new Uint32Array(di).set([tx, ty, Math.ceil(maxRadius / ts), 0]);
+        device.queue.writeBuffer(dilateFarUbo, 0, di);
+        const bg = device.createBindGroup({
+          layout: pipeDilate.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: fronts! } },
+            { binding: 1, resource: { buffer: dilatedFar! } },
+            { binding: 2, resource: { buffer: dilateFarUbo } },
+          ],
+        });
+        const p = enc.beginComputePass({ label: "grid.dilateFar" });
+        p.setPipeline(pipeDilate); p.setBindGroup(0, bg);
+        p.dispatchWorkgroups(Math.ceil((tx * ty) / 64)); p.end();
       }
       {
         const bg = device.createBindGroup({
@@ -321,6 +468,9 @@ export function createGridFillPass(
             { binding: 3, resource: { buffer: pointBuf! } },
             { binding: 4, resource: { buffer: queryUbo } },
             { binding: 5, resource: filledPick!.createView() },
+            { binding: 6, resource: { buffer: fronts! } },
+            { binding: 7, resource: { buffer: dilated! } },
+            { binding: 8, resource: { buffer: dilatedFar! } },
           ],
         });
         const p = enc.beginRenderPass({
@@ -334,10 +484,11 @@ export function createGridFillPass(
       return wantPick ? filledPick : undefined;
     },
     dispose() {
-      counters?.destroy(); pointBuf?.destroy();
+      counters?.destroy(); fronts?.destroy(); dilated?.destroy(); pointBuf?.destroy();
       colorCopy?.destroy(); filledPick?.destroy();
-      appendUbo.destroy(); queryUbo.destroy();
-      counters = pointBuf = undefined;
+      appendUbo.destroy(); queryUbo.destroy(); dilateUbo.destroy(); dilateFarUbo.destroy();
+      dilatedFar?.destroy();
+      counters = fronts = dilated = dilatedFar = pointBuf = undefined;
       colorCopy = filledPick = undefined;
     },
   };
