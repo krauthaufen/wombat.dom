@@ -14,9 +14,29 @@
 import { AVal, type aval } from "@aardworx/wombat.adaptive";
 import type { IFramebuffer } from "@aardworx/wombat.rendering/core";
 
-const INIT_WGSL = /* wgsl */ `
+// Seed record, packed into a SINGLE u32 (was two: absolute coord + f32
+// depth). The coordinate is stored as an offset RELATIVE to the pixel
+// holding it, which needs only 7 bits per axis for a <=63px radius, and
+// the depth is quantised to 18 bits — a 3.8e-6 step against a 2% relative
+// tolerance, i.e. far below anything the comparator can notice.
+//
+// This halves every read and write the flood performs, and the flood is
+// bandwidth-bound: 6 steps x 9 taps was 432 B/pixel, now 216 B.
+const SEED_COMMON = /* wgsl */ `
+const INVALID: u32 = 0xffffffffu;
+fn packSeed(dx: i32, dy: i32, z: f32) -> u32 {
+  let q = u32(clamp(z, 0.0, 1.0) * 262143.0);
+  return (u32(dx + 64) << 25u) | (u32(dy + 64) << 18u) | q;
+}
+fn seedOffset(s: u32) -> vec2i {
+  return vec2i(i32((s >> 25u) & 127u) - 64, i32((s >> 18u) & 127u) - 64);
+}
+fn seedDepth(s: u32) -> f32 { return f32(s & 0x3ffffu) / 262143.0; }
+`;
+
+const INIT_WGSL = SEED_COMMON + /* wgsl */ `
 @group(0) @binding(0) var pick: texture_2d<f32>;
-@group(0) @binding(1) var seedOut: texture_storage_2d<rg32uint, write>;
+@group(0) @binding(1) var seedOut: texture_storage_2d<r32uint, write>;
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
@@ -24,17 +44,17 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   if (gid.x >= dim.x || gid.y >= dim.y) { return; }
   let z = textureLoad(pick, vec2i(gid.xy), 0).z;
   if (z > 0.0 && z < 1.0) {
-    textureStore(seedOut, vec2i(gid.xy), vec4u((gid.x << 16) | gid.y, bitcast<u32>(z), 0, 0));
+    textureStore(seedOut, vec2i(gid.xy), vec4u(packSeed(0, 0, z), 0, 0, 0));
   } else {
-    textureStore(seedOut, vec2i(gid.xy), vec4u(0xffffffffu, 0, 0, 0));
+    textureStore(seedOut, vec2i(gid.xy), vec4u(INVALID, 0, 0, 0));
   }
 }
 `;
 
-const STEP_WGSL = /* wgsl */ `
+const STEP_WGSL = SEED_COMMON + /* wgsl */ `
 struct U { step: i32, reversedZ: i32, reach2: f32, tol: f32 }
 @group(0) @binding(0) var seedIn: texture_2d<u32>;
-@group(0) @binding(1) var seedOut: texture_storage_2d<rg32uint, write>;
+@group(0) @binding(1) var seedOut: texture_storage_2d<r32uint, write>;
 @group(0) @binding(2) var<uniform> u: U;
 
 // monotone proxy for view distance from NDC depth: reversed-Z -> 1/z
@@ -50,22 +70,20 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let dim = vec2i(textureDimensions(seedOut));
   if (gid.x >= u32(dim.x) || gid.y >= u32(dim.y)) { return; }
   let px = vec2i(gid.xy);
-  var bestKey = 0xffffffffu;
-  var bestDepth = 0u;
+  var best = INVALID;
   var bestD2 = 0x7fffffff;
   for (var dy = -1; dy <= 1; dy++) {
     for (var dx = -1; dx <= 1; dx++) {
       let q = px + vec2i(dx, dy) * u.step;
       if (q.x < 0 || q.y < 0 || q.x >= dim.x || q.y >= dim.y) { continue; }
-      let cand = textureLoad(seedIn, q, 0);
-      if (cand.x == 0xffffffffu) { continue; }
-      let sx = i32(cand.x >> 16);
-      let sy = i32(cand.x & 0xffffu);
-      let ddx = sx - px.x;
-      let ddy = sy - px.y;
-      let d2 = ddx * ddx + ddy * ddy;
+      let cand = textureLoad(seedIn, q, 0).x;
+      if (cand == INVALID) { continue; }
+      // the neighbour stores its seed relative to ITSELF; rebase to us
+      let off = seedOffset(cand) + (q - px);
+      if (off.x < -64 || off.x > 63 || off.y < -64 || off.y > 63) { continue; }
+      let d2 = off.x * off.x + off.y * off.y;
       var take = false;
-      if (bestKey == 0xffffffffu) {
+      if (best == INVALID) {
         take = true;
       } else {
         // DEPTH-AWARE comparison. A seed within the occlusion reach
@@ -79,8 +97,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         // does plain 2D Voronoi apply.
         let cw = f32(d2) <= u.reach2;
         let bw = f32(bestD2) <= u.reach2;
-        let lc = distProxy(bitcast<f32>(cand.y));
-        let lb = distProxy(bitcast<f32>(bestDepth));
+        let lc = distProxy(seedDepth(cand));
+        let lb = distProxy(seedDepth(best));
         let cNearer = lc < lb * (1.0 - u.tol);
         let bNearer = lb < lc * (1.0 - u.tol);
         if (cw && !bw) { take = true; }
@@ -91,18 +109,17 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       }
       if (take) {
         bestD2 = d2;
-        bestKey = cand.x;
-        bestDepth = cand.y;
+        best = packSeed(off.x, off.y, seedDepth(cand));
       }
     }
   }
-  textureStore(seedOut, px, vec4u(bestKey, bestDepth, 0, 0));
+  textureStore(seedOut, px, vec4u(best, 0, 0, 0));
 }
 `;
 
 // Resolve: fill hole pixels' colour from their seed; also write the
 // filled pick-shaped depth texture (z slot) for downstream shading.
-const RESOLVE_WGSL = /* wgsl */ `
+const RESOLVE_WGSL = SEED_COMMON + /* wgsl */ `
 struct U { maxR2: f32, tol: f32, reversedZ: f32, writePick: f32,
            support: f32, _p0: f32, _p1: f32, _p2: f32 }
 @group(0) @binding(0) var seed: texture_2d<u32>;
@@ -170,22 +187,23 @@ fn fs(i: VOut) -> @location(0) vec4f {
   let px = vec2i(i.pos.xy);
   let dim = vec2i(textureDimensions(seed));
   let own = textureLoad(pick, px, 0);
-  let s = textureLoad(seed, px, 0);
+  let s = textureLoad(seed, px, 0).x;
   let ownValid = own.z > 0.0 && own.z < 1.0;
   var outPick = own;
   var color = vec4f(0.0);
   var fill = false;
-  if (s.x != 0xffffffffu) {
-    let sx = i32(s.x >> 16);
-    let sy = i32(s.x & 0xffffu);
-    let dx = f32(sx - px.x);
-    let dy = f32(sy - px.y);
+  if (s != INVALID) {
+    let off = seedOffset(s);
+    let sx = px.x + off.x;
+    let sy = px.y + off.y;
+    let dx = f32(off.x);
+    let dy = f32(off.y);
     let d2 = dx * dx + dy * dy;
     let dd = sqrt(d2);
     // near seeds fill unconditionally; only far ones can be extrapolation
     let ok = u.support <= 0.0 || dd <= u.support || interior(px, dim, dd);
     if (d2 <= u.maxR2 && ok) {
-      let sz = bitcast<f32>(s.y);
+      let sz = seedDepth(s);
       // Fill holes; ALSO overwrite rendered points that lie distinctly
       // BEHIND the winning surface (screen-space hidden-point removal —
       // background points otherwise speckle through close-up surfaces).
@@ -273,7 +291,7 @@ export function createVoronoiFillPass(
     if (seedA !== undefined && seedA.width === w && seedA.height === h) return;
     for (const t of [seedA, seedB, colorCopy, filledPick]) t?.destroy();
     const mkSeed = (label: string): GPUTexture => device.createTexture({
-      size: { width: w, height: h }, format: "rg32uint",
+      size: { width: w, height: h }, format: "r32uint",
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING, label,
     });
     seedA = mkSeed("vfill.seedA");
@@ -294,7 +312,7 @@ export function createVoronoiFillPass(
       const colorTex = fb.colorTextures?.tryFind?.(colorName);
       if (colorView === undefined || colorTex === undefined) return undefined;
       // Settings are read per frame so callers can mutate the object live.
-      const maxRadius = Math.max(1, Math.min(64, settings.maxRadius ?? 24));
+      const maxRadius = Math.max(1, Math.min(63, settings.maxRadius ?? 24));
       const reach = settings.occlusionReach ?? 10;
       const tol = settings.depthTolerance ?? 0.02;
       const revZ = settings.reversedZ ?? true;
@@ -324,8 +342,17 @@ export function createVoronoiFillPass(
         pass.end();
       }
       // JFA: steps maxRadius -> 1, halving
-      let steps: number[] = [];
-      for (let s = 1 << Math.ceil(Math.log2(maxRadius)); s >= 1; s >>= 1) steps.push(s);
+      // A flood starting at 2^k reaches 2^k + ... + 1 = 2^(k+1) - 1 pixels,
+      // so the smallest sufficient start for radius r is the least 2^k with
+      // 2^(k+1)-1 >= r — one step fewer than the usual 2^ceil(log2 r).
+      // (r=24: start 16 reaches 31, so 5 passes instead of 6.)
+      const steps: number[] = [];
+      for (let s = 1; ; s <<= 1) {
+        if (2 * s - 1 >= maxRadius) {
+          for (let t = s; t >= 1; t >>= 1) steps.push(t);
+          break;
+        }
+      }
       while (stepUbos.length < steps.length) {
         const b = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
         stepUbos.push(b);
