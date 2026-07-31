@@ -121,7 +121,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 // filled pick-shaped depth texture (z slot) for downstream shading.
 const RESOLVE_WGSL = SEED_COMMON + /* wgsl */ `
 struct U { maxR2: f32, tol: f32, reversedZ: f32, writePick: f32,
-           support: f32, _p0: f32, _p1: f32, _p2: f32 }
+           support: f32, farRadius: f32, falloffDist: f32, nearPlane: f32 }
 @group(0) @binding(0) var seed: texture_2d<u32>;
 @group(0) @binding(1) var colorCopy: texture_2d<f32>;
 @group(0) @binding(2) var pick: texture_2d<f32>;
@@ -143,6 +143,24 @@ fn vs(@builtin(vertex_index) vi: u32) -> VOut {
 fn distProxy(z: f32) -> f32 {
   if (u.reversedZ != 0.0) { return 1.0 / max(z, 1e-6); }
   return z;
+}
+
+// Fill radius as a function of distance.
+//
+// Close surfaces have run out of octree levels, so their points project
+// far apart and want a big radius. Distant surfaces sit at the LOD's
+// target spacing, where the same radius massively over-reaches and
+// bridges across depth discontinuities — there a small radius behaves
+// like a plain fixed-size splat, which reads better.
+//
+// With reversed-Z and an infinite far plane, ndc z = near/zView, so
+// distProxy IS the view distance in units of the near plane — the metric
+// distance comes free, no projection matrix needed.
+fn fillRadius(z: f32) -> f32 {
+  if (u.farRadius <= 0.0) { return sqrt(u.maxR2); }
+  let rNear = sqrt(u.maxR2);
+  let dist = distProxy(z) * u.nearPlane;
+  return clamp(rNear * u.falloffDist / max(dist, 1e-3), u.farRadius, rNear);
 }
 
 // Is this hole INSIDE the point set, or off its edge?
@@ -201,12 +219,13 @@ fn fs(i: VOut) -> @location(0) vec4f {
     let dy = f32(off.y);
     let d2 = dx * dx + dy * dy;
     let dd = sqrt(d2);
+    let sz = seedDepth(s);
+    let rad = fillRadius(sz);
     // Probe at the SUPPORT radius, not at the seed distance: probing at
     // the seed distance lands inside that seed's own Voronoi cell and
     // just reports it back. Pixels sitting on a point skip the test.
-    let ok = u.support <= 0.0 || dd <= 1.5 || interior(px, dim, u.support);
-    if (d2 <= u.maxR2 && ok) {
-      let sz = seedDepth(s);
+    let ok = u.support <= 0.0 || dd <= 1.5 || interior(px, dim, min(u.support, rad));
+    if (dd <= rad && ok) {
       // Fill holes; ALSO overwrite rendered points that lie distinctly
       // BEHIND the winning surface (screen-space hidden-point removal —
       // background points otherwise speckle through close-up surfaces).
@@ -244,6 +263,17 @@ export interface VoronoiFillSettings {
    *  blooming into full-radius discs. Smaller = tighter outlines and
    *  more probes; 0 disables the test. Default 0. */
   readonly exteriorSupport?: number;
+  /** Fill radius in pixels for DISTANT surfaces. The radius falls off as
+   *  1/distance beyond `falloffDistance` and clamps here, so far geometry
+   *  reads like a fixed-size splat while near surfaces keep the full
+   *  Voronoi reach. 0 disables the falloff. Default 0. */
+  readonly farRadius?: number;
+  /** Distance (scene units) out to which the full `maxRadius` applies.
+   *  Default 10. */
+  readonly falloffDistance?: number;
+  /** Near-plane distance, used to turn reversed-Z depth into a metric
+   *  distance. Default 0.05. */
+  readonly nearPlane?: number;
 }
 
 export type VoronoiFillOption =
@@ -322,7 +352,10 @@ export function createVoronoiFillPass(
       const wantPick = needPick !== false;
       device.queue.writeBuffer(resolveUbo, 0, new Float32Array([
         maxRadius * maxRadius, tol, revZ ? 1 : 0, wantPick ? 1 : 0,
-        settings.exteriorSupport ?? 0, 0, 0, 0,
+        settings.exteriorSupport ?? 0,
+        settings.farRadius ?? 0,
+        settings.falloffDistance ?? 10,
+        settings.nearPlane ?? 0.05,
       ]));
       const w = pick.width;
       const h = pick.height;
