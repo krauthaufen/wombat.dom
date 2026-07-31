@@ -269,6 +269,160 @@ fn fs(i: VOut) -> @location(0) vec4f {
 }
 `;
 
+
+// Query as a COMPUTE pass: one workgroup per tile, candidates staged in
+// shared memory.
+//
+// The fragment version re-read the same tile lists for every pixel — at
+// sparse LOD densities that is ~363 candidate loads PER PIXEL, versus the
+// JFA's 54 taps, which is why pruning the average never helped. Here the
+// workgroup loads the neighbourhood once (~363 loads for all 64 pixels)
+// and every thread then scans it out of shared memory with a
+// workgroup-uniform trip count.
+//
+// Records are packed to 8 bytes so a full neighbourhood fits the 16 KB
+// workgroup budget: offsets from the tile origin as biased i8, depth
+// quantised to 16 bits (only ever compared, against a 2% tolerance), and
+// the colour as RGBA8. If a neighbourhood still overflows, the workgroup
+// falls back to reading global memory — a workgroup-uniform branch.
+const QUERYCS_WGSL = /* wgsl */ `
+struct U {
+  size: vec2u, tiles: vec2u,
+  tileSize: u32, capacity: u32, maxR2: f32, reach2: f32,
+  tol: f32, reversedZ: f32, writePick: f32, _p0: f32,
+}
+@group(0) @binding(0) var pick: texture_2d<f32>;
+@group(0) @binding(2) var<storage, read> counters: array<u32>;
+@group(0) @binding(3) var<storage, read> points: array<vec4<u32>>;
+@group(0) @binding(4) var<uniform> u: U;
+@group(0) @binding(5) var filledPick: texture_storage_2d<rgba32float, write>;
+// the uniform shm scan needs no front/occupancy prunes — those existed to
+// cut the average work, which is not what costs here
+@group(0) @binding(9) var fillTex: texture_storage_2d<rgba8unorm, write>;
+
+const CAP: u32 = 1900u;
+var<workgroup> shN: atomic<u32>;
+var<workgroup> shPts: array<vec2<u32>, CAP>;
+var<workgroup> shOrigin: vec2i;
+
+fn distProxy(z: f32) -> f32 {
+  if (u.reversedZ != 0.0) { return 1.0 / max(z, 1e-6); }
+  return z;
+}
+
+@compute @workgroup_size(8, 8)
+fn main(@builtin(workgroup_id) wg: vec3u,
+        @builtin(local_invocation_index) tid: u32,
+        @builtin(global_invocation_id) gid: vec3u) {
+  let ts = i32(u.tileSize);
+  let origin = vec2i(i32(wg.x), i32(wg.y)) * ts;
+  if (tid == 0u) { atomicStore(&shN, 0u); shOrigin = origin; }
+  workgroupBarrier();
+
+  let r = i32(ceil(sqrt(u.maxR2)));
+  let tmax = vec2i(i32(u.tiles.x) - 1, i32(u.tiles.y) - 1);
+  let t0 = max(vec2i(0), (origin - vec2i(r)) / ts);
+  let t1 = min(tmax, (origin + vec2i(ts - 1 + r)) / ts);
+  let nx = u32(t1.x - t0.x + 1);
+  let ny = u32(t1.y - t0.y + 1);
+
+  // cooperative gather of the whole neighbourhood
+  for (var idx = tid; idx < nx * ny; idx = idx + 64u) {
+    let tx = t0.x + i32(idx % nx);
+    let ty = t0.y + i32(idx / nx);
+    let ti = u32(ty) * u.tiles.x + u32(tx);
+    let n = min(counters[ti], u.capacity);
+    for (var k = 0u; k < n; k = k + 1u) {
+      let pt = points[ti * u.capacity + k];
+      let dx = i32(pt.x >> 16u) - origin.x;
+      let dy = i32(pt.x & 0xffffu) - origin.y;
+      if (dx < -128 || dx > 127 || dy < -128 || dy > 127) { continue; }
+      let slot = atomicAdd(&shN, 1u);
+      if (slot >= CAP) { continue; }
+      let z16 = u32(clamp(bitcast<f32>(pt.y), 0.0, 1.0) * 65535.0);
+      shPts[slot] = vec2u(
+        (u32(dx + 128) << 24u) | (u32(dy + 128) << 16u) | z16,
+        pt.z);
+    }
+  }
+  workgroupBarrier();
+
+  let total = atomicLoad(&shN);
+  let n = min(total, CAP);
+
+  let px = vec2i(gid.xy);
+  if (px.x >= i32(u.size.x) || px.y >= i32(u.size.y)) { return; }
+  let own = textureLoad(pick, px, 0);
+  let ownValid = own.z > 0.0 && own.z < 1.0;
+
+  var bestD2 = 1e30;
+  var bestZ = 0.0;
+  var bestC = 0u;
+  var found = false;
+  var bestNear = false;
+
+  // uniform scan: identical trip count for every thread in the workgroup
+  for (var k = 0u; k < n; k = k + 1u) {
+    let rec = shPts[k];
+    let dx = f32(i32((rec.x >> 24u) & 0xffu) - 128 + shOrigin.x - px.x);
+    let dy = f32(i32((rec.x >> 16u) & 0xffu) - 128 + shOrigin.y - px.y);
+    let d2 = dx * dx + dy * dy;
+    if (d2 > u.maxR2) { continue; }
+    let cz = f32(rec.x & 0xffffu) / 65535.0;
+    let cw = d2 <= u.reach2;
+    var take = false;
+    if (!found) {
+      take = true;
+    } else {
+      let lc = distProxy(cz);
+      let lb = distProxy(bestZ);
+      let cNearer = lc < lb * (1.0 - u.tol);
+      let bNearer = lb < lc * (1.0 - u.tol);
+      if (cw && !bestNear) { take = true; }
+      else if (bestNear && !cw) { take = false; }
+      else if (cw && bestNear && cNearer) { take = true; }
+      else if (cw && bestNear && bNearer) { take = false; }
+      else { take = d2 < bestD2; }
+    }
+    if (take) { bestD2 = d2; bestZ = cz; bestC = rec.y; found = true; bestNear = cw; }
+  }
+
+  var outPick = own;
+  var col = vec4f(0.0);
+  if (found) {
+    let seedNearer = distProxy(bestZ) < distProxy(own.z) * (1.0 - u.tol);
+    if (!ownValid || seedNearer) {
+      col = vec4f(
+        f32((bestC >> 24u) & 0xffu) / 255.0,
+        f32((bestC >> 16u) & 0xffu) / 255.0,
+        f32((bestC >> 8u) & 0xffu) / 255.0,
+        1.0);
+      outPick = vec4f(own.x, own.y, bestZ, own.w);
+    }
+  }
+  if (u.writePick != 0.0) { textureStore(filledPick, px, outPick); }
+  textureStore(fillTex, px, col);   // alpha 0 == leave the canvas alone
+}
+`;
+
+// Trivial composite: the compute pass cannot write the canvas (it is not
+// storage-bindable), so it writes an RGBA8 layer and this blends it in.
+const COMPOSITE_WGSL = /* wgsl */ `
+@group(0) @binding(0) var src: texture_2d<f32>;
+struct VOut { @builtin(position) pos: vec4f }
+@vertex
+fn vs(@builtin(vertex_index) vi: u32) -> VOut {
+  var xy = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
+  var o: VOut; o.pos = vec4f(xy[vi], 0.0, 1.0); return o;
+}
+@fragment
+fn fs(i: VOut) -> @location(0) vec4f {
+  let c = textureLoad(src, vec2i(i.pos.xy), 0);
+  if (c.a < 0.5) { discard; }
+  return vec4f(c.rgb, 1.0);
+}
+`;
+
 export interface GridFillSettings {
   /** Max fill radius in device pixels. Default 24 (clamped 1..64). */
   readonly maxRadius?: number;
@@ -313,6 +467,18 @@ export function createGridFillPass(
   });
   const dilateUbo = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const dilateFarUbo = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  const pipeQueryCS = device.createComputePipeline({
+    layout: "auto",
+    compute: { module: device.createShaderModule({ code: QUERYCS_WGSL, label: "grid.queryCS" }), entryPoint: "main" },
+  });
+  const compModule = device.createShaderModule({ code: COMPOSITE_WGSL, label: "grid.composite" });
+  const pipeComposite = device.createRenderPipeline({
+    layout: "auto",
+    vertex: { module: compModule, entryPoint: "vs" },
+    fragment: { module: compModule, entryPoint: "fs", targets: [{ format: colorFormat }] },
+    primitive: { topology: "triangle-list" },
+    label: "grid.composite",
+  });
   const queryModule = device.createShaderModule({ code: QUERY_WGSL, label: "grid.query" });
   const pipeQuery = device.createRenderPipeline({
     layout: "auto",
@@ -332,12 +498,13 @@ export function createGridFillPass(
   let pointBuf: GPUBuffer | undefined;
   let colorCopy: GPUTexture | undefined;
   let filledPick: GPUTexture | undefined;
+  let fillTex: GPUTexture | undefined;
   let dims = { w: 0, h: 0, tx: 0, ty: 0, cap: 0, ts: 0 };
 
   const ensure = (w: number, h: number, ts: number, cap: number): void => {
     if (dims.w === w && dims.h === h && dims.ts === ts && dims.cap === cap) return;
     counters?.destroy(); fronts?.destroy(); dilated?.destroy(); dilatedFar?.destroy(); pointBuf?.destroy();
-    colorCopy?.destroy(); filledPick?.destroy();
+    colorCopy?.destroy(); filledPick?.destroy(); fillTex?.destroy();
     const tx = Math.ceil(w / ts), ty = Math.ceil(h / ts);
     counters = device.createBuffer({
       size: Math.max(4, tx * ty * 4),
@@ -366,6 +533,10 @@ export function createGridFillPass(
     filledPick = device.createTexture({
       size: { width: w, height: h }, format: "rgba32float",
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING, label: "grid.pick",
+    });
+    fillTex = device.createTexture({
+      size: { width: w, height: h }, format: "rgba8unorm",
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING, label: "grid.fill",
     });
     dims = { w, h, tx, ty, cap, ts };
   };
@@ -461,23 +632,30 @@ export function createGridFillPass(
       }
       {
         const bg = device.createBindGroup({
-          layout: pipeQuery.getBindGroupLayout(0),
+          layout: pipeQueryCS.getBindGroupLayout(0),
           entries: [
             { binding: 0, resource: pick.createView() },
             { binding: 2, resource: { buffer: counters! } },
             { binding: 3, resource: { buffer: pointBuf! } },
             { binding: 4, resource: { buffer: queryUbo } },
             { binding: 5, resource: filledPick!.createView() },
-            { binding: 6, resource: { buffer: fronts! } },
-            { binding: 7, resource: { buffer: dilated! } },
-            { binding: 8, resource: { buffer: dilatedFar! } },
+            { binding: 9, resource: fillTex!.createView() },
           ],
         });
+        const p = enc.beginComputePass({ label: "grid.queryCS" });
+        p.setPipeline(pipeQueryCS); p.setBindGroup(0, bg);
+        p.dispatchWorkgroups(tx, ty); p.end();
+      }
+      {
+        const bg = device.createBindGroup({
+          layout: pipeComposite.getBindGroupLayout(0),
+          entries: [{ binding: 0, resource: fillTex!.createView() }],
+        });
         const p = enc.beginRenderPass({
-          label: "grid.query",
+          label: "grid.composite",
           colorAttachments: [{ view: colorView, loadOp: "load", storeOp: "store" }],
         });
-        p.setPipeline(pipeQuery); p.setBindGroup(0, bg);
+        p.setPipeline(pipeComposite); p.setBindGroup(0, bg);
         p.draw(3); p.end();
       }
       device.queue.submit([enc.finish()]);
@@ -485,11 +663,11 @@ export function createGridFillPass(
     },
     dispose() {
       counters?.destroy(); fronts?.destroy(); dilated?.destroy(); pointBuf?.destroy();
-      colorCopy?.destroy(); filledPick?.destroy();
+      colorCopy?.destroy(); filledPick?.destroy(); fillTex?.destroy();
       appendUbo.destroy(); queryUbo.destroy(); dilateUbo.destroy(); dilateFarUbo.destroy();
       dilatedFar?.destroy();
       counters = fronts = dilated = dilatedFar = pointBuf = undefined;
-      colorCopy = filledPick = undefined;
+      colorCopy = filledPick = fillTex = undefined;
     },
   };
 }
