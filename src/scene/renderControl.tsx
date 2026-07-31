@@ -589,15 +589,22 @@ async function initialise(
       const fb = producer.framebuffer.getValue(token);
       const proj = producer.proj.getValue(token);
       let pick = producer.readbackPickTexture.getValue(token);
-      for (const entry of passChain) {
-        entry.fp.version?.getValue(token);
-        if (!passEnabled(entry.fp, token)) continue;
+      // which entries will actually run this frame (needed so a pass can
+      // skip producing a G-buffer nobody downstream will read)
+      const willRun = passChain.map(e => {
+        e.fp.version?.getValue(token);
+        return passEnabled(e.fp, token);
+      });
+      for (let i = 0; i < passChain.length; i++) {
+        const entry = passChain[i]!;
+        if (!willRun[i]) continue;
+        const pickConsumed = willRun.slice(i + 1).some(Boolean);
         entry.instance ??= entry.fp.create({
           device,
           colorFormat: attachment.signature.colors.get("Colors"),
           colorName: "Colors",
         });
-        const out = entry.instance.run({ framebuffer: fb, pick, proj, colorName: "Colors" });
+        const out = entry.instance.run({ framebuffer: fb, pick, proj, colorName: "Colors", pickConsumed });
         if (out !== undefined) pick = out;
       }
     }

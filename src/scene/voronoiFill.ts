@@ -103,7 +103,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 // Resolve: fill hole pixels' colour from their seed; also write the
 // filled pick-shaped depth texture (z slot) for downstream shading.
 const RESOLVE_WGSL = /* wgsl */ `
-struct U { maxR2: f32, tol: f32, reversedZ: f32, _p0: f32 }
+struct U { maxR2: f32, tol: f32, reversedZ: f32, writePick: f32 }
 @group(0) @binding(0) var seed: texture_2d<u32>;
 @group(0) @binding(1) var colorCopy: texture_2d<f32>;
 @group(0) @binding(2) var pick: texture_2d<f32>;
@@ -154,7 +154,9 @@ fn fs(i: VOut) -> @location(0) vec4f {
       }
     }
   }
-  textureStore(filledPick, px, outPick);
+  // Only pay the full-res rgba32float write when something downstream
+  // actually shades from it (16 B/px adds up fast on mobile).
+  if (u.writePick != 0.0) { textureStore(filledPick, px, outPick); }
   if (!fill) { discard; }
   return vec4f(color.rgb, 1.0);
 }
@@ -183,7 +185,7 @@ export interface VoronoiFillPass {
   /** Fill the canvas holes. Returns the filled pick-shaped texture
    *  (z = filled NDC depth) for downstream passes, or undefined if the
    *  pass could not run. Call AFTER the scene render, BEFORE shading. */
-  run(fb: IFramebuffer, pickTexture: GPUTexture, colorName: string): GPUTexture | undefined;
+  run(fb: IFramebuffer, pickTexture: GPUTexture, colorName: string, needPick?: boolean): GPUTexture | undefined;
   dispose(): void;
 }
 
@@ -238,7 +240,7 @@ export function createVoronoiFillPass(
   };
 
   return {
-    run(fb, pick, colorName) {
+    run(fb, pick, colorName, needPick) {
       const colorView = fb.colors.tryFind(colorName);
       const colorTex = fb.colorTextures?.tryFind?.(colorName);
       if (colorView === undefined || colorTex === undefined) return undefined;
@@ -247,8 +249,9 @@ export function createVoronoiFillPass(
       const reach = settings.occlusionReach ?? 10;
       const tol = settings.depthTolerance ?? 0.02;
       const revZ = settings.reversedZ ?? true;
+      const wantPick = needPick !== false;
       device.queue.writeBuffer(resolveUbo, 0, new Float32Array([
-        maxRadius * maxRadius, tol, revZ ? 1 : 0, 0,
+        maxRadius * maxRadius, tol, revZ ? 1 : 0, wantPick ? 1 : 0,
       ]));
       const w = pick.width;
       const h = pick.height;
@@ -321,7 +324,7 @@ export function createVoronoiFillPass(
         pass.end();
       }
       device.queue.submit([enc.finish()]);
-      return filledPick;
+      return wantPick ? filledPick : undefined;
     },
     dispose() {
       for (const t of [seedA, seedB, colorCopy, filledPick]) t?.destroy();

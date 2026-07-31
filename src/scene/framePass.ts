@@ -40,6 +40,11 @@ export interface FramePassFrame {
   readonly pick: GPUTexture;
   readonly proj: Trafo3d;
   readonly colorName: string;
+  /** True when a LATER enabled pass will read the pick texture this pass
+   *  returns. When false a pass can skip producing it — e.g. the voronoi
+   *  fill writes a full-res rgba32float G-buffer that only exists for
+   *  downstream shading, which is pure bandwidth if nothing shades. */
+  readonly pickConsumed: boolean;
 }
 
 export interface FramePassInstance {
@@ -70,7 +75,7 @@ export function voronoiFillFramePass(opt: VoronoiFillOption): FramePass {
     create: (ctx) => {
       const p = createVoronoiFillPass(ctx.device, ctx.colorFormat, cfg.settings);
       return {
-        run: (f) => p.run(f.framebuffer, f.pick, f.colorName),
+        run: (f) => p.run(f.framebuffer, f.pick, f.colorName, f.pickConsumed),
         dispose: () => p.dispose(),
       };
     },
