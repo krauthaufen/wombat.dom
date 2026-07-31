@@ -103,7 +103,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 // Resolve: fill hole pixels' colour from their seed; also write the
 // filled pick-shaped depth texture (z slot) for downstream shading.
 const RESOLVE_WGSL = /* wgsl */ `
-struct U { maxR2: f32, tol: f32, reversedZ: f32, writePick: f32 }
+struct U { maxR2: f32, tol: f32, reversedZ: f32, writePick: f32,
+           support: f32, _p0: f32, _p1: f32, _p2: f32 }
 @group(0) @binding(0) var seed: texture_2d<u32>;
 @group(0) @binding(1) var colorCopy: texture_2d<f32>;
 @group(0) @binding(2) var pick: texture_2d<f32>;
@@ -127,9 +128,28 @@ fn distProxy(z: f32) -> f32 {
   return z;
 }
 
+// Is this hole INSIDE a surface, or outside its silhouette? A seed at
+// distance d in direction u only "encloses" the pixel if the surface
+// also continues on the OPPOSITE side. Probing the mirrored position
+// costs one tap and is what stops an isolated point from blooming into
+// a full maxRadius disc (the "exterior blur").
+fn enclosed(px: vec2i, seedPx: vec2f, d: f32, dim: vec2i, support: f32) -> bool {
+  if (support <= 0.0) { return true; }
+  let u = (seedPx - vec2f(px)) / max(d, 1e-4);
+  let q = vec2i(round(vec2f(px) - u * d));
+  if (q.x < 0 || q.y < 0 || q.x >= dim.x || q.y >= dim.y) { return false; }
+  let o = textureLoad(seed, q, 0);
+  if (o.x == 0xffffffffu) { return false; }
+  let ox = f32(i32(o.x >> 16) - q.x);
+  let oy = f32(i32(o.x & 0xffffu) - q.y);
+  // the far side must have geometry at a comparable distance
+  return sqrt(ox * ox + oy * oy) <= d * support;
+}
+
 @fragment
 fn fs(i: VOut) -> @location(0) vec4f {
   let px = vec2i(i.pos.xy);
+  let dim = vec2i(textureDimensions(seed));
   let own = textureLoad(pick, px, 0);
   let s = textureLoad(seed, px, 0);
   let ownValid = own.z > 0.0 && own.z < 1.0;
@@ -141,7 +161,8 @@ fn fs(i: VOut) -> @location(0) vec4f {
     let sy = i32(s.x & 0xffffu);
     let dx = f32(sx - px.x);
     let dy = f32(sy - px.y);
-    if (dx * dx + dy * dy <= u.maxR2) {
+    let d2 = dx * dx + dy * dy;
+    if (d2 <= u.maxR2 && enclosed(px, vec2f(f32(sx), f32(sy)), sqrt(d2), dim, u.support)) {
       let sz = bitcast<f32>(s.y);
       // Fill holes; ALSO overwrite rendered points that lie distinctly
       // BEHIND the winning surface (screen-space hidden-point removal —
@@ -174,6 +195,16 @@ export interface VoronoiFillSettings {
   /** Relative depth tolerance separating "same surface" from
    *  "occluding surface". Default 0.02. */
   readonly depthTolerance?: number;
+  /** Silhouette tightness. A hole is filled only when the surface also
+   *  continues on the far side, within `support` × the seed distance —
+   *  so isolated points stop blooming into full-radius discs.
+   *
+   *  BROKEN as implemented — the mirror probe usually lands inside the
+   *  SAME seed's Voronoi cell, which reports that seed at ~2×d and fails
+   *  the test, carving rings around every point instead of tightening
+   *  silhouettes. A correct version needs the nearest seed EXCLUDING the
+   *  winner (i.e. per-quadrant seeds in the JFA). Default 0 = off. */
+  readonly exteriorSupport?: number;
 }
 
 export type VoronoiFillOption =
@@ -212,7 +243,7 @@ export function createVoronoiFillPass(
   });
   const stepUbos: GPUBuffer[] = [];
   const resolveUbo = device.createBuffer({
-    size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "vfill.u",
+    size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "vfill.u",
   });
 
   let seedA: GPUTexture | undefined;
@@ -252,6 +283,7 @@ export function createVoronoiFillPass(
       const wantPick = needPick !== false;
       device.queue.writeBuffer(resolveUbo, 0, new Float32Array([
         maxRadius * maxRadius, tol, revZ ? 1 : 0, wantPick ? 1 : 0,
+        settings.exteriorSupport ?? 0, 0, 0, 0,
       ]));
       const w = pick.width;
       const h = pick.height;
