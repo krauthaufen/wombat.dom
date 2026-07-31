@@ -289,7 +289,7 @@ const QUERYCS_WGSL = /* wgsl */ `
 struct U {
   size: vec2u, tiles: vec2u,
   tileSize: u32, capacity: u32, maxR2: f32, reach2: f32,
-  tol: f32, reversedZ: f32, writePick: f32, _p0: f32,
+  tol: f32, reversedZ: f32, writePick: f32, supportR2: f32,
 }
 @group(0) @binding(0) var pick: texture_2d<f32>;
 @group(0) @binding(2) var<storage, read> counters: array<u32>;
@@ -360,6 +360,11 @@ fn main(@builtin(workgroup_id) wg: vec3u,
   var bestC = 0u;
   var found = false;
   var bestNear = false;
+  // Angular support: which 45deg sectors around this pixel actually have
+  // a point in them. Filling is INTERPOLATION when the neighbours span
+  // more than half the circle, and EXTRAPOLATION when they all sit on one
+  // side — the latter is what lets an isolated point bloom into a disc.
+  var sectors: u32 = 0u;
 
   // uniform scan: identical trip count for every thread in the workgroup
   for (var k = 0u; k < n; k = k + 1u) {
@@ -385,13 +390,32 @@ fn main(@builtin(workgroup_id) wg: vec3u,
       else { take = d2 < bestD2; }
     }
     if (take) { bestD2 = d2; bestZ = cz; bestC = rec.y; found = true; bestNear = cw; }
+    if (u.supportR2 > 0.0 && d2 <= u.supportR2 && d2 > 0.25) {
+      var ang = atan2(dy, dx);
+      if (ang < 0.0) { ang = ang + 6.28318531; }
+      sectors = sectors | (1u << (u32(ang * 1.27323954) & 7u));
+    }
+  }
+
+  // all sectors inside SOME 180deg window -> the pixel is off the edge of
+  // the point set, not inside it
+  var supported = true;
+  if (u.supportR2 > 0.0) {
+    supported = sectors != 0u;
+    for (var r = 0u; r < 8u; r = r + 1u) {
+      let w = ((0xFu << r) | (0xFu >> (8u - r))) & 0xFFu;
+      if ((sectors & ~w & 0xFFu) == 0u) { supported = false; }
+    }
   }
 
   var outPick = own;
   var col = vec4f(0.0);
   if (found) {
+    // NB: for a background pixel own.z is 0, so distProxy(own.z) is huge
+    // and seedNearer is trivially true — the support test has to gate the
+    // whole decision, not just the hole branch, or it never applies.
     let seedNearer = distProxy(bestZ) < distProxy(own.z) * (1.0 - u.tol);
-    if (!ownValid || seedNearer) {
+    if ((!ownValid || seedNearer) && supported) {
       col = vec4f(
         f32((bestC >> 24u) & 0xffu) / 255.0,
         f32((bestC >> 16u) & 0xffu) / 255.0,
@@ -436,6 +460,11 @@ export interface GridFillSettings {
   readonly tileSize?: number;
   /** Max points retained per tile. Default 96. */
   readonly capacity?: number;
+  /** Angular-support radius in pixels. A hole is filled only when points
+   *  within this radius span more than 180deg around it, i.e. filling
+   *  interpolates rather than extrapolates — this is what stops the fill
+   *  reaching into empty space past a silhouette. 0 disables. Default 0. */
+  readonly angularSupport?: number;
 }
 
 export type GridFillOption =
@@ -563,8 +592,9 @@ export function createGridFillPass(
       device.queue.writeBuffer(appendUbo, 0, ai);
       const qi = new ArrayBuffer(64);
       new Uint32Array(qi, 0, 6).set([w, h, tx, ty, ts, cap]);
+      const sup = settings.angularSupport ?? 0;
       new Float32Array(qi, 24, 6).set([
-        maxRadius * maxRadius, reach * reach, tol, revZ ? 1 : 0, wantPick ? 1 : 0, 0,
+        maxRadius * maxRadius, reach * reach, tol, revZ ? 1 : 0, wantPick ? 1 : 0, sup * sup,
       ]);
       device.queue.writeBuffer(queryUbo, 0, qi);
 
