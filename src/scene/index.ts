@@ -94,6 +94,15 @@ export {
 } from "./planeFit.js";
 
 export {
+  createGridFillPass,
+  gridFillConfig,
+  type GridFillOption,
+  type GridFillPass,
+  type GridFillSettings,
+} from "./gridFill.js";
+
+export {
+  gridFillFramePass,
   voronoiFillFramePass,
   planeFitFramePass,
   gtaoFramePass,

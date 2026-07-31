@@ -128,22 +128,41 @@ fn distProxy(z: f32) -> f32 {
   return z;
 }
 
-// Is this hole INSIDE a surface, or outside its silhouette? A seed at
-// distance d in direction u only "encloses" the pixel if the surface
-// also continues on the OPPOSITE side. Probing the mirrored position
-// costs one tap and is what stops an isolated point from blooming into
-// a full maxRadius disc (the "exterior blur").
-fn enclosed(px: vec2i, seedPx: vec2f, d: f32, dim: vec2i, support: f32) -> bool {
-  if (support <= 0.0) { return true; }
-  let u = (seedPx - vec2f(px)) / max(d, 1e-4);
-  let q = vec2i(round(vec2f(px) - u * d));
-  if (q.x < 0 || q.y < 0 || q.x >= dim.x || q.y >= dim.y) { return false; }
-  let o = textureLoad(seed, q, 0);
-  if (o.x == 0xffffffffu) { return false; }
-  let ox = f32(i32(o.x >> 16) - q.x);
-  let oy = f32(i32(o.x & 0xffffu) - q.y);
-  // the far side must have geometry at a comparable distance
-  return sqrt(ox * ox + oy * oy) <= d * support;
+// Is this hole INSIDE the point set, or off its edge?
+//
+// A pixel is interior iff the directions to the seeds around it do NOT
+// all fit in a half-plane — i.e. they span >180deg. If they all sit on
+// one side, the pixel is beyond the silhouette and filling it would
+// EXTRAPOLATE, which is what blooms an isolated point into a full-radius
+// disc ("exterior blur").
+//
+// Distinct seeds come free from the finished Voronoi map: sampling it at
+// an offset returns whichever seed owns THAT position, which on the far
+// side of a gap is a different one. 8 probes, and only for pixels far
+// enough from their seed to be at risk — near ones fill unconditionally.
+fn interior(px: vec2i, dim: vec2i, R: f32) -> bool {
+  var sectors: u32 = 0u;
+  for (var k = 0; k < 8; k = k + 1) {
+    let a = f32(k) * 0.78539816;
+    let q = vec2i(round(vec2f(px) + vec2f(cos(a), sin(a)) * R));
+    if (q.x < 0 || q.y < 0 || q.x >= dim.x || q.y >= dim.y) { continue; }
+    let sd = textureLoad(seed, q, 0);
+    if (sd.x == 0xffffffffu) { continue; }
+    let d = vec2f(f32(i32(sd.x >> 16)), f32(i32(sd.x & 0xffffu))) - vec2f(px);
+    let len = length(d);
+    if (len < 0.5) { return true; }        // a seed sits on us
+    var ang = atan2(d.y, d.x);
+    if (ang < 0.0) { ang = ang + 6.28318531; }
+    sectors = sectors | (1u << (u32(ang / 0.78539816) & 7u));
+  }
+  if (sectors == 0u) { return false; }
+  // any 180deg window (4 of 8 sectors) containing every occupied sector
+  // means the seeds are all on one side -> extrapolating
+  for (var r = 0u; r < 8u; r = r + 1u) {
+    let w = ((0xFu << r) | (0xFu >> (8u - r))) & 0xFFu;
+    if ((sectors & ~w & 0xFFu) == 0u) { return false; }
+  }
+  return true;
 }
 
 @fragment
@@ -162,7 +181,10 @@ fn fs(i: VOut) -> @location(0) vec4f {
     let dx = f32(sx - px.x);
     let dy = f32(sy - px.y);
     let d2 = dx * dx + dy * dy;
-    if (d2 <= u.maxR2 && enclosed(px, vec2f(f32(sx), f32(sy)), sqrt(d2), dim, u.support)) {
+    let dd = sqrt(d2);
+    // near seeds fill unconditionally; only far ones can be extrapolation
+    let ok = u.support <= 0.0 || dd <= u.support || interior(px, dim, dd);
+    if (d2 <= u.maxR2 && ok) {
       let sz = bitcast<f32>(s.y);
       // Fill holes; ALSO overwrite rendered points that lie distinctly
       // BEHIND the winning surface (screen-space hidden-point removal —
@@ -195,15 +217,11 @@ export interface VoronoiFillSettings {
   /** Relative depth tolerance separating "same surface" from
    *  "occluding surface". Default 0.02. */
   readonly depthTolerance?: number;
-  /** Silhouette tightness. A hole is filled only when the surface also
-   *  continues on the far side, within `support` × the seed distance —
-   *  so isolated points stop blooming into full-radius discs.
-   *
-   *  BROKEN as implemented — the mirror probe usually lands inside the
-   *  SAME seed's Voronoi cell, which reports that seed at ~2×d and fails
-   *  the test, carving rings around every point instead of tightening
-   *  silhouettes. A correct version needs the nearest seed EXCLUDING the
-   *  winner (i.e. per-quadrant seeds in the JFA). Default 0 = off. */
+  /** Silhouette tightness, in pixels. Holes whose nearest seed is
+   *  farther than this run the 180deg interior test (see `interior`) and
+   *  are only filled when seeds surround them — so isolated points stop
+   *  blooming into full-radius discs. Smaller = tighter outlines and
+   *  more probes; 0 disables the test. Default 0. */
   readonly exteriorSupport?: number;
 }
 

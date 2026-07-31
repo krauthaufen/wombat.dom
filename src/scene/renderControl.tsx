@@ -41,8 +41,9 @@ import type { OitMode } from "./transparency.js";
 import type { GtaoOption } from "./gtao.js";
 import type { PlaneFitOption } from "./planeFit.js";
 import type { VoronoiFillOption } from "./voronoiFill.js";
+import type { GridFillOption } from "./gridFill.js";
 import {
-  gtaoFramePass, planeFitFramePass, voronoiFillFramePass,
+  gtaoFramePass, gridFillFramePass, planeFitFramePass, voronoiFillFramePass,
   type FramePass, type FramePassInstance,
 } from "./framePass.js";
 import type { SgNode } from "./sg.js";
@@ -106,6 +107,10 @@ export interface RenderControlProps {
    *  maxRadius. Runs before planeFitShading, which then shades the
    *  FILLED surface. */
   readonly voronoiFill?: VoronoiFillOption;
+  /** Grid fill — same job as voronoiFill via an explicit screen-space
+   *  grid instead of jump flooding. Runs in the same slot; enable one or
+   *  the other (both would composite twice). */
+  readonly gridFill?: GridFillOption;
   /** Ordered custom screen-space passes appended after the built-in
    *  sugar passes (voronoiFill, planeFitShading, ambientOcclusion).
    *  See `framePass.ts` — the RenderControl extension point for
@@ -501,6 +506,8 @@ async function initialise(
   const passOptions: FramePass[] = [];
   if (props.voronoiFill !== undefined && props.voronoiFill !== false)
     passOptions.push(voronoiFillFramePass(props.voronoiFill));
+  if (props.gridFill !== undefined && props.gridFill !== false)
+    passOptions.push(gridFillFramePass(props.gridFill));
   if (props.planeFitShading !== undefined && props.planeFitShading !== false)
     passOptions.push(planeFitFramePass(props.planeFitShading));
   if (props.ambientOcclusion !== undefined && props.ambientOcclusion !== false)

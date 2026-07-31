@@ -21,6 +21,7 @@ import type { IFramebuffer } from "@aardworx/wombat.rendering/core";
 import { createGtaoPass, gtaoConfig, type GtaoOption } from "./gtao.js";
 import { createPlaneFitPass, planeFitConfig, type PlaneFitOption } from "./planeFit.js";
 import { createVoronoiFillPass, voronoiFillConfig, type VoronoiFillOption } from "./voronoiFill.js";
+import { createGridFillPass, gridFillConfig, type GridFillOption } from "./gridFill.js";
 
 /** Creation-time context handed to `FramePass.create`. */
 export interface FramePassContext {
@@ -74,6 +75,23 @@ export function voronoiFillFramePass(opt: VoronoiFillOption): FramePass {
     ...(version !== undefined ? { version } : {}),
     create: (ctx) => {
       const p = createVoronoiFillPass(ctx.device, ctx.colorFormat, cfg.settings);
+      return {
+        run: (f) => p.run(f.framebuffer, f.pick, f.colorName, f.pickConsumed),
+        dispose: () => p.dispose(),
+      };
+    },
+  };
+}
+
+/** Grid fill — geometric counterpart to the JFA fill (see gridFill.ts). */
+export function gridFillFramePass(opt: GridFillOption): FramePass {
+  const cfg = gridFillConfig(opt);
+  const version = (cfg.settings as { version?: aval<unknown> }).version;
+  return {
+    enabled: cfg.enabled,
+    ...(version !== undefined ? { version } : {}),
+    create: (ctx) => {
+      const p = createGridFillPass(ctx.device, ctx.colorFormat, cfg.settings);
       return {
         run: (f) => p.run(f.framebuffer, f.pick, f.colorName, f.pickConsumed),
         dispose: () => p.dispose(),
