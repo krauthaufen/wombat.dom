@@ -24,19 +24,49 @@ import type { IFramebuffer } from "@aardworx/wombat.rendering/core";
 // bandwidth-bound: 6 steps x 9 taps was 432 B/pixel, now 216 B.
 const SEED_COMMON = /* wgsl */ `
 const INVALID: u32 = 0xffffffffu;
-fn packSeed(dx: i32, dy: i32, z: f32) -> u32 {
-  let q = u32(clamp(z, 0.0, 1.0) * 262143.0);
-  return (u32(dx + 64) << 25u) | (u32(dy + 64) << 18u) | q;
+
+// The 18 depth bits hold log2 of the DISTANCE PROXY, not the raw NDC z.
+//
+// Reversed-Z is hyperbolic (ndc = near/zView), so quantising it linearly
+// spends nearly all its precision on the first few metres: at 300 m the
+// step is 2.3% of the value, larger than the comparator's 2% "same
+// surface" tolerance — depth collapses into buckets and the fill shows
+// iso-depth contour banding. A log scale gives CONSTANT relative
+// precision instead: 40 octaves over 18 bits is ~0.01% everywhere.
+fn packSeedQ(dx: i32, dy: i32, q: u32) -> u32 {
+  return (u32(dx + 64) << 25u) | (u32(dy + 64) << 18u) | (q & 0x3ffffu);
+}
+fn quantProxy(proxy: f32) -> u32 {
+  let l = clamp((log2(max(proxy, 1e-9)) + 20.0) / 40.0, 0.0, 1.0);
+  return u32(l * 262143.0);
+}
+fn proxyOf(z: f32, revZ: f32) -> f32 {
+  if (revZ != 0.0) { return 1.0 / max(z, 1e-9); }
+  return z;
+}
+fn packSeed(dx: i32, dy: i32, z: f32, revZ: f32) -> u32 {
+  return packSeedQ(dx, dy, quantProxy(proxyOf(z, revZ)));
 }
 fn seedOffset(s: u32) -> vec2i {
   return vec2i(i32((s >> 25u) & 127u) - 64, i32((s >> 18u) & 127u) - 64);
 }
-fn seedDepth(s: u32) -> f32 { return f32(s & 0x3ffffu) / 262143.0; }
+/// monotone distance proxy (bigger = farther), as stored
+fn seedProxy(s: u32) -> f32 {
+  return exp2((f32(s & 0x3ffffu) / 262143.0) * 40.0 - 20.0);
+}
+/// back to an NDC depth for downstream shading
+fn seedZ(s: u32, revZ: f32) -> f32 {
+  let p = seedProxy(s);
+  if (revZ != 0.0) { return 1.0 / p; }
+  return p;
+}
 `;
 
 const INIT_WGSL = SEED_COMMON + /* wgsl */ `
+struct IU { reversedZ: f32, _p0: f32, _p1: f32, _p2: f32 }
 @group(0) @binding(0) var pick: texture_2d<f32>;
 @group(0) @binding(1) var seedOut: texture_storage_2d<r32uint, write>;
+@group(0) @binding(2) var<uniform> iu: IU;
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
@@ -44,7 +74,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   if (gid.x >= dim.x || gid.y >= dim.y) { return; }
   let z = textureLoad(pick, vec2i(gid.xy), 0).z;
   if (z > 0.0 && z < 1.0) {
-    textureStore(seedOut, vec2i(gid.xy), vec4u(packSeed(0, 0, z), 0, 0, 0));
+    textureStore(seedOut, vec2i(gid.xy), vec4u(packSeed(0, 0, z, iu.reversedZ), 0, 0, 0));
   } else {
     textureStore(seedOut, vec2i(gid.xy), vec4u(INVALID, 0, 0, 0));
   }
@@ -97,8 +127,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         // does plain 2D Voronoi apply.
         let cw = f32(d2) <= u.reach2;
         let bw = f32(bestD2) <= u.reach2;
-        let lc = distProxy(seedDepth(cand));
-        let lb = distProxy(seedDepth(best));
+        let lc = seedProxy(cand);
+        let lb = seedProxy(best);
         let cNearer = lc < lb * (1.0 - u.tol);
         let bNearer = lb < lc * (1.0 - u.tol);
         if (cw && !bw) { take = true; }
@@ -109,7 +139,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       }
       if (take) {
         bestD2 = d2;
-        best = packSeed(off.x, off.y, seedDepth(cand));
+        // keep the candidate's depth bits verbatim — only the offset changes,
+        // so propagation never re-quantises
+        best = packSeedQ(off.x, off.y, cand);
       }
     }
   }
@@ -219,7 +251,7 @@ fn fs(i: VOut) -> @location(0) vec4f {
     let dy = f32(off.y);
     let d2 = dx * dx + dy * dy;
     let dd = sqrt(d2);
-    let sz = seedDepth(s);
+    let sz = seedZ(s, u.reversedZ);
     let rad = fillRadius(sz);
     // Probe at the SUPPORT radius, not at the seed distance: probing at
     // the seed distance lands inside that seed's own Voronoi cell and
@@ -229,7 +261,7 @@ fn fs(i: VOut) -> @location(0) vec4f {
       // Fill holes; ALSO overwrite rendered points that lie distinctly
       // BEHIND the winning surface (screen-space hidden-point removal —
       // background points otherwise speckle through close-up surfaces).
-      let seedNearer = distProxy(sz) < distProxy(own.z) * (1.0 - u.tol);
+      let seedNearer = seedProxy(s) < distProxy(own.z) * (1.0 - u.tol);
       if (!ownValid || seedNearer) {
         color = textureLoad(colorCopy, vec2i(sx, sy), 0);
         outPick = vec4f(own.x, own.y, sz, own.w);
@@ -310,6 +342,9 @@ export function createVoronoiFillPass(
     primitive: { topology: "triangle-list" },
     label: "vfill.resolve",
   });
+  const initUbo = device.createBuffer({
+    size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "vfill.init.u",
+  });
   const stepUbos: GPUBuffer[] = [];
   const resolveUbo = device.createBuffer({
     size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "vfill.u",
@@ -361,6 +396,7 @@ export function createVoronoiFillPass(
       const h = pick.height;
       ensure(w, h);
 
+      device.queue.writeBuffer(initUbo, 0, new Float32Array([revZ ? 1 : 0, 0, 0, 0]));
       const enc = device.createCommandEncoder({ label: "vfill.frame" });
       enc.copyTextureToTexture({ texture: colorTex }, { texture: colorCopy! }, { width: w, height: h });
       {
@@ -369,6 +405,7 @@ export function createVoronoiFillPass(
           entries: [
             { binding: 0, resource: pick.createView() },
             { binding: 1, resource: seedA!.createView() },
+            { binding: 2, resource: { buffer: initUbo } },
           ],
         });
         const pass = enc.beginComputePass({ label: "vfill.init" });
@@ -442,7 +479,7 @@ export function createVoronoiFillPass(
     dispose() {
       for (const t of [seedA, seedB, colorCopy, filledPick]) t?.destroy();
       seedA = seedB = colorCopy = filledPick = undefined;
-      resolveUbo.destroy();
+      resolveUbo.destroy(); initUbo.destroy();
       for (const b of stepUbos) b.destroy();
     },
   };
