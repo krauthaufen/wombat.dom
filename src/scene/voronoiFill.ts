@@ -207,7 +207,7 @@ fn fillRadius(z: f32) -> f32 {
 // an offset returns whichever seed owns THAT position, which on the far
 // side of a gap is a different one. 8 probes, and only for pixels far
 // enough from their seed to be at risk — near ones fill unconditionally.
-fn interior(px: vec2i, dim: vec2i, R: f32) -> bool {
+fn interior(px: vec2i, dim: vec2i, R: f32, refProxy: f32) -> bool {
   var sectors: u32 = 0u;
   for (var k = 0; k < 8; k = k + 1) {
     let a = f32(k) * 0.78539816;
@@ -215,6 +215,14 @@ fn interior(px: vec2i, dim: vec2i, R: f32) -> bool {
     if (q.x < 0 || q.y < 0 || q.x >= dim.x || q.y >= dim.y) { continue; }
     let sd = textureLoad(seed, q, 0).x;
     if (sd == INVALID) { continue; }
+    // Support must come from the WINNER'S OWN SURFACE. A silhouette with
+    // geometry behind it (a roof against a far slope, not empty sky)
+    // otherwise gets its missing sectors from the background, passes the
+    // test, and the nearer surface bleeds outward anyway — the very
+    // artifact this is meant to stop. Same-layer test, same relative
+    // tolerance the comparator uses.
+    let sp = seedProxy(sd);
+    if (sp < refProxy * (1.0 - u.tol) || refProxy < sp * (1.0 - u.tol)) { continue; }
     // seeds are stored RELATIVE to the pixel holding them — rebase to us
     let d = vec2f(seedOffset(sd) + (q - px));
     let len = length(d);
@@ -256,7 +264,8 @@ fn fs(i: VOut) -> @location(0) vec4f {
     // Probe at the SUPPORT radius, not at the seed distance: probing at
     // the seed distance lands inside that seed's own Voronoi cell and
     // just reports it back. Pixels sitting on a point skip the test.
-    let ok = u.support <= 0.0 || dd <= 1.5 || interior(px, dim, min(u.support, rad));
+    let ok = u.support <= 0.0 || dd <= 1.5
+             || interior(px, dim, min(u.support, rad), seedProxy(s));
     if (dd <= rad && ok) {
       // Fill holes; ALSO overwrite rendered points that lie distinctly
       // BEHIND the winning surface (screen-space hidden-point removal —
