@@ -153,7 +153,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 // filled pick-shaped depth texture (z slot) for downstream shading.
 const RESOLVE_WGSL = SEED_COMMON + /* wgsl */ `
 struct U { maxR2: f32, tol: f32, reversedZ: f32, writePick: f32,
-           support: f32, farRadius: f32, falloffDist: f32, nearPlane: f32 }
+           support: f32, farRadius: f32, falloffDist: f32, nearPlane: f32,
+           supportTol: f32, _q0: f32, _q1: f32, _q2: f32 }
 @group(0) @binding(0) var seed: texture_2d<u32>;
 @group(0) @binding(1) var colorCopy: texture_2d<f32>;
 @group(0) @binding(2) var pick: texture_2d<f32>;
@@ -221,8 +222,14 @@ fn interior(px: vec2i, dim: vec2i, R: f32, refProxy: f32) -> bool {
     // test, and the nearer surface bleeds outward anyway — the very
     // artifact this is meant to stop. Same-layer test, same relative
     // tolerance the comparator uses.
+    // Same-surface window. It must be far wider than the comparator's
+    // layer tolerance: across a probe radius a SLANTED surface changes
+    // depth by a lot, so a 2% window rejects genuine neighbours and the
+    // fill dies everywhere. supportTol is that window (0 = accept any).
     let sp = seedProxy(sd);
-    if (sp < refProxy * (1.0 - u.tol) || refProxy < sp * (1.0 - u.tol)) { continue; }
+    if (u.supportTol > 0.0) {
+      if (sp < refProxy * (1.0 - u.supportTol) || refProxy < sp * (1.0 - u.supportTol)) { continue; }
+    }
     // seeds are stored RELATIVE to the pixel holding them — rebase to us
     let d = vec2f(seedOffset(sd) + (q - px));
     let len = length(d);
@@ -308,6 +315,11 @@ export interface VoronoiFillSettings {
    *  1/distance beyond `falloffDistance` and clamps here, so far geometry
    *  reads like a fixed-size splat while near surfaces keep the full
    *  Voronoi reach. 0 disables the falloff. Default 0. */
+  /** Same-surface window for the edge-support probes, as a relative
+   *  depth fraction. Must be much wider than `depthTolerance` because a
+   *  slanted surface changes depth across the probe radius. 0 accepts
+   *  seeds at any depth (direction-only support). Default 0. */
+  readonly supportTolerance?: number;
   readonly farRadius?: number;
   /** Distance (scene units) out to which the full `maxRadius` applies.
    *  Default 10. */
@@ -356,7 +368,7 @@ export function createVoronoiFillPass(
   });
   const stepUbos: GPUBuffer[] = [];
   const resolveUbo = device.createBuffer({
-    size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "vfill.u",
+    size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "vfill.u",
   });
 
   let seedA: GPUTexture | undefined;
@@ -400,6 +412,8 @@ export function createVoronoiFillPass(
         settings.farRadius ?? 0,
         settings.falloffDistance ?? 10,
         settings.nearPlane ?? 0.05,
+        settings.supportTolerance ?? 0,
+        0, 0, 0,
       ]));
       const w = pick.width;
       const h = pick.height;
