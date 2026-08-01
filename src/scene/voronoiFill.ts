@@ -50,6 +50,11 @@ fn packSeed(dx: i32, dy: i32, z: f32, revZ: f32) -> u32 {
 fn seedOffset(s: u32) -> vec2i {
   return vec2i(i32((s >> 25u) & 127u) - 64, i32((s >> 18u) & 127u) - 64);
 }
+/// log2 of the distance proxy — this is literally what the bits hold, so
+/// reading it costs nothing and plane maths in log space is scale-free
+fn seedLog(s: u32) -> f32 {
+  return (f32(s & 0x3ffffu) / 262143.0) * 40.0 - 20.0;
+}
 /// monotone distance proxy (bigger = farther), as stored
 fn seedProxy(s: u32) -> f32 {
   return exp2((f32(s & 0x3ffffu) / 262143.0) * 40.0 - 20.0);
@@ -208,8 +213,46 @@ fn fillRadius(z: f32) -> f32 {
 // an offset returns whichever seed owns THAT position, which on the far
 // side of a gap is a different one. 8 probes, and only for pixels far
 // enough from their seed to be at risk — near ones fill unconditionally.
-fn interior(px: vec2i, dim: vec2i, R: f32, refProxy: f32) -> bool {
+/// Local surface slope as a gradient of log-depth per pixel.
+///
+/// A flat depth window cannot express "same surface": a slanted surface
+/// changes depth across the probe radius by far more than any tolerance
+/// that would still exclude the background. Fitting the slope instead
+/// makes the test scale- and orientation-free — in log space the
+/// gradient is the same whether the surface is 5 m or 500 m away.
+///
+/// Sampled as one-sided differences, keeping the SMALLER magnitude per
+/// axis: at a silhouette one side crosses the discontinuity and returns
+/// a huge slope, so the quieter side is the honest one.
+fn logGradient(px: vec2i, dim: vec2i, k: i32, L0: f32) -> vec2f {
+  var g = vec2f(0.0, 0.0);
+  for (var axis = 0; axis < 2; axis = axis + 1) {
+    var d = vec2i(0, 0);
+    if (axis == 0) { d.x = k; } else { d.y = k; }
+    var best = 0.0;
+    var have = false;
+    let qF = px + d;
+    if (qF.x >= 0 && qF.y >= 0 && qF.x < dim.x && qF.y < dim.y) {
+      let sF = textureLoad(seed, qF, 0).x;
+      if (sF != INVALID) { best = (seedLog(sF) - L0) / f32(k); have = true; }
+    }
+    let qB = px - d;
+    if (qB.x >= 0 && qB.y >= 0 && qB.x < dim.x && qB.y < dim.y) {
+      let sB = textureLoad(seed, qB, 0).x;
+      if (sB != INVALID) {
+        let cand = (L0 - seedLog(sB)) / f32(k);
+        if (!have || abs(cand) < abs(best)) { best = cand; have = true; }
+      }
+    }
+    if (axis == 0) { g.x = best; } else { g.y = best; }
+  }
+  return g;
+}
+
+fn interior(px: vec2i, dim: vec2i, R: f32, refLog: f32) -> bool {
   var sectors: u32 = 0u;
+  let tolLog = log2(1.0 + max(u.supportTol, 1e-4));
+  let grad = logGradient(px, dim, max(2, i32(R * 0.35)), refLog);
   for (var k = 0; k < 8; k = k + 1) {
     let a = f32(k) * 0.78539816;
     let q = vec2i(round(vec2f(px) + vec2f(cos(a), sin(a)) * R));
@@ -222,16 +265,16 @@ fn interior(px: vec2i, dim: vec2i, R: f32, refProxy: f32) -> bool {
     // test, and the nearer surface bleeds outward anyway — the very
     // artifact this is meant to stop. Same-layer test, same relative
     // tolerance the comparator uses.
-    // Same-surface window. It must be far wider than the comparator's
-    // layer tolerance: across a probe radius a SLANTED surface changes
-    // depth by a lot, so a 2% window rejects genuine neighbours and the
-    // fill dies everywhere. supportTol is that window (0 = accept any).
-    let sp = seedProxy(sd);
-    if (u.supportTol > 0.0) {
-      if (sp < refProxy * (1.0 - u.supportTol) || refProxy < sp * (1.0 - u.supportTol)) { continue; }
-    }
     // seeds are stored RELATIVE to the pixel holding them — rebase to us
     let d = vec2f(seedOffset(sd) + (q - px));
+    // Same-surface test against the fitted PLANE, not a flat depth
+    // window: predict this seed's log-depth from the local slope and
+    // accept only if it lands on the prediction. Background behind a
+    // silhouette deviates hard; a slanted surface does not.
+    if (u.supportTol > 0.0) {
+      let predicted = refLog + dot(grad, d);
+      if (abs(seedLog(sd) - predicted) > tolLog) { continue; }
+    }
     let len = length(d);
     if (len < 0.5) { return true; }        // a seed sits on us
     var ang = atan2(d.y, d.x);
@@ -272,7 +315,7 @@ fn fs(i: VOut) -> @location(0) vec4f {
     // the seed distance lands inside that seed's own Voronoi cell and
     // just reports it back. Pixels sitting on a point skip the test.
     let ok = u.support <= 0.0 || dd <= 1.5
-             || interior(px, dim, min(u.support, rad), seedProxy(s));
+             || interior(px, dim, min(u.support, rad), seedLog(s));
     if (dd <= rad && ok) {
       // Fill holes; ALSO overwrite rendered points that lie distinctly
       // BEHIND the winning surface (screen-space hidden-point removal —
