@@ -12,6 +12,7 @@
 // Same G-buffer contract as gtao/planeFit: pickId slot .z = NDC depth.
 
 import { AVal, type aval } from "@aardworx/wombat.adaptive";
+import type { Trafo3d } from "@aardworx/wombat.base";
 import type { IFramebuffer } from "@aardworx/wombat.rendering/core";
 
 // Seed record, packed into a SINGLE u32 (was two: absolute coord + f32
@@ -159,7 +160,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 const RESOLVE_WGSL = SEED_COMMON + /* wgsl */ `
 struct U { maxR2: f32, tol: f32, reversedZ: f32, writePick: f32,
            support: f32, farRadius: f32, falloffDist: f32, nearPlane: f32,
-           supportTol: f32, _q0: f32, _q1: f32, _q2: f32 }
+           supportTol: f32, surfel: f32, sizeX: f32, sizeY: f32,
+           projInv: mat4x4<f32> }
 @group(0) @binding(0) var seed: texture_2d<u32>;
 @group(0) @binding(1) var colorCopy: texture_2d<f32>;
 @group(0) @binding(2) var pick: texture_2d<f32>;
@@ -181,6 +183,51 @@ fn vs(@builtin(vertex_index) vi: u32) -> VOut {
 fn distProxy(z: f32) -> f32 {
   if (u.reversedZ != 0.0) { return 1.0 / max(z, 1e-6); }
   return z;
+}
+
+// oct24-packed view-space normal, same encoding wombat's pick chain writes
+// and gtao reads (12 bits per axis, octahedral)
+fn n24decode(e: f32) -> vec3f {
+  let i = i32(e);
+  let xi = (i >> 12) & 4095;
+  let yi = i & 4095;
+  var x = f32(xi) / 4095.0 * 2.0 - 1.0;
+  var y = f32(yi) / 4095.0 * 2.0 - 1.0;
+  let z0 = 1.0 - abs(x) - abs(y);
+  if (z0 < 0.0) {
+    let ox = x;
+    x = (1.0 - abs(y)) * select(-1.0, 1.0, ox >= 0.0);
+    y = (1.0 - abs(ox)) * select(-1.0, 1.0, y >= 0.0);
+  }
+  return normalize(vec3f(x, y, z0));
+}
+
+fn viewPosOf(px: vec2i, z: f32) -> vec3f {
+  let uv = (vec2f(px) + 0.5) / vec2f(u.sizeX, u.sizeY);
+  let ndc = vec4f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, z, 1.0);
+  let v = u.projInv * ndc;
+  return v.xyz / v.w;
+}
+
+// Depth this pixel would have if it lay on the SURFEL at sp - the point's
+// own disc, tilted by its scan normal, rather than a fronto-parallel disc.
+// Ray/plane intersection in view space, returned as NDC z. Falls back to
+// the surfel's own depth when the geometry is degenerate (grazing normal,
+// no normal recorded).
+fn surfelDepthAt(px: vec2i, sp: vec2i, sz: f32, nEnc: f32) -> f32 {
+  let n = n24decode(nEnc);
+  let P = viewPosOf(sp, sz);
+  let dir = viewPosOf(px, sz);              // any point on this pixel's ray
+  let denom = dot(n, dir);
+  if (abs(denom) < 1e-6) { return sz; }
+  let t = dot(n, P) / denom;
+  if (t <= 0.0) { return sz; }
+  let hit = dir * t;
+  // back to NDC z: reversed-Z with infinite far gives ndc = near / -zView
+  let zv = -hit.z;
+  if (zv <= 1e-6) { return sz; }
+  if (u.reversedZ != 0.0) { return clamp(u.nearPlane / zv, 1e-7, 0.9999999); }
+  return sz;
 }
 
 // Fill radius as a function of distance.
@@ -323,7 +370,16 @@ fn fs(i: VOut) -> @location(0) vec4f {
       let seedNearer = seedProxy(s) < distProxy(own.z) * (1.0 - u.tol);
       if (!ownValid || seedNearer) {
         color = textureLoad(colorCopy, vec2i(sx, sy), 0);
-        outPick = vec4f(own.x, own.y, sz, own.w);
+        // Tilt the disc: take the depth the seed's own surface predicts
+        // HERE instead of copying the seed's depth flat across its cell.
+        // That turns the filled depth buffer from a staircase into a
+        // piecewise-planar surface, which is what the shading pass fits.
+        var outZ = sz;
+        if (u.surfel != 0.0) {
+          let sPick = textureLoad(pick, vec2i(sx, sy), 0);
+          if (sPick.y != 0.0) { outZ = surfelDepthAt(px, vec2i(sx, sy), sz, sPick.y); }
+        }
+        outPick = vec4f(own.x, own.y, outZ, own.w);
         fill = true;
       }
     }
@@ -354,6 +410,10 @@ export interface VoronoiFillSettings {
    *  blooming into full-radius discs. Smaller = tighter outlines and
    *  more probes; 0 disables the test. Default 0. */
   readonly exteriorSupport?: number;
+  /** Use each point's scan normal to tilt its disc, so the filled depth
+   *  follows the surface instead of being flat per Voronoi cell. Requires
+   *  a wire exported with normals. Default false. */
+  readonly surfelDepth?: boolean;
   /** Fill radius in pixels for DISTANT surfaces. The radius falls off as
    *  1/distance beyond `falloffDistance` and clamps here, so far geometry
    *  reads like a fixed-size splat while near surfaces keep the full
@@ -381,7 +441,7 @@ export interface VoronoiFillPass {
   /** Fill the canvas holes. Returns the filled pick-shaped texture
    *  (z = filled NDC depth) for downstream passes, or undefined if the
    *  pass could not run. Call AFTER the scene render, BEFORE shading. */
-  run(fb: IFramebuffer, pickTexture: GPUTexture, colorName: string, needPick?: boolean): GPUTexture | undefined;
+  run(fb: IFramebuffer, pickTexture: GPUTexture, colorName: string, needPick?: boolean, proj?: Trafo3d): GPUTexture | undefined;
   dispose(): void;
 }
 
@@ -411,7 +471,7 @@ export function createVoronoiFillPass(
   });
   const stepUbos: GPUBuffer[] = [];
   const resolveUbo = device.createBuffer({
-    size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "vfill.u",
+    size: 112, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "vfill.u",
   });
 
   let seedA: GPUTexture | undefined;
@@ -439,7 +499,7 @@ export function createVoronoiFillPass(
   };
 
   return {
-    run(fb, pick, colorName, needPick) {
+    run(fb, pick, colorName, needPick, proj) {
       const colorView = fb.colors.tryFind(colorName);
       const colorTex = fb.colorTextures?.tryFind?.(colorName);
       if (colorView === undefined || colorTex === undefined) return undefined;
@@ -449,15 +509,28 @@ export function createVoronoiFillPass(
       const tol = settings.depthTolerance ?? 0.02;
       const revZ = settings.reversedZ ?? true;
       const wantPick = needPick !== false;
-      device.queue.writeBuffer(resolveUbo, 0, new Float32Array([
+      const surfel = (settings.surfelDepth ?? false) && proj !== undefined;
+      const wpx = pick.width, hpx = pick.height;
+      const ru = new Float32Array(28);
+      ru.set([
         maxRadius * maxRadius, tol, revZ ? 1 : 0, wantPick ? 1 : 0,
         settings.exteriorSupport ?? 0,
         settings.farRadius ?? 0,
         settings.falloffDistance ?? 10,
         settings.nearPlane ?? 0.05,
         settings.supportTolerance ?? 0,
-        0, 0, 0,
-      ]));
+        surfel ? 1 : 0, wpx, hpx,
+      ], 0);
+      if (proj !== undefined) {
+        const m = proj.backward;   // column-major, as planeFit packs it
+        ru.set([
+          m.M00, m.M10, m.M20, m.M30,
+          m.M01, m.M11, m.M21, m.M31,
+          m.M02, m.M12, m.M22, m.M32,
+          m.M03, m.M13, m.M23, m.M33,
+        ], 12);
+      }
+      device.queue.writeBuffer(resolveUbo, 0, ru);
       const w = pick.width;
       const h = pick.height;
       ensure(w, h);

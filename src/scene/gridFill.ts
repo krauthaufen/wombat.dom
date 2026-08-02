@@ -473,7 +473,7 @@ export type GridFillOption =
   | (GridFillSettings & { readonly enabled?: boolean | aval<boolean> });
 
 export interface GridFillPass {
-  run(fb: IFramebuffer, pickTexture: GPUTexture, colorName: string, needPick?: boolean): GPUTexture | undefined;
+  run(fb: IFramebuffer, pickTexture: GPUTexture, colorName: string, needPick?: boolean, proj?: unknown): GPUTexture | undefined;
   dispose(): void;
 }
 

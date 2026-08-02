@@ -76,7 +76,7 @@ export function voronoiFillFramePass(opt: VoronoiFillOption): FramePass {
     create: (ctx) => {
       const p = createVoronoiFillPass(ctx.device, ctx.colorFormat, cfg.settings);
       return {
-        run: (f) => p.run(f.framebuffer, f.pick, f.colorName, f.pickConsumed),
+        run: (f) => p.run(f.framebuffer, f.pick, f.colorName, f.pickConsumed, f.proj),
         dispose: () => p.dispose(),
       };
     },
@@ -93,7 +93,7 @@ export function gridFillFramePass(opt: GridFillOption): FramePass {
     create: (ctx) => {
       const p = createGridFillPass(ctx.device, ctx.colorFormat, cfg.settings);
       return {
-        run: (f) => p.run(f.framebuffer, f.pick, f.colorName, f.pickConsumed),
+        run: (f) => p.run(f.framebuffer, f.pick, f.colorName, f.pickConsumed, f.proj),
         dispose: () => p.dispose(),
       };
     },
