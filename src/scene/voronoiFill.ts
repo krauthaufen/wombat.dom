@@ -88,7 +88,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 `;
 
 const STEP_WGSL = SEED_COMMON + /* wgsl */ `
-struct U { step: i32, reversedZ: i32, reach2: f32, tol: f32 }
+struct U { step: i32, reversedZ: i32, reach2: f32, tol: f32,
+           nearRatio2: f32, _p0: f32, _p1: f32, _p2: f32 }
 @group(0) @binding(0) var seedIn: texture_2d<u32>;
 @group(0) @binding(1) var seedOut: texture_storage_2d<r32uint, write>;
 @group(0) @binding(2) var<uniform> u: U;
@@ -137,10 +138,19 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let lb = seedProxy(best);
         let cNearer = lc < lb * (1.0 - u.tol);
         let bNearer = lb < lc * (1.0 - u.tol);
+        // "Nearer wins within reach" is what stops background specks
+        // showing through a close surface — but unbounded it also lets a
+        // near surface DILATE the full reach past its own silhouette,
+        // which is the halo around every window reveal and rock ledge.
+        // Bound it: a nearer seed may only take the pixel if it is not
+        // dramatically farther away in 2D than the incumbent.
+        let ok2 = u.nearRatio2 <= 0.0;
+        let cWins = cNearer && (ok2 || f32(d2) <= f32(bestD2) * u.nearRatio2);
+        let bWins = bNearer && (ok2 || f32(bestD2) <= f32(d2) * u.nearRatio2);
         if (cw && !bw) { take = true; }
         else if (bw && !cw) { take = false; }
-        else if (cw && bw && cNearer) { take = true; }
-        else if (cw && bw && bNearer) { take = false; }
+        else if (cw && bw && cWins) { take = true; }
+        else if (cw && bw && bWins) { take = false; }
         else { take = d2 < bestD2; }
       }
       if (take) {
@@ -414,6 +424,11 @@ export interface VoronoiFillSettings {
    *  follows the surface instead of being flat per Voronoi cell. Requires
    *  a wire exported with normals. Default false. */
   readonly surfelDepth?: boolean;
+  /** Bounds how far a nearer surface may dilate past its silhouette: it
+   *  only outranks a farther seed when within this multiple of the
+   *  farther one's 2D distance. 0 = unbounded (old behaviour). ~2 keeps
+   *  speckle suppression while removing the ledge/reveal halos. */
+  readonly nearRatio?: number;
   /** Fill radius in pixels for DISTANT surfaces. The radius falls off as
    *  1/distance beyond `falloffDistance` and clamps here, so far geometry
    *  reads like a fixed-size splat while near surfaces keep the full
@@ -566,15 +581,16 @@ export function createVoronoiFillPass(
         }
       }
       while (stepUbos.length < steps.length) {
-        const b = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        const b = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
         stepUbos.push(b);
       }
       let src = seedA!;
       let dst = seedB!;
       steps.forEach((s, i) => {
-        const ub = new ArrayBuffer(16);
+        const ub = new ArrayBuffer(32);
         new Int32Array(ub, 0, 2).set([s, revZ ? 1 : 0]);
-        new Float32Array(ub, 8, 2).set([reach * reach, tol]);
+        const nr = settings.nearRatio ?? 0;
+        new Float32Array(ub, 8, 4).set([reach * reach, tol, nr * nr, 0]);
         const ubo = stepUbos[i]!;
         device.queue.writeBuffer(ubo, 0, ub);
         const bg = device.createBindGroup({
