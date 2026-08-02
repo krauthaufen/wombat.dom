@@ -81,6 +81,41 @@ fn fs(i: VOut) -> @location(0) vec4f {
   let ray = normalize(viewPos(vec2f(px), 0.5));
   let R = i32(ceil(u.radius));
 
+  // --- anisotropic search footprint ------------------------------------
+  // A CIRCLE in screen space maps to a long thin ellipse ON a tilted
+  // surface, so a grazing surface only ever gets neighbours along the
+  // foreshortening direction and the perpendicular sectors are empty —
+  // no amount of re-binning fixes that, the samples were never visited.
+  // Stretch the search the other way instead: an ellipse in screen space,
+  // elongated along the tilt, so it covers a roughly CIRCULAR patch on the
+  // surface. Same idea as the disc foreshortening, applied to the search.
+  var nProbe = vec3f(0.0, 0.0, 1.0);
+  var probed = false;
+  for (var ry = -3; ry <= 3 && !probed; ry = ry + 1) {
+    for (var rx = -3; rx <= 3; rx = rx + 1) {
+      let q = px + vec2i(rx, ry);
+      if (q.x < 0 || q.y < 0 || q.x >= dim.x || q.y >= dim.y) { continue; }
+      let sp = textureLoad(pick, q, 0);
+      if (sp.z <= 0.0 || sp.z >= 1.0) { continue; }
+      var nn = n24decode(sp.y);
+      let PP = viewPos(vec2f(q), sp.z);
+      if (dot(nn, PP) > 0.0) { nn = -nn; }
+      nProbe = nn; probed = true; break;
+    }
+  }
+  // major axis: the normal projected on screen; stretch by 1/cos(tilt),
+  // capped so a near-edge-on surface cannot explode the tap count
+  let nxy = nProbe.xy;
+  let nl = length(nxy);
+  var majorDir = vec2f(1.0, 0.0);
+  if (nl > 1e-4) { majorDir = nxy / nl; }
+  let minorDir = vec2f(-majorDir.y, majorDir.x);
+  let cosT = clamp(abs(nProbe.z), 0.25, 1.0);      // cap stretch at 4x
+  let aAx = u.radius / cosT;
+  let bAx = u.radius;
+  let Rx = i32(ceil(max(abs(majorDir.x) * aAx, abs(minorDir.x) * bAx)));
+  let Ry = i32(ceil(max(abs(majorDir.y) * aAx, abs(minorDir.y) * bAx)));
+
   // At most ONE accepted surfel per octant. Rejected ones never need
   // counting, and keeping every coverer would bias the interpolation
   // toward whichever direction happens to hold more points — one per
@@ -90,10 +125,15 @@ fn fs(i: VOut) -> @location(0) vec4f {
   var sc: array<vec3f, 8>;
   var have: u32 = 0u;
 
-  for (var dy = -R; dy <= R; dy = dy + 1) {
-    for (var dx = -R; dx <= R; dx = dx + 1) {
+  for (var dy = -Ry; dy <= Ry; dy = dy + 1) {
+    for (var dx = -Rx; dx <= Rx; dx = dx + 1) {
       let d2 = f32(dx * dx + dy * dy);
-      if (d2 > u.radius * u.radius || d2 < 0.25) { continue; }
+      if (d2 < 0.25) { continue; }
+      // inside the ellipse?
+      let dv = vec2f(f32(dx), f32(dy));
+      let eu = dot(dv, majorDir) / aAx;
+      let ev = dot(dv, minorDir) / bAx;
+      if (eu * eu + ev * ev > 1.0) { continue; }
       let q = px + vec2i(dx, dy);
       if (q.x < 0 || q.y < 0 || q.x >= dim.x || q.y >= dim.y) { continue; }
       let s = textureLoad(pick, q, 0);
