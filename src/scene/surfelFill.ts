@@ -89,10 +89,18 @@ fn fs(i: VOut) -> @location(0) vec4f {
   // Stretch the search the other way instead: an ellipse in screen space,
   // elongated along the tilt, so it covers a roughly CIRCULAR patch on the
   // surface. Same idea as the disc foreshortening, applied to the search.
+  // Probe outward for the nearest point, and let it set the search scale.
+  // A FIXED radius is wrong at both ends: far away the octree is at target
+  // spacing so 6px is far wider than needed (the red in sdbg=2), while near
+  // the camera the tree has bottomed out, screen spacing exceeds the radius
+  // and the search finds nothing at all (the black). Sizing the footprint
+  // from the measured local spacing handles both.
   var nProbe = vec3f(0.0, 0.0, 1.0);
   var probed = false;
-  for (var ry = -3; ry <= 3 && !probed; ry = ry + 1) {
-    for (var rx = -3; rx <= 3; rx = rx + 1) {
+  var dNear = u.radius;
+  let PR = i32(ceil(u.radius));
+  for (var ry = -PR; ry <= PR && !probed; ry = ry + 1) {
+    for (var rx = -PR; rx <= PR; rx = rx + 1) {
       let q = px + vec2i(rx, ry);
       if (q.x < 0 || q.y < 0 || q.x >= dim.x || q.y >= dim.y) { continue; }
       let sp = textureLoad(pick, q, 0);
@@ -100,7 +108,9 @@ fn fs(i: VOut) -> @location(0) vec4f {
       var nn = n24decode(sp.y);
       let PP = viewPos(vec2f(q), sp.z);
       if (dot(nn, PP) > 0.0) { nn = -nn; }
-      nProbe = nn; probed = true; break;
+      nProbe = nn; probed = true;
+      dNear = max(1.0, sqrt(f32(rx * rx + ry * ry)));
+      break;
     }
   }
   // major axis: the normal projected on screen; stretch by 1/cos(tilt),
@@ -111,8 +121,10 @@ fn fs(i: VOut) -> @location(0) vec4f {
   if (nl > 1e-4) { majorDir = nxy / nl; }
   let minorDir = vec2f(-majorDir.y, majorDir.x);
   let cosT = clamp(abs(nProbe.z), 0.25, 1.0);      // cap stretch at 4x
-  let aAx = u.radius / cosT;
-  let bAx = u.radius;
+  // ~3 spacings of reach, bounded by the configured maximum
+  let adaptive = clamp(3.0 * dNear, 3.0, u.radius);
+  let aAx = adaptive / cosT;
+  let bAx = adaptive;
   let Rx = i32(ceil(max(abs(majorDir.x) * aAx, abs(minorDir.x) * bAx)));
   let Ry = i32(ceil(max(abs(majorDir.y) * aAx, abs(minorDir.y) * bAx)));
 
@@ -124,6 +136,11 @@ fn fs(i: VOut) -> @location(0) vec4f {
   var sw: array<f32, 8>;
   var sc: array<vec3f, 8>;
   var have: u32 = 0u;
+  // sdbg=2: tally WHICH guard eats the candidates, instead of guessing
+  var nSeen = 0.0;      // pixels in the footprint that hold a point
+  var nDegen = 0.0;     // rejected by the denom / t<=0 guards
+  var nOutside = 0.0;   // rejected by the disc radius test
+  var nAccept = 0.0;
 
   for (var dy = -Ry; dy <= Ry; dy = dy + 1) {
     for (var dx = -Rx; dx <= Rx; dx = dx + 1) {
@@ -138,6 +155,7 @@ fn fs(i: VOut) -> @location(0) vec4f {
       if (q.x < 0 || q.y < 0 || q.x >= dim.x || q.y >= dim.y) { continue; }
       let s = textureLoad(pick, q, 0);
       if (s.z <= 0.0 || s.z >= 1.0) { continue; }
+      nSeen = nSeen + 1.0;
 
       // does this surfel's DISC cover us? ray/plane hit, then radius test
       let P = viewPos(vec2f(q), s.z);
@@ -151,25 +169,26 @@ fn fs(i: VOut) -> @location(0) vec4f {
       var n = n24decode(s.y);
       if (dot(n, P) > 0.0) { n = -n; }
       let denom = dot(n, ray);
-      if (abs(denom) < 1e-6) { continue; }
+      if (abs(denom) < 1e-6) { nDegen = nDegen + 1.0; continue; }
       let t = dot(n, P) / denom;
-      if (t <= 0.0) { continue; }
+      if (t <= 0.0) { nDegen = nDegen + 1.0; continue; }
       let H = ray * t;
       // world size of one pixel AT THIS DEPTH, measured rather than
       // approximated: unproject a neighbouring pixel at the same depth.
       // (The earlier length(P)/height guess was off by the fov factor,
       // which shrank every disc and starved the coverage test.)
       let pw = length(viewPos(vec2f(q) + vec2f(1.0, 0.0), s.z) - P);
-      let rw = u.radius * pw;
+      let rw = adaptive * pw;
       let dr = length(H - P);
       // A disc seen edge-on projects to a sliver, so pure ray/plane
       // coverage punches holes across grazing surfaces. Guarantee that a
       // surfel always covers the pixels immediately around its own: accept
       // when within the disc OR within ~1.5px on screen.
-      if (dr > rw && d2 > 2.25) { continue; }
+      if (dr > rw && d2 > 2.25) { nOutside = nOutside + 1.0; continue; }
       let zv = -H.z;
       if (zv <= 1e-6) { continue; }
       let zndc = select(s.z, clamp(u.nearPlane / zv, 1e-7, 0.9999999), u.reversedZ != 0.0);
+      nAccept = nAccept + 1.0;
 
       // Sector the neighbour IN THE SURFACE'S OWN PLANE, not on screen.
       // At grazing incidence a surface's neighbours project into a
@@ -203,6 +222,14 @@ fn fs(i: VOut) -> @location(0) vec4f {
   // 0 candidates -> red, otherwise green ramps with the number of octants
   // that found a covering surfel, blue marks a pixel that already had its
   // own point. Nothing else is drawn, so the picture is the diagnosis.
+  if (u.debug > 1.5) {
+    // red   = candidates thrown out by the DISC RADIUS test
+    // green = accepted
+    // blue  = thrown out by the degenerate-plane guards
+    let tot = max(nSeen, 1.0);
+    if (u.writePick != 0.0) { textureStore(filledPick, px, own); }
+    return vec4f(nOutside / tot, nAccept / tot, nDegen / tot, 1.0);
+  }
   if (u.debug != 0.0) {
     var nfound = 0u;
     for (var k = 0u; k < 8u; k = k + 1u) { nfound = nfound + ((have >> k) & 1u); }
