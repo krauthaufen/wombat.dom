@@ -245,6 +245,11 @@ fn fs(i: VOut) -> @location(0) vec4f {
     discard;
   }
 
+  // relative depth variation a footprint-sized step can legitimately span
+  let zRef = viewPos(vec2f(px), 0.5);
+  let pwRef = length(viewPos(vec2f(px) + vec2f(1.0, 0.0), 0.5) - zRef);
+  let spanTol = clamp(adaptive * pwRef / max(length(zRef), 1e-3), 0.0, 0.5);
+
   // front-most sector entry defines the visible surface
   var bestZ = 0.0;
   for (var k = 0u; k < 8u; k = k + 1u) {
@@ -259,7 +264,14 @@ fn fs(i: VOut) -> @location(0) vec4f {
   var zsum = 0.0;
   for (var k = 0u; k < 8u; k = k + 1u) {
     if ((have & (1u << k)) == 0u) { continue; }
-    if (abs(sz[k] - bestZ) > bestZ * u.planeTol) { continue; }
+    // Same-surface window must widen with the FOOTPRINT, not stay a fixed
+    // fraction of depth. The search radius is adaptive now, so on rough or
+    // steep ground the octants' predicted depths legitimately differ by far
+    // more than 2% — a fixed window culls all but one sector and the
+    // enclosure test starves, which is what the black blotches are. Allow
+    // the depth span the footprint can honestly cover.
+    let tolEff = u.planeTol + spanTol;
+    if (abs(sz[k] - bestZ) > bestZ * tolEff) { continue; }
     kept = kept | (1u << k);
     let w = max(sw[k], 1e-3);
     csum = csum + sc[k] * w;
