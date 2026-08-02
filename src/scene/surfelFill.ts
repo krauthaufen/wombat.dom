@@ -99,18 +99,30 @@ fn fs(i: VOut) -> @location(0) vec4f {
   var probed = false;
   var dNear = u.radius;
   let PR = i32(ceil(u.radius));
-  for (var ry = -PR; ry <= PR && !probed; ry = ry + 1) {
-    for (var rx = -PR; rx <= PR; rx = rx + 1) {
-      let q = px + vec2i(rx, ry);
-      if (q.x < 0 || q.y < 0 || q.x >= dim.x || q.y >= dim.y) { continue; }
-      let sp = textureLoad(pick, q, 0);
-      if (sp.z <= 0.0 || sp.z >= 1.0) { continue; }
-      var nn = n24decode(sp.y);
-      let PP = viewPos(vec2f(q), sp.z);
-      if (dot(nn, PP) > 0.0) { nn = -nn; }
-      nProbe = nn; probed = true;
-      dNear = max(1.0, sqrt(f32(rx * rx + ry * ry)));
-      break;
+  // RING search, nearest first, stopping at the first hit. Scanning the
+  // whole +-R box in raster order costs ~(2R+1)^2 taps for EVERY pixel
+  // before the real work starts — at R=24 that is ~2400 taps and it is
+  // what put the phone under 1fps. Typical spacing is 1-3px, so a ring
+  // walk finds its neighbour in a handful of taps and the worst case is
+  // still bounded by R.
+  for (var r = 1; r <= PR && !probed; r = r + 1) {
+    for (var t = -r; t <= r && !probed; t = t + 1) {
+      // the four edges of the ring at radius r
+      var offs = array<vec2i, 4>(
+        vec2i(t, -r), vec2i(t, r), vec2i(-r, t), vec2i(r, t));
+      for (var e = 0; e < 4; e = e + 1) {
+        let q = px + offs[e];
+        if (q.x < 0 || q.y < 0 || q.x >= dim.x || q.y >= dim.y) { continue; }
+        let sp = textureLoad(pick, q, 0);
+        if (sp.z <= 0.0 || sp.z >= 1.0) { continue; }
+        var nn = n24decode(sp.y);
+        let PP = viewPos(vec2f(q), sp.z);
+        if (dot(nn, PP) > 0.0) { nn = -nn; }
+        nProbe = nn;
+        dNear = max(1.0, f32(r));
+        probed = true;
+        break;
+      }
     }
   }
   // major axis: the normal projected on screen; stretch by 1/cos(tilt),
@@ -123,8 +135,14 @@ fn fs(i: VOut) -> @location(0) vec4f {
   let cosT = clamp(abs(nProbe.z), 0.25, 1.0);      // cap stretch at 4x
   // ~3 spacings of reach, bounded by the configured maximum
   let adaptive = clamp(3.0 * dNear, 3.0, u.radius);
-  let aAx = adaptive / cosT;
-  let bAx = adaptive;
+  // Stretch one axis and SHRINK the other so the ellipse keeps constant
+  // AREA. Dividing the major axis by cosT without compensating grows the
+  // footprint as 1/cos — at the 0.25 clamp that is a 193x193 box, ~37k
+  // taps per pixel, which is what made this sub-1fps on the phone. Area
+  // stays ~pi*adaptive^2 regardless of tilt.
+  let sq = sqrt(cosT);
+  let aAx = adaptive / sq;
+  let bAx = adaptive * sq;
   let Rx = i32(ceil(max(abs(majorDir.x) * aAx, abs(minorDir.x) * bAx)));
   let Ry = i32(ceil(max(abs(majorDir.y) * aAx, abs(minorDir.y) * bAx)));
 
