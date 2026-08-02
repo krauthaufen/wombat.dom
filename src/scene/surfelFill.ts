@@ -32,6 +32,7 @@ const WGSL = /* wgsl */ `
 struct U {
   size: vec2f, radius: f32, planeTol: f32,
   enclosure: f32, reversedZ: f32, nearPlane: f32, writePick: f32,
+  debug: f32, _d0: f32, _d1: f32, _d2: f32,
   projInv: mat4x4<f32>,
 }
 @group(0) @binding(0) var pick: texture_2d<f32>;
@@ -75,11 +76,6 @@ fn fs(i: VOut) -> @location(0) vec4f {
   let dim = vec2i(u.size);
   let own = textureLoad(pick, px, 0);
   let ownValid = own.z > 0.0 && own.z < 1.0;
-  if (ownValid) {
-    // the pixel has its own point; nothing to reconstruct
-    if (u.writePick != 0.0) { textureStore(filledPick, px, own); }
-    discard;
-  }
 
   // this pixel's view ray (direction only; depth is solved per surfel)
   let ray = normalize(viewPos(vec2f(px), 0.5));
@@ -105,7 +101,15 @@ fn fs(i: VOut) -> @location(0) vec4f {
 
       // does this surfel's DISC cover us? ray/plane hit, then radius test
       let P = viewPos(vec2f(q), s.z);
-      let n = n24decode(s.y);
+      // Scan normals are UNORIENTED: n and -n describe the same surface and
+      // the estimator's sign flips essentially at random between points. A
+      // plane is invariant under that, but a ray/plane intersection is not
+      // — a flipped sign makes t negative and the surfel gets discarded, so
+      // roughly half of them vanish at random. Worst on rough ground, where
+      // neighbouring normals are least coherent. Flip to face the eye first
+      // (P is eye->point in view space).
+      var n = n24decode(s.y);
+      if (dot(n, P) > 0.0) { n = -n; }
       let denom = dot(n, ray);
       if (abs(denom) < 1e-6) { continue; }
       let t = dot(n, P) / denom;
@@ -118,12 +122,30 @@ fn fs(i: VOut) -> @location(0) vec4f {
       let pw = length(viewPos(vec2f(q) + vec2f(1.0, 0.0), s.z) - P);
       let rw = u.radius * pw;
       let dr = length(H - P);
-      if (dr > rw) { continue; }
+      // A disc seen edge-on projects to a sliver, so pure ray/plane
+      // coverage punches holes across grazing surfaces. Guarantee that a
+      // surfel always covers the pixels immediately around its own: accept
+      // when within the disc OR within ~1.5px on screen.
+      if (dr > rw && d2 > 2.25) { continue; }
       let zv = -H.z;
       if (zv <= 1e-6) { continue; }
       let zndc = select(s.z, clamp(u.nearPlane / zv, 1e-7, 0.9999999), u.reversedZ != 0.0);
 
-      var ang = atan2(f32(dy), f32(dx));
+      // Sector the neighbour IN THE SURFACE'S OWN PLANE, not on screen.
+      // At grazing incidence a surface's neighbours project into a
+      // stretched, anisotropic pattern, so screen-space octants see them
+      // clustered in two opposite sectors and the enclosure test starves
+      // — coverage measured 8 octants head-on but 2-3 at grazing. Binning
+      // the offset in the plane's own tangent basis makes the test
+      // orientation-invariant, the same way ray/plane coverage already is.
+      let up = select(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 0.0, 0.0), abs(n.y) > 0.9);
+      let tx = normalize(cross(up, n));
+      let ty = cross(n, tx);
+      // H and P both lie on THIS candidate's plane, so their difference is
+      // already in-plane — no shared origin needed, and no skew from
+      // whichever candidate happened to be visited first.
+      let rel = P - H;
+      var ang = atan2(dot(rel, ty), dot(rel, tx));
       if (ang < 0.0) { ang = ang + 6.28318531; }
       let k = u32(ang * 1.27323954) & 7u;
       let bit = 1u << k;
@@ -135,6 +157,20 @@ fn fs(i: VOut) -> @location(0) vec4f {
         have = have | bit;
       }
     }
+  }
+
+  // --- debug: show WHY a pixel does or does not reconstruct -----------
+  // 0 candidates -> red, otherwise green ramps with the number of octants
+  // that found a covering surfel, blue marks a pixel that already had its
+  // own point. Nothing else is drawn, so the picture is the diagnosis.
+  if (u.debug != 0.0) {
+    var nfound = 0u;
+    for (var k = 0u; k < 8u; k = k + 1u) { nfound = nfound + ((have >> k) & 1u); }
+    let g = f32(nfound) / 8.0;
+    let r = select(0.0, 1.0, nfound == 0u);
+    let bl = select(0.0, 0.4, ownValid);
+    if (u.writePick != 0.0) { textureStore(filledPick, px, own); }
+    return vec4f(r, g, bl, 1.0);
   }
 
   if (have == 0u) {
@@ -180,6 +216,13 @@ fn fs(i: VOut) -> @location(0) vec4f {
   }
 
   let outZ = zsum / wsum;
+  // this pixel already shows a point: keep it unless the reconstructed
+  // surface sits distinctly IN FRONT of it (screen-space hidden-point
+  // removal — otherwise the far side shows through the near one)
+  if (ownValid && outZ <= own.z * (1.0 + u.planeTol)) {
+    if (u.writePick != 0.0) { textureStore(filledPick, px, own); }
+    discard;
+  }
   if (u.writePick != 0.0) {
     textureStore(filledPick, px, vec4f(own.x, own.y, outZ, own.w));
   }
@@ -198,6 +241,10 @@ export interface SurfelFillSettings {
   readonly enclosure?: number;
   readonly reversedZ?: boolean;
   readonly nearPlane?: number;
+  /** Debug readout: red = no covering surfel at all, green ramps with how
+   *  many of the 8 octants found one, blue tints pixels that already had a
+   *  point. Nothing else is drawn. */
+  readonly debug?: number;
 }
 
 export type SurfelFillOption =
@@ -262,6 +309,7 @@ export function createSurfelFillPass(
         (settings.reversedZ ?? true) ? 1 : 0,
         settings.nearPlane ?? 0.05,
         wantPick ? 1 : 0,
+        settings.debug ?? 0, 0, 0, 0,
       ], 0);
       const m = proj.backward;
       // mat4x4 aligns to 16 bytes: the 8 scalars above occupy 0..31, so the
@@ -272,7 +320,7 @@ export function createSurfelFillPass(
         m.M01, m.M11, m.M21, m.M31,
         m.M02, m.M12, m.M22, m.M32,
         m.M03, m.M13, m.M23, m.M33,
-      ], 8);
+      ], 12);
       device.queue.writeBuffer(ubo, 0, f);
 
       const enc = device.createCommandEncoder({ label: "surfel.frame" });

@@ -225,8 +225,10 @@ fn viewPosOf(px: vec2i, z: f32) -> vec3f {
 // the surfel's own depth when the geometry is degenerate (grazing normal,
 // no normal recorded).
 fn surfelDepthAt(px: vec2i, sp: vec2i, sz: f32, nEnc: f32) -> f32 {
-  let n = n24decode(nEnc);
+  var n = n24decode(nEnc);
   let P = viewPosOf(sp, sz);
+  // unoriented scan normals: face the eye before intersecting (see surfelFill)
+  if (dot(n, P) > 0.0) { n = -n; }
   let dir = viewPosOf(px, sz);              // any point on this pixel's ray
   let denom = dot(n, dir);
   if (abs(denom) < 1e-6) { return sz; }
