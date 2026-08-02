@@ -42,8 +42,9 @@ import type { GtaoOption } from "./gtao.js";
 import type { PlaneFitOption } from "./planeFit.js";
 import type { VoronoiFillOption } from "./voronoiFill.js";
 import type { GridFillOption } from "./gridFill.js";
+import type { SurfelFillOption } from "./surfelFill.js";
 import {
-  gtaoFramePass, gridFillFramePass, planeFitFramePass, voronoiFillFramePass,
+  gtaoFramePass, gridFillFramePass, planeFitFramePass, surfelFillFramePass, voronoiFillFramePass,
   type FramePass, type FramePassInstance,
 } from "./framePass.js";
 import type { SgNode } from "./sg.js";
@@ -111,6 +112,8 @@ export interface RenderControlProps {
    *  grid instead of jump flooding. Runs in the same slot; enable one or
    *  the other (both would composite twice). */
   readonly gridFill?: GridFillOption;
+  /** Surfel gather fill — oriented-disc coverage in one pass. */
+  readonly surfelFill?: SurfelFillOption;
   /** Ordered custom screen-space passes appended after the built-in
    *  sugar passes (voronoiFill, planeFitShading, ambientOcclusion).
    *  See `framePass.ts` — the RenderControl extension point for
@@ -508,6 +511,8 @@ async function initialise(
     passOptions.push(voronoiFillFramePass(props.voronoiFill));
   if (props.gridFill !== undefined && props.gridFill !== false)
     passOptions.push(gridFillFramePass(props.gridFill));
+  if (props.surfelFill !== undefined && props.surfelFill !== false)
+    passOptions.push(surfelFillFramePass(props.surfelFill));
   if (props.planeFitShading !== undefined && props.planeFitShading !== false)
     passOptions.push(planeFitFramePass(props.planeFitShading));
   if (props.ambientOcclusion !== undefined && props.ambientOcclusion !== false)

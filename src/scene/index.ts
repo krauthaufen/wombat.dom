@@ -94,6 +94,14 @@ export {
 } from "./planeFit.js";
 
 export {
+  createSurfelFillPass,
+  surfelFillConfig,
+  type SurfelFillOption,
+  type SurfelFillPass,
+  type SurfelFillSettings,
+} from "./surfelFill.js";
+
+export {
   createGridFillPass,
   gridFillConfig,
   type GridFillOption,
@@ -103,6 +111,7 @@ export {
 
 export {
   gridFillFramePass,
+  surfelFillFramePass,
   voronoiFillFramePass,
   planeFitFramePass,
   gtaoFramePass,
