@@ -181,7 +181,7 @@ struct U { maxR2: f32, tol: f32, reversedZ: f32, writePick: f32,
            support: f32, farRadius: f32, falloffDist: f32, nearPlane: f32,
            supportTol: f32, surfel: f32, sizeX: f32, sizeY: f32,
            projInv: mat4x4<f32>,
-           spacingScale: f32, colorInterp: f32 }
+           spacingScale: f32, colorInterp: f32, interpKernel: f32 }
 @group(0) @binding(0) var seed: texture_2d<u32>;
 @group(0) @binding(1) var colorCopy: texture_2d<f32>;
 @group(0) @binding(2) var pick: texture_2d<f32>;
@@ -395,6 +395,11 @@ fn fs(i: VOut) -> @location(0) vec4f {
     // radius and eat the surface behind. Bounding by real density fixes
     // both, and needs no enclosure test at all.
     var rad2 = rad;
+    // Interpolation kernel scale = the SAMPLING DENSITY, not the fill
+    // reach. rad is sps (~6) spacings wide because it must cover holes;
+    // using it for the blend too pulls in samples ~4 spacings away at
+    // near-full weight, which is a box blur rather than an interpolation.
+    var kernPx = 0.0;
     var ok = u.support <= 0.0 || dd <= 1.5
              || interior(px, dim, min(u.support, rad), seedLog(s));
     if (u.spacingScale > 0.0) {
@@ -405,6 +410,7 @@ fn fs(i: VOut) -> @location(0) vec4f {
         let dist = distProxy(sz) * u.nearPlane;
         let spPx = sp * projScale * f32(dim.y) * 0.5 / max(dist, 1e-6);
         rad2 = min(rad, u.spacingScale * spPx);
+        kernPx = spPx;
       }
       ok = true;
     }
@@ -428,7 +434,11 @@ fn fs(i: VOut) -> @location(0) vec4f {
         if (u.colorInterp > 0.0 && rad2 > 1.0) {
           var acc = vec4f(0.0);
           var wsum = 0.0;
-          let ring = 0.7 * rad2;
+          var k = kernPx;
+          if (k <= 0.0) { k = 0.25 * rad2; }
+          k = k * max(u.interpKernel, 0.05);
+          let ring = k;
+          let falloff = 1.6 * k;
           var dirs = array<vec2f, 8>(
             vec2f( 1.0, 0.0), vec2f(-1.0, 0.0), vec2f(0.0,  1.0), vec2f(0.0, -1.0),
             vec2f( 0.707, 0.707), vec2f(-0.707, 0.707),
@@ -447,9 +457,9 @@ fn fs(i: VOut) -> @location(0) vec4f {
             // the blend silently collapses back to the winner.
             if (abs(seedLog(st) - seedLog(s)) > u.tol * u.colorInterp) { continue; }
             let d = length(vec2f(f32(spos.x - px.x), f32(spos.y - px.y)));
-            let t = 1.0 - d / rad2;
+            let t = 1.0 - d / falloff;
             if (t <= 0.0) { continue; }
-            let w = t * t;
+            let w = t * t * t * t;
             acc = acc + w * textureLoad(colorCopy, spos, 0);
             wsum = wsum + w;
           }
@@ -525,6 +535,9 @@ export interface VoronoiFillSettings {
   /** > 0 blends the neighbouring Voronoi cells' colours (depth-gated)
    *  instead of copying the winning seed's colour flat. */
   readonly colorInterp?: number;
+  /** Multiplies the interpolation kernel width (in units of the local
+   *  point spacing). Smaller = sharper. Default 1. */
+  readonly interpKernel?: number;
   /** Near-plane distance, used to turn reversed-Z depth into a metric
    *  distance. Default 0.05. */
   readonly nearPlane?: number;
@@ -631,6 +644,7 @@ export function createVoronoiFillPass(
       }
       ru[28] = settings.spacingScale ?? 0;
       ru[29] = settings.colorInterp ?? 0;
+      ru[30] = settings.interpKernel ?? 1;
       device.queue.writeBuffer(resolveUbo, 0, ru);
       const w = pick.width;
       const h = pick.height;
