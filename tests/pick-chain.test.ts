@@ -146,7 +146,7 @@ const matrix: readonly MatrixCase[] = [
     name: "no user, no Normals -> FinalANoNormalNoPi",
     user: { produceVsn: false, producePi: false, producePvp: false },
     geom: baseGeom,
-    expected: { final: "FinalANoNormalNoPi", injectVsn: false },
+    expected: { final: "FinalANoNormalNoPi", injectVsn: false, keepDepth: false },
   },
   // 2. user produces nothing, geom has Normals
   //    canCarryVsn = true (synthesise), userPi = false, userPvp = false
@@ -155,7 +155,7 @@ const matrix: readonly MatrixCase[] = [
     name: "no user, geom Normals -> FinalANoPi + inject",
     user: { produceVsn: false, producePi: false, producePvp: false },
     geom: [...baseGeom, "Normals"],
-    expected: { final: "FinalANoPi", injectVsn: true },
+    expected: { final: "FinalANoPi", injectVsn: true, keepDepth: false },
   },
   // 3. user produces Pi, geom has no Normals
   //    -> FinalANoNormal, no inject
@@ -163,7 +163,7 @@ const matrix: readonly MatrixCase[] = [
     name: "user Pi, no Normals -> FinalANoNormal",
     user: { produceVsn: false, producePi: true, producePvp: false },
     geom: baseGeom,
-    expected: { final: "FinalANoNormal", injectVsn: false },
+    expected: { final: "FinalANoNormal", injectVsn: false, keepDepth: false },
   },
   // 4. user produces Pi, geom has Normals
   //    canCarryVsn = true, userPi = true -> FinalA + inject
@@ -171,7 +171,7 @@ const matrix: readonly MatrixCase[] = [
     name: "user Pi, geom Normals -> FinalA + inject",
     user: { produceVsn: false, producePi: true, producePvp: false },
     geom: [...baseGeom, "Normals"],
-    expected: { final: "FinalA", injectVsn: true },
+    expected: { final: "FinalA", injectVsn: true, keepDepth: false },
   },
   // 5. user produces Vsn (so canCarryVsn = true regardless), no Pi
   //    geom has no Normals -> no inject (user already produces vsn)
@@ -180,14 +180,14 @@ const matrix: readonly MatrixCase[] = [
     name: "user Vsn, no Pi, no Normals -> FinalANoPi (no inject)",
     user: { produceVsn: true, producePi: false, producePvp: false },
     geom: baseGeom,
-    expected: { final: "FinalANoPi", injectVsn: false },
+    expected: { final: "FinalANoPi", injectVsn: false, keepDepth: false },
   },
   // 6. user produces Vsn AND Pi, no Normals on geometry -> FinalA, no inject
   {
     name: "user Vsn + Pi -> FinalA (no inject)",
     user: { produceVsn: true, producePi: true, producePvp: false },
     geom: baseGeom,
-    expected: { final: "FinalA", injectVsn: false },
+    expected: { final: "FinalA", injectVsn: false, keepDepth: false },
   },
   // 7. user produces Vsn + geom Normals: canCarryVsn = true, no inject
   //    (userVsn already covers it)
@@ -195,7 +195,7 @@ const matrix: readonly MatrixCase[] = [
     name: "user Vsn + geom Normals -> FinalANoPi (no inject)",
     user: { produceVsn: true, producePi: false, producePvp: false },
     geom: [...baseGeom, "Normals"],
-    expected: { final: "FinalANoPi", injectVsn: false },
+    expected: { final: "FinalANoPi", injectVsn: false, keepDepth: false },
   },
   // 8. user produces Pvp -> FinalB regardless of vsn / pi flags.
   //    Pick a non-trivial case: geom has Normals (so injectVsn flips
@@ -205,7 +205,7 @@ const matrix: readonly MatrixCase[] = [
     name: "user Pvp + geom Normals -> FinalB + inject",
     user: { produceVsn: false, producePi: false, producePvp: true },
     geom: [...baseGeom, "Normals"],
-    expected: { final: "FinalB", injectVsn: true },
+    expected: { final: "FinalB", injectVsn: true, keepDepth: false },
   },
 ];
 

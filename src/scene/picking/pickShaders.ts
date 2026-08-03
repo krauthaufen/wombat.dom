@@ -185,6 +185,86 @@ export function pickFinalANoNormalNoPiEffect(): Effect {
   return pickFinalANoNormalNoPiCache;
 }
 
+
+// ---------------------------------------------------------------------------
+// Depth-aware mode-A finals.
+//
+// The plain finals above write `Depth: b.fragCoord.z`, which is a no-op
+// for ordinary shaders (it IS the rasterised depth) but CLOBBERS the
+// depth of an effect that exports its own `Depth` — e.g. a surfel splat
+// that ray/plane-intersects the disc and writes the plane's depth so
+// overlapping discs sort by surface, not by quad. When the user effect
+// can produce `Depth`, chooseChain selects these instead: they forward
+// that depth to `frag_depth` AND into the pickId depth slot, so the
+// screen-space passes see the true surface depth too.
+// ---------------------------------------------------------------------------
+
+let pickFinalADepthCache: Effect | undefined;
+
+export function pickFinalADepthEffect(): Effect {
+  if (pickFinalADepthCache !== undefined) return pickFinalADepthCache;
+  const fs = fragment((input: {
+    Colors: V4f;
+    ViewSpaceNormal: V3f;
+    PickPartIndex: f32;
+    Depth: f32;
+  }) => {
+    const n24 = n24Encode(input.ViewSpaceNormal.normalize());
+    const id = new V4f((uniform.PickId as number) as f32, n24, input.Depth, input.PickPartIndex);
+    return { Colors: input.Colors, pickId: id, Depth: input.Depth };
+  });
+  pickFinalADepthCache = effect(fs);
+  return pickFinalADepthCache;
+}
+
+let pickFinalANoPiDepthCache: Effect | undefined;
+
+export function pickFinalANoPiDepthEffect(): Effect {
+  if (pickFinalANoPiDepthCache !== undefined) return pickFinalANoPiDepthCache;
+  const fs = fragment((input: {
+    Colors: V4f;
+    ViewSpaceNormal: V3f;
+    Depth: f32;
+  }) => {
+    const n24 = n24Encode(input.ViewSpaceNormal.normalize());
+    const id = new V4f((uniform.PickId as number) as f32, n24, input.Depth, 0.0);
+    return { Colors: input.Colors, pickId: id, Depth: input.Depth };
+  });
+  pickFinalANoPiDepthCache = effect(fs);
+  return pickFinalANoPiDepthCache;
+}
+
+let pickFinalANoNormalDepthCache: Effect | undefined;
+
+export function pickFinalANoNormalDepthEffect(): Effect {
+  if (pickFinalANoNormalDepthCache !== undefined) return pickFinalANoNormalDepthCache;
+  const fs = fragment((input: {
+    Colors: V4f;
+    PickPartIndex: f32;
+    Depth: f32;
+  }) => {
+    const id = new V4f((uniform.PickId as number) as f32, 0.0, input.Depth, input.PickPartIndex);
+    return { Colors: input.Colors, pickId: id, Depth: input.Depth };
+  });
+  pickFinalANoNormalDepthCache = effect(fs);
+  return pickFinalANoNormalDepthCache;
+}
+
+let pickFinalANoNormalNoPiDepthCache: Effect | undefined;
+
+export function pickFinalANoNormalNoPiDepthEffect(): Effect {
+  if (pickFinalANoNormalNoPiDepthCache !== undefined) return pickFinalANoNormalNoPiDepthCache;
+  const fs = fragment((input: {
+    Colors: V4f;
+    Depth: f32;
+  }) => {
+    const id = new V4f((uniform.PickId as number) as f32, 0.0, input.Depth, 0.0);
+    return { Colors: input.Colors, pickId: id, Depth: input.Depth };
+  });
+  pickFinalANoNormalNoPiDepthCache = effect(fs);
+  return pickFinalANoNormalNoPiDepthCache;
+}
+
 // ---------------------------------------------------------------------------
 // pickFinalPortal — portal ("offscreen pick context") variant.
 //

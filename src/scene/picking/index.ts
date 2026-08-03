@@ -17,6 +17,10 @@ export {
   pickFinalANoPiEffect,
   pickFinalANoNormalEffect,
   pickFinalANoNormalNoPiEffect,
+  pickFinalADepthEffect,
+  pickFinalANoPiDepthEffect,
+  pickFinalANoNormalDepthEffect,
+  pickFinalANoNormalNoPiDepthEffect,
   pickFinalBEffect,
   pickFinalPortalEffect,
 } from "./pickShaders.js";

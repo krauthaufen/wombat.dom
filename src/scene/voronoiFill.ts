@@ -34,12 +34,21 @@ const INVALID: u32 = 0xffffffffu;
 // surface" tolerance — depth collapses into buckets and the fill shows
 // iso-depth contour banding. A log scale gives CONSTANT relative
 // precision instead: 40 octaves over 18 bits is ~0.01% everywhere.
+//
+// Offsets get 10 bits per axis (+-511 px), depth 12. The old split was
+// 7/7/18, which capped the seed offset at 63 px -- so wherever the
+// nearest point was farther than that the fill COULD NOT reference it
+// and the pixel stayed background, drawing black borders around every
+// Voronoi cell as soon as density dropped. Raising maxRadius did
+// nothing because 63 was the encoding limit, not a tuning choice.
+// 12 bits of log2 depth is still 40/4095 octaves = 0.68% relative,
+// well inside the comparator's 2% same-surface tolerance.
 fn packSeedQ(dx: i32, dy: i32, q: u32) -> u32 {
-  return (u32(dx + 64) << 25u) | (u32(dy + 64) << 18u) | (q & 0x3ffffu);
+  return (u32(dx + 512) << 22u) | (u32(dy + 512) << 12u) | (q & 0xfffu);
 }
 fn quantProxy(proxy: f32) -> u32 {
   let l = clamp((log2(max(proxy, 1e-9)) + 20.0) / 40.0, 0.0, 1.0);
-  return u32(l * 262143.0);
+  return u32(l * 4095.0);
 }
 fn proxyOf(z: f32, revZ: f32) -> f32 {
   if (revZ != 0.0) { return 1.0 / max(z, 1e-9); }
@@ -49,16 +58,16 @@ fn packSeed(dx: i32, dy: i32, z: f32, revZ: f32) -> u32 {
   return packSeedQ(dx, dy, quantProxy(proxyOf(z, revZ)));
 }
 fn seedOffset(s: u32) -> vec2i {
-  return vec2i(i32((s >> 25u) & 127u) - 64, i32((s >> 18u) & 127u) - 64);
+  return vec2i(i32((s >> 22u) & 1023u) - 512, i32((s >> 12u) & 1023u) - 512);
 }
 /// log2 of the distance proxy — this is literally what the bits hold, so
 /// reading it costs nothing and plane maths in log space is scale-free
 fn seedLog(s: u32) -> f32 {
-  return (f32(s & 0x3ffffu) / 262143.0) * 40.0 - 20.0;
+  return (f32(s & 0xfffu) / 4095.0) * 40.0 - 20.0;
 }
 /// monotone distance proxy (bigger = farther), as stored
 fn seedProxy(s: u32) -> f32 {
-  return exp2((f32(s & 0x3ffffu) / 262143.0) * 40.0 - 20.0);
+  return exp2((f32(s & 0xfffu) / 4095.0) * 40.0 - 20.0);
 }
 /// back to an NDC depth for downstream shading
 fn seedZ(s: u32, revZ: f32) -> f32 {
@@ -521,7 +530,8 @@ export function createVoronoiFillPass(
       const colorTex = fb.colorTextures?.tryFind?.(colorName);
       if (colorView === undefined || colorTex === undefined) return undefined;
       // Settings are read per frame so callers can mutate the object live.
-      const maxRadius = Math.max(1, Math.min(63, settings.maxRadius ?? 24));
+      // 511 = the seed offset encoding's range (10 bits signed per axis).
+      const maxRadius = Math.max(1, Math.min(511, settings.maxRadius ?? 24));
       const reach = settings.occlusionReach ?? 10;
       const tol = settings.depthTolerance ?? 0.02;
       const revZ = settings.reversedZ ?? true;
