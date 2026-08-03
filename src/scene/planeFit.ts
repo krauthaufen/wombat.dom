@@ -105,7 +105,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let sc = vec2f(u.size) / vec2f(u.shadeSize);
   let px = vec2i((vec2f(gid.xy) + 0.5) * sc);
   let p = viewPosAt(px);
-  if (p.w == 0.0) { textureStore(outShade, opx, vec4f(1.0)); return; }
+  if (p.w == 0.0) { textureStore(outShade, opx, vec4f(1.0, 1.0, 1.0, 0.0)); return; }
 
   let tol = max(0.05, u.tolerance * abs(p.z));
 
@@ -198,8 +198,12 @@ fn vs(@builtin(vertex_index) vi: u32) -> VOut {
 
 @fragment
 fn fs(i: VOut) -> @location(0) vec4f {
-  let s = textureSample(shade, samp, i.uv).x;
-  return vec4f(s, s, s, 1.0);
+  let t = textureSample(shade, samp, i.uv);
+  // alpha 0 = no geometry here. In multiply mode writing 1 is a no-op,
+  // but white mode REPLACES the colour, so painting the background with
+  // the default shade of 1 would turn the sky white.
+  if (t.w < 0.5) { discard; }
+  return vec4f(t.x, t.x, t.x, 1.0);
 }
 `;
 
@@ -210,6 +214,9 @@ export interface PlaneFitSettings {
   readonly tolerance?: number;
   /** Shade floor (ambient). Default 0.35. */
   readonly ambient?: number;
+  /** Replace surface colour with a white diffuse headlight instead of
+   *  modulating the point colours. Default false. */
+  readonly white?: boolean;
   /** Blend between unshaded and fitted shading, 0..1. Default 1. */
   readonly strength?: number;
   /** World-space AO radius computed against the FITTED normal.
@@ -261,6 +268,21 @@ export function createPlaneFitPass(
     },
     primitive: { topology: "triangle-list" },
     label: "planeFit.apply",
+  });
+  // White mode: REPLACE the colour with the shading term instead of
+  // multiplying into it — a plain white surface lit by a headlight,
+  // which reads geometry without the point colours competing with it.
+  // Blend state is pipeline state, so this needs its own pipeline.
+  const pipeApplyWhite = device.createRenderPipeline({
+    layout: "auto",
+    vertex: { module: applyModule, entryPoint: "vs" },
+    fragment: {
+      module: applyModule,
+      entryPoint: "fs",
+      targets: [{ format: colorFormat }],
+    },
+    primitive: { topology: "triangle-list" },
+    label: "planeFit.apply.white",
   });
   const sampler = device.createSampler({ magFilter: "linear", minFilter: "linear", label: "planeFit.samp" });
   const ubo = device.createBuffer({
@@ -327,8 +349,12 @@ export function createPlaneFitPass(
         pass.end();
       }
       {
+        // Both apply pipelines use layout:"auto", so each has its OWN
+        // bind group layout — the group must come from the pipeline that
+        // will actually be set, or it is rejected as incompatible.
+        const applyPipe = settings.white === true ? pipeApplyWhite : pipeApply;
         const bg = device.createBindGroup({
-          layout: pipeApply.getBindGroupLayout(0),
+          layout: applyPipe.getBindGroupLayout(0),
           entries: [
             { binding: 0, resource: tex!.createView() },
             { binding: 1, resource: sampler },
@@ -338,7 +364,7 @@ export function createPlaneFitPass(
           label: "planeFit.apply",
           colorAttachments: [{ view: colorView, loadOp: "load", storeOp: "store" }],
         });
-        pass.setPipeline(pipeApply);
+        pass.setPipeline(applyPipe);
         pass.setBindGroup(0, bg);
         pass.draw(3);
         pass.end();
