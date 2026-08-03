@@ -181,7 +181,8 @@ struct U { maxR2: f32, tol: f32, reversedZ: f32, writePick: f32,
            support: f32, farRadius: f32, falloffDist: f32, nearPlane: f32,
            supportTol: f32, surfel: f32, sizeX: f32, sizeY: f32,
            projInv: mat4x4<f32>,
-           spacingScale: f32, colorInterp: f32, interpKernel: f32 }
+           spacingScale: f32, colorInterp: f32, interpKernel: f32,
+           interpLinear: f32 }
 @group(0) @binding(0) var seed: texture_2d<u32>;
 @group(0) @binding(1) var colorCopy: texture_2d<f32>;
 @group(0) @binding(2) var pick: texture_2d<f32>;
@@ -464,6 +465,78 @@ fn fs(i: VOut) -> @location(0) vec4f {
             wsum = wsum + w;
           }
           if (wsum > 0.0) { color = acc / wsum; }
+
+          // ?clin: LOCAL LINEAR FIT instead of a weighted mean.
+          //
+          // A distance-weighted mean is a smoothing filter: it neither
+          // reproduces the sample values at the samples nor a linear
+          // gradient between them, so any radius wide enough to admit
+          // neighbours also washes the surface out -- which is why the
+          // kernel knob only ever chose between hard facets and blur.
+          // Fitting c(x,y) = a + b*x + d*y over the natural neighbours
+          // (least squares, 3x3 normal equations solved by Cramer) is
+          // faithful at the samples and linear between them. a IS the
+          // value at this pixel because the fit is centred here.
+          if (u.interpLinear > 0.0) {
+            var sxs: array<f32, 17>;
+            var sys: array<f32, 17>;
+            var scr: array<vec3f, 17>;
+            var n = 0;
+            var mn = vec3f(1e9);
+            var mx = vec3f(-1e9);
+            for (var i = 0; i < 17; i = i + 1) {
+              var tp = px;
+              if (i > 0) {
+                let dd2 = dirs[(i - 1) % 8];
+                let rr = select(ring, ring * 1.8, i > 8);
+                tp = px + vec2i(dd2 * rr);
+              }
+              if (tp.x < 0 || tp.y < 0 || tp.x >= dim.x || tp.y >= dim.y) { continue; }
+              let st = textureLoad(seed, tp, 0).x;
+              let spos = tp + seedOffset(st);
+              if (spos.x < 0 || spos.y < 0 || spos.x >= dim.x || spos.y >= dim.y) { continue; }
+              if (abs(seedLog(st) - seedLog(s)) > u.tol * u.colorInterp) { continue; }
+              let rx = f32(spos.x - px.x);
+              let ry = f32(spos.y - px.y);
+              // Duplicates would double-weight a neighbour and tilt the
+              // fit, and the ring taps hit the same cell often.
+              var dup = false;
+              for (var j = 0; j < n; j = j + 1) {
+                if (abs(sxs[j] - rx) < 0.5 && abs(sys[j] - ry) < 0.5) { dup = true; break; }
+              }
+              if (dup) { continue; }
+              let c3 = textureLoad(colorCopy, spos, 0).xyz;
+              sxs[n] = rx; sys[n] = ry; scr[n] = c3;
+              mn = min(mn, c3); mx = max(mx, c3);
+              n = n + 1;
+              if (n >= 17) { break; }
+            }
+            if (n >= 4) {
+              var S1 = 0.0; var Sx = 0.0; var Sy = 0.0;
+              var Sxx = 0.0; var Sxy = 0.0; var Syy = 0.0;
+              var Sc = vec3f(0.0); var Sxc = vec3f(0.0); var Syc = vec3f(0.0);
+              for (var j = 0; j < n; j = j + 1) {
+                let x = sxs[j]; let y = sys[j]; let c3 = scr[j];
+                S1 = S1 + 1.0; Sx = Sx + x; Sy = Sy + y;
+                Sxx = Sxx + x * x; Sxy = Sxy + x * y; Syy = Syy + y * y;
+                Sc = Sc + c3; Sxc = Sxc + x * c3; Syc = Syc + y * c3;
+              }
+              // ridge term keeps collinear neighbourhoods solvable
+              Sxx = Sxx + 1e-3; Syy = Syy + 1e-3;
+              let A = Sxx * Syy - Sxy * Sxy;
+              let B = Sx * Syy - Sxy * Sy;
+              let C = Sx * Sxy - Sxx * Sy;
+              let det = S1 * A - Sx * B + Sy * C;
+              if (abs(det) > 1e-6) {
+                let a = (Sc * A - Sx * (Sxc * Syy - Sxy * Syc)
+                                + Sy * (Sxc * Sxy - Sxx * Syc)) / det;
+                // A linear fit can extrapolate past every sample it saw;
+                // clamping to their range keeps edges from ringing.
+                let fit = clamp(a, mn, mx);
+                color = vec4f(fit, color.w);
+              }
+            }
+          }
         }
         // Tilt the disc: take the depth the seed's own surface predicts
         // HERE instead of copying the seed's depth flat across its cell.
@@ -538,6 +611,10 @@ export interface VoronoiFillSettings {
   /** Multiplies the interpolation kernel width (in units of the local
    *  point spacing). Smaller = sharper. Default 1. */
   readonly interpKernel?: number;
+  /** > 0 replaces the weighted mean with a local linear (plane) fit in
+   *  colour over the natural neighbours — faithful at the samples,
+   *  linear between them, so it does not soften the surface. */
+  readonly interpLinear?: number;
   /** Near-plane distance, used to turn reversed-Z depth into a metric
    *  distance. Default 0.05. */
   readonly nearPlane?: number;
@@ -645,6 +722,7 @@ export function createVoronoiFillPass(
       ru[28] = settings.spacingScale ?? 0;
       ru[29] = settings.colorInterp ?? 0;
       ru[30] = settings.interpKernel ?? 1;
+      ru[31] = settings.interpLinear ?? 0;
       device.queue.writeBuffer(resolveUbo, 0, ru);
       const w = pick.width;
       const h = pick.height;
