@@ -181,7 +181,7 @@ struct U { maxR2: f32, tol: f32, reversedZ: f32, writePick: f32,
            support: f32, farRadius: f32, falloffDist: f32, nearPlane: f32,
            supportTol: f32, surfel: f32, sizeX: f32, sizeY: f32,
            projInv: mat4x4<f32>,
-           spacingScale: f32 }
+           spacingScale: f32, colorInterp: f32 }
 @group(0) @binding(0) var seed: texture_2d<u32>;
 @group(0) @binding(1) var colorCopy: texture_2d<f32>;
 @group(0) @binding(2) var pick: texture_2d<f32>;
@@ -415,6 +415,46 @@ fn fs(i: VOut) -> @location(0) vec4f {
       let seedNearer = seedProxy(s) < distProxy(own.z) * (1.0 - u.tol);
       if (!ownValid || seedNearer) {
         color = textureLoad(colorCopy, vec2i(sx, sy), 0);
+        // Interpolate instead of copying the winner's colour flat across
+        // its whole cell (which is what makes cells read as solid
+        // patches). The seed texture already holds the flood result, so
+        // sampling it around this pixel returns the NEIGHBOURING cells'
+        // seeds for one texture read each -- natural-neighbour Shepard
+        // weighting for ~9 taps at resolve, not per flood step.
+        // Every contributor is depth-gated against the winner: without
+        // that this blends foreground into background at exactly the
+        // silhouettes, which is the bleeding failure this pass keeps
+        // running into.
+        if (u.colorInterp > 0.0 && rad2 > 1.0) {
+          var acc = vec4f(0.0);
+          var wsum = 0.0;
+          let ring = 0.7 * rad2;
+          var dirs = array<vec2f, 8>(
+            vec2f( 1.0, 0.0), vec2f(-1.0, 0.0), vec2f(0.0,  1.0), vec2f(0.0, -1.0),
+            vec2f( 0.707, 0.707), vec2f(-0.707, 0.707),
+            vec2f( 0.707,-0.707), vec2f(-0.707,-0.707));
+          for (var i = 0; i < 9; i = i + 1) {
+            var tp = px;
+            if (i > 0) { tp = px + vec2i(dirs[i - 1] * ring); }
+            if (tp.x < 0 || tp.y < 0 || tp.x >= dim.x || tp.y >= dim.y) { continue; }
+            let st = textureLoad(seed, tp, 0).x;
+            let spos = tp + seedOffset(st);
+            if (spos.x < 0 || spos.y < 0 || spos.x >= dim.x || spos.y >= dim.y) { continue; }
+            // same surface only
+            // Gate generously: neighbours on a SLANTED surface differ in
+            // depth by much more than the flat 2% same-surface tolerance
+            // across one spacing, so u.tol rejects every one of them and
+            // the blend silently collapses back to the winner.
+            if (abs(seedLog(st) - seedLog(s)) > u.tol * u.colorInterp) { continue; }
+            let d = length(vec2f(f32(spos.x - px.x), f32(spos.y - px.y)));
+            let t = 1.0 - d / rad2;
+            if (t <= 0.0) { continue; }
+            let w = t * t;
+            acc = acc + w * textureLoad(colorCopy, spos, 0);
+            wsum = wsum + w;
+          }
+          if (wsum > 0.0) { color = acc / wsum; }
+        }
         // Tilt the disc: take the depth the seed's own surface predicts
         // HERE instead of copying the seed's depth flat across its cell.
         // That turns the filled depth buffer from a staircase into a
@@ -482,6 +522,9 @@ export interface VoronoiFillSettings {
    *  slot). > 0 also disables the angular-support gate, which it
    *  replaces. 0 = off (legacy support-gate behaviour). */
   readonly spacingScale?: number;
+  /** > 0 blends the neighbouring Voronoi cells' colours (depth-gated)
+   *  instead of copying the winning seed's colour flat. */
+  readonly colorInterp?: number;
   /** Near-plane distance, used to turn reversed-Z depth into a metric
    *  distance. Default 0.05. */
   readonly nearPlane?: number;
@@ -587,6 +630,7 @@ export function createVoronoiFillPass(
         ], 12);
       }
       ru[28] = settings.spacingScale ?? 0;
+      ru[29] = settings.colorInterp ?? 0;
       device.queue.writeBuffer(resolveUbo, 0, ru);
       const w = pick.width;
       const h = pick.height;
