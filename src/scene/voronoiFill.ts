@@ -543,11 +543,24 @@ fn fs(i: VOut) -> @location(0) vec4f {
         // That turns the filled depth buffer from a staircase into a
         // piecewise-planar surface, which is what the shading pass fits.
         var outZ = sz;
+        // Carry the SEED's identity/normal/spacing onto the filled pixel.
+        // Keeping the hole's own slots left the normal at zero, so every
+        // filled pixel was invisible to the plane-fit shading and AO --
+        // they only ever saw the rendered points. The seed pick is
+        // already loaded here for the depth tilt, so this is free.
+        let sPick = textureLoad(pick, vec2i(sx, sy), 0);
+        var outN = own.y;
+        var outId = own.x;
+        var outW = own.w;
+        if (!ownValid) {
+          outId = sPick.x;
+          outN = sPick.y;
+          outW = sPick.w;
+        }
         if (u.surfel != 0.0) {
-          let sPick = textureLoad(pick, vec2i(sx, sy), 0);
           if (sPick.y != 0.0) { outZ = surfelDepthAt(px, vec2i(sx, sy), sz, sPick.y); }
         }
-        outPick = vec4f(own.x, own.y, outZ, own.w);
+        outPick = vec4f(outId, outN, outZ, outW);
         fill = true;
       }
     }
