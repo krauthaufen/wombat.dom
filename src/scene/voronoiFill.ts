@@ -182,7 +182,7 @@ struct U { maxR2: f32, tol: f32, reversedZ: f32, writePick: f32,
            supportTol: f32, surfel: f32, sizeX: f32, sizeY: f32,
            projInv: mat4x4<f32>,
            spacingScale: f32, colorInterp: f32, interpKernel: f32,
-           interpLinear: f32 }
+           interpLinear: f32, sphereScale: f32 }
 @group(0) @binding(0) var seed: texture_2d<u32>;
 @group(0) @binding(1) var colorCopy: texture_2d<f32>;
 @group(0) @binding(2) var pick: texture_2d<f32>;
@@ -235,6 +235,28 @@ fn viewPosOf(px: vec2i, z: f32) -> vec3f {
 // Ray/plane intersection in view space, returned as NDC z. Falls back to
 // the surfel's own depth when the geometry is degenerate (grazing normal,
 // no normal recorded).
+// Depth this pixel would have on the seed's SPHERE — same job as
+// surfelDepthAt but needing NO normal, which matters because stores may
+// not carry any. Without a per-cell depth profile the fill writes a flat
+// depth across each Voronoi cell, so the filled buffer is a staircase;
+// fitting a plane to a staircase gives normals that jump at every cell
+// boundary, which is the pixel noise white mode shows. A sphere gives a
+// smooth bulge with a well-defined gradient, from the point alone.
+fn sphereDepthAt(px: vec2i, sp: vec2i, sz: f32, rWorld: f32) -> f32 {
+  let P = viewPosOf(sp, sz);
+  let dir = normalize(viewPosOf(px, sz));
+  let tc = dot(P, dir);
+  if (tc <= 0.0) { return sz; }
+  let d2 = dot(P, P) - tc * tc;
+  let r2 = rWorld * rWorld;
+  if (d2 >= r2) { return sz; }              // ray misses: keep flat depth
+  let t = tc - sqrt(r2 - d2);               // near intersection
+  let zv = -(dir * t).z;
+  if (zv <= 1e-6) { return sz; }
+  if (u.reversedZ != 0.0) { return clamp(u.nearPlane / zv, 1e-7, 0.9999999); }
+  return sz;
+}
+
 fn surfelDepthAt(px: vec2i, sp: vec2i, sz: f32, nEnc: f32) -> f32 {
   var n = n24decode(nEnc);
   let P = viewPosOf(sp, sz);
@@ -559,6 +581,11 @@ fn fs(i: VOut) -> @location(0) vec4f {
         }
         if (u.surfel != 0.0) {
           if (sPick.y != 0.0) { outZ = surfelDepthAt(px, vec2i(sx, sy), sz, sPick.y); }
+          else if (sPick.w > 0.0) {
+            // no scan normal: fall back to the sphere, sized by the
+            // seed's own point spacing (already in the pick buffer).
+            outZ = sphereDepthAt(px, vec2i(sx, sy), sz, sPick.w * u.sphereScale);
+          }
         }
         outPick = vec4f(outId, outN, outZ, outW);
         fill = true;
@@ -628,6 +655,9 @@ export interface VoronoiFillSettings {
    *  colour over the natural neighbours — faithful at the samples,
    *  linear between them, so it does not soften the surface. */
   readonly interpLinear?: number;
+  /** Sphere radius as a multiple of the seed's point spacing, used for
+   *  the normal-free depth profile. Default 1. */
+  readonly sphereScale?: number;
   /** Near-plane distance, used to turn reversed-Z depth into a metric
    *  distance. Default 0.05. */
   readonly nearPlane?: number;
@@ -672,7 +702,7 @@ export function createVoronoiFillPass(
   });
   const stepUbos: GPUBuffer[] = [];
   const resolveUbo = device.createBuffer({
-    size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "vfill.u",
+    size: 144, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "vfill.u",
   });
 
   let seedA: GPUTexture | undefined;
@@ -713,7 +743,7 @@ export function createVoronoiFillPass(
       const wantPick = needPick !== false;
       const surfel = (settings.surfelDepth ?? false) && proj !== undefined;
       const wpx = pick.width, hpx = pick.height;
-      const ru = new Float32Array(32);
+      const ru = new Float32Array(36);
       ru.set([
         maxRadius * maxRadius, tol, revZ ? 1 : 0, wantPick ? 1 : 0,
         settings.exteriorSupport ?? 0,
@@ -736,6 +766,7 @@ export function createVoronoiFillPass(
       ru[29] = settings.colorInterp ?? 0;
       ru[30] = settings.interpKernel ?? 1;
       ru[31] = settings.interpLinear ?? 0;
+      ru[32] = settings.sphereScale ?? 1;
       device.queue.writeBuffer(resolveUbo, 0, ru);
       const w = pick.width;
       const h = pick.height;
