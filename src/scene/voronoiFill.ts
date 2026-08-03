@@ -180,7 +180,8 @@ const RESOLVE_WGSL = SEED_COMMON + /* wgsl */ `
 struct U { maxR2: f32, tol: f32, reversedZ: f32, writePick: f32,
            support: f32, farRadius: f32, falloffDist: f32, nearPlane: f32,
            supportTol: f32, surfel: f32, sizeX: f32, sizeY: f32,
-           projInv: mat4x4<f32> }
+           projInv: mat4x4<f32>,
+           spacingScale: f32 }
 @group(0) @binding(0) var seed: texture_2d<u32>;
 @group(0) @binding(1) var colorCopy: texture_2d<f32>;
 @group(0) @binding(2) var pick: texture_2d<f32>;
@@ -382,9 +383,32 @@ fn fs(i: VOut) -> @location(0) vec4f {
     // Probe at the SUPPORT radius, not at the seed distance: probing at
     // the seed distance lands inside that seed's own Voronoi cell and
     // just reports it back. Pixels sitting on a point skip the test.
-    let ok = u.support <= 0.0 || dd <= 1.5
+    // Spacing-bounded reach. Each seed carries its own surface's
+    // world-space point spacing in the pick buffer's PartIndex slot, so
+    // it may dilate about as far as its own neighbours would have been
+    // and no further. This replaces the angular-support gate, which
+    // asked whether a PIXEL was enclosed in order to decide how far a
+    // SEED may reach -- two different questions. That gate discarded
+    // genuinely isolated points sitting in front of a farther surface
+    // (salt and pepper along every silhouette) and, where several
+    // foreground points supported each other, let them dilate the full
+    // radius and eat the surface behind. Bounding by real density fixes
+    // both, and needs no enclosure test at all.
+    var rad2 = rad;
+    var ok = u.support <= 0.0 || dd <= 1.5
              || interior(px, dim, min(u.support, rad), seedLog(s));
-    if (dd <= rad && ok) {
+    if (u.spacingScale > 0.0) {
+      let sp = textureLoad(pick, vec2i(sx, sy), 0).w;
+      if (sp > 0.0) {
+        // world units per pixel at this depth -> spacing in pixels
+        let projScale = 1.0 / max(abs(u.projInv[1][1]), 1e-9);
+        let dist = distProxy(sz) * u.nearPlane;
+        let spPx = sp * projScale * f32(dim.y) * 0.5 / max(dist, 1e-6);
+        rad2 = min(rad, u.spacingScale * spPx);
+      }
+      ok = true;
+    }
+    if (dd <= rad2 && ok) {
       // Fill holes; ALSO overwrite rendered points that lie distinctly
       // BEHIND the winning surface (screen-space hidden-point removal —
       // background points otherwise speckle through close-up surfaces).
@@ -453,6 +477,11 @@ export interface VoronoiFillSettings {
   /** Distance (scene units) out to which the full `maxRadius` applies.
    *  Default 10. */
   readonly falloffDistance?: number;
+  /** Bound each seed's fill reach to this multiple of its own surface's
+   *  point spacing (carried per-point in the pick buffer's PartIndex
+   *  slot). > 0 also disables the angular-support gate, which it
+   *  replaces. 0 = off (legacy support-gate behaviour). */
+  readonly spacingScale?: number;
   /** Near-plane distance, used to turn reversed-Z depth into a metric
    *  distance. Default 0.05. */
   readonly nearPlane?: number;
@@ -497,7 +526,7 @@ export function createVoronoiFillPass(
   });
   const stepUbos: GPUBuffer[] = [];
   const resolveUbo = device.createBuffer({
-    size: 112, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "vfill.u",
+    size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "vfill.u",
   });
 
   let seedA: GPUTexture | undefined;
@@ -538,7 +567,7 @@ export function createVoronoiFillPass(
       const wantPick = needPick !== false;
       const surfel = (settings.surfelDepth ?? false) && proj !== undefined;
       const wpx = pick.width, hpx = pick.height;
-      const ru = new Float32Array(28);
+      const ru = new Float32Array(32);
       ru.set([
         maxRadius * maxRadius, tol, revZ ? 1 : 0, wantPick ? 1 : 0,
         settings.exteriorSupport ?? 0,
@@ -557,6 +586,7 @@ export function createVoronoiFillPass(
           m.M03, m.M13, m.M23, m.M33,
         ], 12);
       }
+      ru[28] = settings.spacingScale ?? 0;
       device.queue.writeBuffer(resolveUbo, 0, ru);
       const w = pick.width;
       const h = pick.height;
