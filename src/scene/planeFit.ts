@@ -122,6 +122,34 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   let tol = max(0.05, u.tolerance * abs(p.z));
 
+  // PRIOR: a cheap 4-neighbour cross product, used only to gate the disk
+  // below (the original viewer's sampleSimpleNormal).
+  let sp = max(1, i32(round(u.radiusPx / 4.0)));
+  let vpx  = viewPosAt(px + vec2i( sp, 0));
+  let vpnx = viewPosAt(px + vec2i(-sp, 0));
+  let vpy  = viewPosAt(px + vec2i(0,  sp));
+  let vpny = viewPosAt(px + vec2i(0, -sp));
+  let okx  = vpx.w  != 0.0 && abs(vpx.z  - p.z) <= tol;
+  let oknx = vpnx.w != 0.0 && abs(vpnx.z - p.z) <= tol;
+  let oky  = vpy.w  != 0.0 && abs(vpy.z  - p.z) <= tol;
+  let okny = vpny.w != 0.0 && abs(vpny.z - p.z) <= tol;
+  var g = vec3f(0.0);
+  if (okx && oky)        { g = cross(vpx.xyz - p.xyz, vpy.xyz - p.xyz); }
+  else if (okx && okny)  { g = cross(vpx.xyz - p.xyz, p.xyz - vpny.xyz); }
+  else if (oknx && oky)  { g = cross(p.xyz - vpnx.xyz, vpy.xyz - p.xyz); }
+  else if (oknx && okny) { g = cross(p.xyz - vpnx.xyz, p.xyz - vpny.xyz); }
+  var prior = normalize(-p.xyz);            // fronto-parallel fallback
+  if (length(g) > 1e-12) { prior = normalize(g); }
+  if (dot(prior, -p.xyz) < 0.0) { prior = -prior; }
+  let plane = vec4f(prior, -dot(prior, p.xyz));
+  // Gate the disk by distance to THAT PLANE, not by depth difference.
+  // A depth gate rejects legitimate neighbours on any SLANTED surface --
+  // they are far in z precisely because the surface is tilted -- so the
+  // fit was left with a handful of points and went noisy exactly where
+  // surfaces are oblique. Plane distance keeps a tilted surface whole and
+  // still rejects genuine outliers.
+  let planeTol = max(0.03, u.tolerance * abs(p.z) * 1.5);
+
   // gather neighbourhood
   var sum = p.xyz;
   var cnt = 1.0;
@@ -143,7 +171,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     if (q.x < 0 || q.y < 0 || q.x >= i32(u.size.x) || q.y >= i32(u.size.y)) { continue; }
     let vq = viewPosAt(q);
     if (vq.w == 0.0) { continue; }
-    if (abs(vq.z - p.z) > tol) { continue; }
+    if (abs(dot(plane, vec4f(vq.xyz, 1.0))) > planeTol) { continue; }
     pts[np] = vq.xyz;
     np++;
     sum += vq.xyz;
@@ -189,6 +217,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let confCount = clamp((f32(np) - 5.0) / 6.0, 0.0, 1.0);
     let confPlane = clamp(1.0 - resid / max(0.35 * tol, 1e-6), 0.0, 1.0);
     conf = confCount * confPlane;
+  }
+  if (!haveN) {
+    // fall back to the prior instead of going flat: it is a real
+    // estimate, just a coarse one.
+    nrm = prior;
+    haveN = true;
+    shade = u.ambient + (1.0 - u.ambient) * abs(dot(prior, normalize(-p.xyz)));
+    conf = 0.5;
   }
   shade = mix(1.0, shade, u.strength * conf);
 
