@@ -29,7 +29,8 @@ struct U {
   frame: f32,       // varies the sample rotation per frame
   temporal: f32,    // history blend weight, 0 = off
   tempTol: f32,
-  _pad2: f32,
+  denoise: f32,     // bilateral radius in px, 0 = off
+  _pad3: f32,
   size: vec2u,       // pick texture (device px)
   shadeSize: vec2u,  // output texture (may be scaled down)
 }
@@ -215,6 +216,61 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 }
 `;
 
+
+// Classic edge-aware denoise: a cross-bilateral blur on the shading,
+// guided by DEPTH. Weights combine a spatial gaussian with a depth
+// similarity term, so it averages freely across a flat surface and stops
+// dead at a silhouette — which is where the residual speckle lives (a
+// fit straddling a depth discontinuity has too few same-surface
+// neighbours and produces a wild normal).
+const DENOISE_WGSL = /* wgsl */ `
+struct U {
+  projInv: mat4x4f, radiusPx: f32, tolerance: f32, ambient: f32,
+  strength: f32, aoRadius: f32, aoIntensity: f32, projM11: f32,
+  frame: f32, temporal: f32, tempTol: f32, denoise: f32, _pad3: f32,
+  size: vec2u, shadeSize: vec2u,
+}
+@group(0) @binding(0) var srcShade: texture_2d<f32>;
+@group(0) @binding(1) var srcDepth: texture_2d<f32>;
+@group(0) @binding(2) var dst: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(3) var<uniform> u: U;
+
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  if (gid.x >= u.shadeSize.x || gid.y >= u.shadeSize.y) { return; }
+  let px = vec2i(gid.xy);
+  let c = textureLoad(srcShade, px, 0);
+  if (c.w < 0.5) { textureStore(dst, px, c); return; }   // no geometry
+  let z0 = textureLoad(srcDepth, px, 0).x;
+  if (z0 == 0.0) { textureStore(dst, px, c); return; }
+
+  let r = i32(clamp(u.denoise, 1.0, 4.0));
+  let sig = max(1.0, u.denoise);
+  let ztol = max(0.02, u.tolerance * abs(z0) * 2.0);
+  var acc = 0.0;
+  var wsum = 0.0;
+  for (var dy = -r; dy <= r; dy++) {
+    for (var dx = -r; dx <= r; dx++) {
+      let q = px + vec2i(dx, dy);
+      if (q.x < 0 || q.y < 0 || q.x >= i32(u.shadeSize.x) || q.y >= i32(u.shadeSize.y)) { continue; }
+      let sc = textureLoad(srcShade, q, 0);
+      if (sc.w < 0.5) { continue; }
+      let z = textureLoad(srcDepth, q, 0).x;
+      if (z == 0.0) { continue; }
+      let dz = abs(z - z0);
+      if (dz > ztol) { continue; }                       // different surface
+      let f = f32(dx * dx + dy * dy) / (2.0 * sig * sig);
+      let w = exp(-f) * (1.0 - dz / ztol);
+      acc += sc.x * w;
+      wsum += w;
+    }
+  }
+  if (wsum <= 0.0) { textureStore(dst, px, c); return; }
+  let v = acc / wsum;
+  textureStore(dst, px, vec4f(v, v, v, 1.0));
+}
+`;
+
 const APPLY_WGSL = /* wgsl */ `
 @group(0) @binding(0) var shade: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
@@ -254,6 +310,8 @@ export interface PlaneFitSettings {
    *  0 = off. Needs the per-frame sample rotation to have anything to
    *  average. */
   readonly temporal?: number;
+  /** Cross-bilateral denoise radius in shade pixels (1..4). 0 = off. */
+  readonly denoise?: number;
   /** Replace surface colour with a white diffuse headlight instead of
    *  modulating the point colours. Default false. */
   readonly white?: boolean;
@@ -289,6 +347,11 @@ export function createPlaneFitPass(
   const pipeFit = device.createComputePipeline({
     layout: "auto",
     compute: { module: device.createShaderModule({ code: FIT_WGSL, label: "planeFit.fit" }), entryPoint: "main" },
+  });
+  const pipeDenoise = device.createComputePipeline({
+    layout: "auto",
+    compute: { module: device.createShaderModule({ code: DENOISE_WGSL, label: "planeFit.denoise" }),
+               entryPoint: "main" },
   });
   const applyModule = device.createShaderModule({ code: APPLY_WGSL, label: "planeFit.apply" });
   const pipeApply = device.createRenderPipeline({
@@ -333,12 +396,13 @@ export function createPlaneFitPass(
   // Ping-pong history for temporal accumulation: this frame reads the
   // previous frame's shade+depth and writes the current one.
   let shadeA: GPUTexture | undefined, shadeB: GPUTexture | undefined;
+  let denTex: GPUTexture | undefined;
   let depthA: GPUTexture | undefined, depthB: GPUTexture | undefined;
   let flip = false;
   let frame = 0;
   const ensureTexture = (w: number, h: number): void => {
     if (tex !== undefined && tex.width === w && tex.height === h) return;
-    tex?.destroy(); shadeA?.destroy(); shadeB?.destroy();
+    tex?.destroy(); shadeA?.destroy(); shadeB?.destroy(); denTex?.destroy();
     depthA?.destroy(); depthB?.destroy();
     const mkS = (label: string) => device.createTexture({
       size: { width: w, height: h }, format: "rgba8unorm",
@@ -351,6 +415,7 @@ export function createPlaneFitPass(
       label,
     });
     shadeA = mkS("planeFit.shadeA"); shadeB = mkS("planeFit.shadeB");
+    denTex = mkS("planeFit.denoised");
     depthA = mkD("planeFit.depthA"); depthB = mkD("planeFit.depthB");
     tex = shadeA;
   };
@@ -386,6 +451,7 @@ export function createPlaneFitPass(
       f[23] = frame;
       f[24] = settings.temporal ?? 0;
       f[25] = settings.tolerance ?? 0.01;
+      f[26] = settings.denoise ?? 0;
       new Uint32Array(buf, 112, 4).set([w, h, sw, sh]);
       device.queue.writeBuffer(ubo, 0, buf);
 
@@ -412,11 +478,28 @@ export function createPlaneFitPass(
         // Both apply pipelines use layout:"auto", so each has its OWN
         // bind group layout — the group must come from the pipeline that
         // will actually be set, or it is rejected as incompatible.
+        const dn = settings.denoise ?? 0;
+        if (dn > 0) {
+          const bgd = device.createBindGroup({
+            layout: pipeDenoise.getBindGroupLayout(0),
+            entries: [
+              { binding: 0, resource: (flip ? shadeB! : shadeA!).createView() },
+              { binding: 1, resource: (flip ? depthB! : depthA!).createView() },
+              { binding: 2, resource: denTex!.createView() },
+              { binding: 3, resource: { buffer: ubo } },
+            ],
+          });
+          const pd = enc.beginComputePass({ label: "planeFit.denoise" });
+          pd.setPipeline(pipeDenoise);
+          pd.setBindGroup(0, bgd);
+          pd.dispatchWorkgroups(Math.ceil(sw / 8), Math.ceil(sh / 8));
+          pd.end();
+        }
         const applyPipe = settings.white === true ? pipeApplyWhite : pipeApply;
         const bg = device.createBindGroup({
           layout: applyPipe.getBindGroupLayout(0),
           entries: [
-            { binding: 0, resource: (flip ? shadeB! : shadeA!).createView() },
+            { binding: 0, resource: ((settings.denoise ?? 0) > 0 ? denTex! : (flip ? shadeB! : shadeA!)).createView() },
             { binding: 1, resource: sampler },
           ],
         });
