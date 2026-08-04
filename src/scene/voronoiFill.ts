@@ -242,6 +242,85 @@ fn viewPosOf(px: vec2i, z: f32) -> vec3f {
 // fitting a plane to a staircase gives normals that jump at every cell
 // boundary, which is the pixel noise white mode shows. A sphere gives a
 // smooth bulge with a well-defined gradient, from the point alone.
+// Depth by fitting a PLANE to the neighbouring seeds and intersecting
+// this pixel's ray with it.
+//
+// The alternatives both fail on real scans. Flat-per-cell depth is a
+// staircase, so fitting normals to it gives noise. A sphere per point
+// BULGES around each sample, so anisotropic sampling (dense along a
+// scan line, sparse across it) turns every line into a ridge and the
+// surface corrugates -- that is the diagonal banding.
+//
+// Interpolating BETWEEN the seeds has neither failure: it reproduces a
+// flat wall exactly, needs no stored normal, and its amplitude is set by
+// the data rather than by a radius constant. On a plane, view-space z is
+// linear in x and y, so this is the same 3x3 least-squares solve the
+// colour fit uses -- no eigen decomposition.
+fn planeDepthAt(px: vec2i, dim: vec2i, sz: f32, ring: f32) -> f32 {
+  var cx = 0.0; var cy = 0.0; var cz = 0.0;
+  var xs: array<f32, 17>; var ys: array<f32, 17>; var zs: array<f32, 17>;
+  var n = 0;
+  var dirs = array<vec2f, 8>(
+    vec2f( 1.0, 0.0), vec2f(-1.0, 0.0), vec2f(0.0,  1.0), vec2f(0.0, -1.0),
+    vec2f( 0.707, 0.707), vec2f(-0.707, 0.707),
+    vec2f( 0.707,-0.707), vec2f(-0.707,-0.707));
+  let selfLog = log2(max(proxyOf(sz, u.reversedZ), 1e-9));
+  for (var i = 0; i < 17; i = i + 1) {
+    var tp = px;
+    if (i > 0) {
+      let rr = select(ring, ring * 2.0, i > 8);
+      tp = px + vec2i(dirs[(i - 1) % 8] * rr);
+    }
+    if (tp.x < 0 || tp.y < 0 || tp.x >= dim.x || tp.y >= dim.y) { continue; }
+    let st = textureLoad(seed, tp, 0).x;
+    let spos = tp + seedOffset(st);
+    if (spos.x < 0 || spos.y < 0 || spos.x >= dim.x || spos.y >= dim.y) { continue; }
+    let szT = seedZ(st, u.reversedZ);
+    if (szT <= 0.0) { continue; }
+    // same surface only -- a silhouette must not drag the plane
+    if (abs(seedLog(st) - selfLog) > u.tol * 8.0) { continue; }
+    let v = viewPosOf(spos, szT);
+    xs[n] = v.x; ys[n] = v.y; zs[n] = v.z;
+    cx += v.x; cy += v.y; cz += v.z;
+    n = n + 1;
+    if (n >= 17) { break; }
+  }
+  if (n < 5) { return sz; }
+  let nf = f32(n);   // NB: fn is a reserved word in WGSL
+  cx /= nf; cy /= nf; cz /= nf;
+
+  // CENTRED 2x2 normal equations. Fitting the uncentred z = a + bx + cy
+  // is badly conditioned -- view x/y are metres offset from the eye, so
+  // the 3x3 is near-singular and the solve explodes into salt & pepper.
+  var Sxx = 0.0; var Sxy = 0.0; var Syy = 0.0; var Sxz = 0.0; var Syz = 0.0;
+  for (var i = 0; i < n; i = i + 1) {
+    let dx = xs[i] - cx; let dy = ys[i] - cy; let dz = zs[i] - cz;
+    Sxx += dx * dx; Sxy += dx * dy; Syy += dy * dy;
+    Sxz += dx * dz; Syz += dy * dz;
+  }
+  let reg = 1e-4 * (Sxx + Syy) + 1e-9;      // ridge: collinear taps stay solvable
+  Sxx += reg; Syy += reg;
+  let det = Sxx * Syy - Sxy * Sxy;
+  if (abs(det) < 1e-12) { return sz; }
+  let b = (Sxz * Syy - Sxy * Syz) / det;
+  let c = (Sxx * Syz - Sxy * Sxz) / det;
+
+  let d = viewPosOf(px, sz);                 // a point on this pixel's ray
+  let den = d.z - b * d.x - c * d.y;
+  if (abs(den) < 1e-9) { return sz; }
+  let t = (cz - b * cx - c * cy) / den;
+  if (t <= 0.0) { return sz; }
+  let zv = -(d.z * t);
+  if (zv <= 1e-6) { return sz; }
+  if (u.reversedZ == 0.0) { return sz; }
+  let outZ = clamp(u.nearPlane / zv, 1e-7, 0.9999999);
+  // Never let a bad fit move the pixel far: the seed depth is the
+  // ground truth, the plane only interpolates BETWEEN seeds.
+  let lo = sz * (1.0 - u.tol * 4.0);
+  let hi = sz * (1.0 + u.tol * 4.0);
+  return clamp(outZ, lo, hi);
+}
+
 fn sphereDepthAt(px: vec2i, sp: vec2i, sz: f32, rWorld: f32) -> f32 {
   let P = viewPosOf(sp, sz);
   let dir = normalize(viewPosOf(px, sz));
@@ -581,10 +660,12 @@ fn fs(i: VOut) -> @location(0) vec4f {
         }
         if (u.surfel != 0.0) {
           if (sPick.y != 0.0) { outZ = surfelDepthAt(px, vec2i(sx, sy), sz, sPick.y); }
-          else if (sPick.w > 0.0) {
-            // no scan normal: fall back to the sphere, sized by the
-            // seed's own point spacing (already in the pick buffer).
+          else if (u.sphereScale > 0.0 && sPick.w > 0.0) {
             outZ = sphereDepthAt(px, vec2i(sx, sy), sz, sPick.w * u.sphereScale);
+          } else {
+            // No scan normal and no sphere: interpolate depth between
+            // the neighbouring seeds. This is the default now.
+            outZ = planeDepthAt(px, dim, sz, max(2.0, rad2 * 0.5));
           }
         }
         outPick = vec4f(outId, outN, outZ, outW);
