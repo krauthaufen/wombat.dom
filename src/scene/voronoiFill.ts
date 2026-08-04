@@ -174,6 +174,114 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 }
 `;
 
+// ── Separable sphere expansion ──────────────────────────────────────
+//
+// Rasterising a sphere sprite per point costs N * pi*r^2 fragments and
+// grows with the point count. Expanding 1px points in screen space costs
+// W*H*2*(2r+1) taps and does NOT depend on how many points there are.
+//
+// A sphere's depth is not a separable function, but the SEARCH is: the
+// candidates live in a box, and a box factors into two 1D scans. What is
+// lost is exactness -- the X pass can only keep k candidates and can only
+// rank them by their depth at the intermediate pixel, not at the final
+// one. k = 2 is the minimum that survives a nearer sphere occluding a
+// farther one mid-scan (pointshare-viewer's fillSpheresX keeps two for
+// exactly this reason).
+const SPHERE_COMMON = /* wgsl */ `
+struct SU { projInv: mat4x4f, sizeX: f32, sizeY: f32, radius: f32,
+            nearPlane: f32, reversedZ: f32, _p0: f32, _p1: f32, _p2: f32 }
+@group(0) @binding(0) var pickTex: texture_2d<f32>;
+@group(0) @binding(1) var colTex: texture_2d<f32>;
+@group(0) @binding(2) var<uniform> u: SU;
+
+// The sphere's radius as an NDC-DEPTH delta at this pixel's depth. NOT a
+// constant: reversed-Z is ndc = near / -z, so the same world radius maps
+// to wildly different ndc deltas near and far.
+fn ndcRadius(z: f32) -> f32 {
+  if (z <= 0.0) { return 0.0; }
+  let zv = u.nearPlane / z;                       // view distance
+  let p11 = 1.0 / max(abs(u.projInv[1][1]), 1e-9);
+  let rw = u.radius * 2.0 * zv / (p11 * u.sizeY); // world radius of r px
+  let zf = max(zv - rw, 1e-4);                    // sphere front
+  return u.nearPlane / zf - z;
+}
+fn packCol(c: vec4f) -> f32 {
+  let r = u32(clamp(c.x, 0.0, 1.0) * 255.0);
+  let g = u32(clamp(c.y, 0.0, 1.0) * 255.0);
+  let b = u32(clamp(c.z, 0.0, 1.0) * 255.0);
+  return bitcast<f32>(r | (g << 8u) | (b << 16u) | 0xff000000u);
+}
+fn unpackCol(f: f32) -> vec3f {
+  let v = bitcast<u32>(f);
+  return vec3f(f32(v & 0xffu), f32((v >> 8u) & 0xffu), f32((v >> 16u) & 0xffu)) / 255.0;
+}
+struct VOutS { @builtin(position) pos: vec4f }
+@vertex fn vs(@builtin(vertex_index) i: u32) -> VOutS {
+  var p = array<vec2f, 3>(vec2f(-1.0, -3.0), vec2f(-1.0, 1.0), vec2f(3.0, 1.0));
+  var o: VOutS; o.pos = vec4f(p[i], 0.0, 1.0); return o;
+}
+`;
+
+// X pass: scan the row, keep the two front-most spheres, and carry each
+// one's SCREEN CENTRE so the Y pass can finish the maths with the true
+// 2D offset.
+const SPHERE_X_WGSL = SPHERE_COMMON + /* wgsl */ `
+struct XOut { @location(0) a: vec4f, @location(1) b: vec4f }
+@fragment fn fs(v: VOutS) -> XOut {
+  let px = vec2i(v.pos.xy);
+  let r = i32(u.radius);
+  var bestZ = -1.0; var secZ = -1.0;
+  var A = vec4f(0.0); var B = vec4f(0.0);
+  for (var dx = -r; dx <= r; dx++) {
+    let q = vec2i(px.x + dx, px.y);
+    if (q.x < 0 || q.x >= i32(u.sizeX)) { continue; }
+    let z = textureLoad(pickTex, q, 0).z;
+    if (z <= 0.0) { continue; }
+    let d = f32(dx) / u.radius;
+    if (abs(d) > 1.0) { continue; }
+    // depth of this sphere AT THIS PIXEL (dy = 0 here) -- the ranking
+    // proxy; the true winner is only known once dy is known.
+    let sd = z + ndcRadius(z) * sqrt(max(0.0, 1.0 - d * d));
+    let rec = vec4f(z, f32(q.x), f32(q.y), packCol(textureLoad(colTex, q, 0)));
+    if (sd > bestZ) { secZ = bestZ; B = A; bestZ = sd; A = rec; }
+    else if (sd > secZ) { secZ = sd; B = rec; }
+  }
+  var o: XOut; o.a = A; o.b = B; return o;
+}
+`;
+
+// Y pass: scan the column over the X results; now the full 2D offset is
+// known, so evaluate each candidate exactly and keep the nearest.
+const SPHERE_Y_WGSL = SPHERE_COMMON + /* wgsl */ `
+@group(0) @binding(3) var slotA: texture_2d<f32>;
+@group(0) @binding(4) var slotB: texture_2d<f32>;
+@group(0) @binding(5) var outPick: texture_storage_2d<rgba32float, write>;
+@fragment fn fs(v: VOutS) -> @location(0) vec4f {
+  let px = vec2i(v.pos.xy);
+  let r = i32(u.radius);
+  var bestZ = -1.0;
+  var col = vec3f(0.0);
+  for (var dy = -r; dy <= r; dy++) {
+    let q = vec2i(px.x, px.y + dy);
+    if (q.y < 0 || q.y >= i32(u.sizeY)) { continue; }
+    for (var s = 0; s < 2; s++) {
+      let rec = select(textureLoad(slotB, q, 0), textureLoad(slotA, q, 0), s == 0);
+      let z = rec.x;
+      if (z <= 0.0) { continue; }
+      let dxp = (f32(px.x) - rec.y) / u.radius;
+      let dyp = (f32(px.y) - rec.z) / u.radius;
+      let d2 = dxp * dxp + dyp * dyp;
+      if (d2 > 1.0) { continue; }
+      let sd = z + ndcRadius(z) * sqrt(1.0 - d2);
+      if (sd > bestZ) { bestZ = sd; col = unpackCol(rec.w); }
+    }
+  }
+  if (bestZ <= 0.0) { textureStore(outPick, px, vec4f(0.0)); discard; }
+  textureStore(outPick, px, vec4f(0.0, 0.0, bestZ, 0.0));
+  return vec4f(col, 1.0);
+}
+`;
+
 // Resolve: fill hole pixels' colour from their seed; also write the
 // filled pick-shaped depth texture (z slot) for downstream shading.
 const RESOLVE_WGSL = SEED_COMMON + /* wgsl */ `
@@ -659,12 +767,17 @@ fn fs(i: VOut) -> @location(0) vec4f {
           outW = sPick.w;
         }
         if (u.surfel != 0.0) {
-          if (sPick.y != 0.0) { outZ = surfelDepthAt(px, vec2i(sx, sy), sz, sPick.y); }
-          else if (u.sphereScale > 0.0 && sPick.w > 0.0) {
+          // Spheres are an explicit CHOICE (the algodat-style mode), so
+          // they win over the scan-normal tilt. Ranking the stored normal
+          // first meant the sphere silently never ran on any store that
+          // happens to carry normals.
+          if (u.sphereScale > 0.0 && sPick.w > 0.0) {
             outZ = sphereDepthAt(px, vec2i(sx, sy), sz, sPick.w * u.sphereScale);
+          } else if (sPick.y != 0.0) {
+            outZ = surfelDepthAt(px, vec2i(sx, sy), sz, sPick.y);
           } else {
-            // No scan normal and no sphere: interpolate depth between
-            // the neighbouring seeds. This is the default now.
+            // Neither requested nor available: interpolate depth between
+            // the neighbouring seeds. This is the default.
             outZ = planeDepthAt(px, dim, sz, max(2.0, rad2 * 0.5));
           }
         }
@@ -725,6 +838,12 @@ export interface VoronoiFillSettings {
    *  point spacing (carried per-point in the pick buffer's PartIndex
    *  slot). > 0 also disables the angular-support gate, which it
    *  replaces. 0 = off (legacy support-gate behaviour). */
+  /** Separable sphere expansion radius in px. > 0 replaces the JFA with
+   *  a 1px-point sphere splat done as two screen-space passes: cost is
+   *  W*H*2*(2r+1) taps and independent of the point count, versus
+   *  N*pi*r^2 fragments for sphere sprites. Approximate — see the pass
+   *  comment for what the k=2 truncation gives up. */
+  readonly sphereFill?: number;
   readonly spacingScale?: number;
   /** > 0 blends the neighbouring Voronoi cells' colours (depth-gated)
    *  instead of copying the winning seed's colour flat. */
@@ -782,6 +901,36 @@ export function createVoronoiFillPass(
     size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "vfill.init.u",
   });
   const stepUbos: GPUBuffer[] = [];
+  const sphXMod = device.createShaderModule({ code: SPHERE_X_WGSL, label: "vfill.sphX" });
+  const sphYMod = device.createShaderModule({ code: SPHERE_Y_WGSL, label: "vfill.sphY" });
+  const pipeSphX = device.createRenderPipeline({
+    layout: "auto",
+    vertex: { module: sphXMod, entryPoint: "vs" },
+    fragment: { module: sphXMod, entryPoint: "fs",
+                targets: [{ format: "rgba32float" }, { format: "rgba32float" }] },
+    primitive: { topology: "triangle-list" },
+  });
+  const pipeSphY = device.createRenderPipeline({
+    layout: "auto",
+    vertex: { module: sphYMod, entryPoint: "vs" },
+    fragment: { module: sphYMod, entryPoint: "fs", targets: [{ format: colorFormat }] },
+    primitive: { topology: "triangle-list" },
+  });
+  const sphUbo = device.createBuffer({
+    size: 96, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "vfill.sph.u",
+  });
+  let slotA: GPUTexture | undefined, slotB: GPUTexture | undefined;
+  const ensureSlots = (w: number, h: number) => {
+    if (slotA !== undefined && slotA.width === w && slotA.height === h) return;
+    slotA?.destroy(); slotB?.destroy();
+    const mk = (label: string) => device.createTexture({
+      size: { width: w, height: h }, format: "rgba32float",
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      label,
+    });
+    slotA = mk("vfill.sphA"); slotB = mk("vfill.sphB");
+  };
+
   const resolveUbo = device.createBuffer({
     size: 144, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "vfill.u",
   });
@@ -852,6 +1001,66 @@ export function createVoronoiFillPass(
       const w = pick.width;
       const h = pick.height;
       ensure(w, h);
+
+      const sphR = settings.sphereFill ?? 0;
+      if (sphR > 0 && proj !== undefined) {
+        ensure(w, h);
+        ensureSlots(w, h);
+        const su = new Float32Array(24);
+        const mi = proj.backward;
+        su.set([
+          mi.M00, mi.M10, mi.M20, mi.M30, mi.M01, mi.M11, mi.M21, mi.M31,
+          mi.M02, mi.M12, mi.M22, mi.M32, mi.M03, mi.M13, mi.M23, mi.M33,
+        ], 0);
+        su[16] = w; su[17] = h; su[18] = sphR;
+        su[19] = settings.nearPlane ?? 0.05;
+        su[20] = revZ ? 1 : 0;
+        device.queue.writeBuffer(sphUbo, 0, su);
+        const enc0 = device.createCommandEncoder({ label: "vfill.sphere" });
+        enc0.copyTextureToTexture({ texture: colorTex }, { texture: colorCopy! },
+                                  { width: w, height: h });
+        {
+          const bg = device.createBindGroup({
+            layout: pipeSphX.getBindGroupLayout(0),
+            entries: [
+              { binding: 0, resource: pick.createView() },
+              { binding: 1, resource: colorCopy!.createView() },
+              { binding: 2, resource: { buffer: sphUbo } },
+            ],
+          });
+          const p = enc0.beginRenderPass({
+            label: "vfill.sphX",
+            colorAttachments: [
+              { view: slotA!.createView(), loadOp: "clear",
+                clearValue: { r: 0, g: 0, b: 0, a: 0 }, storeOp: "store" },
+              { view: slotB!.createView(), loadOp: "clear",
+                clearValue: { r: 0, g: 0, b: 0, a: 0 }, storeOp: "store" },
+            ],
+          });
+          p.setPipeline(pipeSphX); p.setBindGroup(0, bg); p.draw(3); p.end();
+        }
+        {
+          const bg = device.createBindGroup({
+            layout: pipeSphY.getBindGroupLayout(0),
+            // NB: the Y pass never reads pickTex/colTex, and layout:"auto"
+            // prunes unused bindings — listing 0/1 here is a validation
+            // error, not a harmless extra.
+            entries: [
+              { binding: 2, resource: { buffer: sphUbo } },
+              { binding: 3, resource: slotA!.createView() },
+              { binding: 4, resource: slotB!.createView() },
+              { binding: 5, resource: filledPick!.createView() },
+            ],
+          });
+          const p = enc0.beginRenderPass({
+            label: "vfill.sphY",
+            colorAttachments: [{ view: colorView, loadOp: "load", storeOp: "store" }],
+          });
+          p.setPipeline(pipeSphY); p.setBindGroup(0, bg); p.draw(3); p.end();
+        }
+        device.queue.submit([enc0.finish()]);
+        return filledPick;
+      }
 
       device.queue.writeBuffer(initUbo, 0, new Float32Array([revZ ? 1 : 0, 0, 0, 0]));
       const enc = device.createCommandEncoder({ label: "vfill.frame" });
