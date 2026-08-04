@@ -130,10 +130,27 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let vpnx = viewPosAt(px + vec2i(-sp, 0));
   let vpy  = viewPosAt(px + vec2i(0,  sp));
   let vpny = viewPosAt(px + vec2i(0, -sp));
-  let okx  = vpx.w  != 0.0 && abs(vpx.z  - p.z) <= tol;
-  let oknx = vpnx.w != 0.0 && abs(vpnx.z - p.z) <= tol;
-  let oky  = vpy.w  != 0.0 && abs(vpy.z  - p.z) <= tol;
-  let okny = vpny.w != 0.0 && abs(vpny.z - p.z) <= tol;
+  // The prior's neighbour gate must tolerate the depth change a SLANTED
+  // surface actually produces over sp pixels, not a flat epsilon.
+  //
+  // A fixed depth-difference gate rejects legitimate neighbours wherever
+  // the surface is oblique — badly near the camera (tiny world footprint,
+  // so the sphere bulge dwarfs the real tilt) and badly far away (the
+  // plane nears edge-on and the gradient explodes). The prior then falls
+  // back to fronto-parallel, that fronto-parallel plane becomes the gate
+  // for the 24-sample fit, which duly rejects the real surface and
+  // confirms it. Self-reinforcing: it is why a flat ceiling reads
+  // correctly mid-distance and collapses to (0,0,1) blue at both ends.
+  //
+  // Budget: the world size of sp pixels at this depth, times a slope
+  // allowance — a surface up to ~8:1 oblique still counts as connected.
+  let p11p = 1.0 / max(abs(u.projInv[1][1]), 1e-9);
+  let wpp = 2.0 * abs(p.z) / (p11p * f32(u.size.y));
+  let tolP = max(tol, f32(sp) * wpp * 8.0);
+  let okx  = vpx.w  != 0.0 && abs(vpx.z  - p.z) <= tolP;
+  let oknx = vpnx.w != 0.0 && abs(vpnx.z - p.z) <= tolP;
+  let oky  = vpy.w  != 0.0 && abs(vpy.z  - p.z) <= tolP;
+  let okny = vpny.w != 0.0 && abs(vpny.z - p.z) <= tolP;
   var g = vec3f(0.0);
   if (okx && oky)        { g = cross(vpx.xyz - p.xyz, vpy.xyz - p.xyz); }
   else if (okx && okny)  { g = cross(vpx.xyz - p.xyz, p.xyz - vpny.xyz); }
@@ -257,7 +274,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // alpha 0 = "leave this pixel alone": the apply pass discards, so the
   // colour passes through unshaded rather than being blown to white, and
   // the denoise/temporal passes skip it too.
-  let valid = select(0.0, 1.0, havePrior || haveN);
+  let valid = select(0.0, 1.0, havePrior || haveN || u.priorOnly > 1.5);
 
   // AO against the FITTED normal (the pick attachment's normal slot is
   // effect-dependent and may be absent — the fit is the ground truth here).
