@@ -39,6 +39,7 @@ struct U {
 @group(0) @binding(3) var histShade: texture_2d<f32>;
 @group(0) @binding(4) var histDepth: texture_2d<f32>;
 @group(0) @binding(5) var outDepth: texture_storage_2d<r32float, write>;
+@group(0) @binding(6) var outNrm: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(2) var<uniform> u: U;
 
 fn viewPosAt(px: vec2i) -> vec4f {
@@ -113,6 +114,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let px = vec2i((vec2f(gid.xy) + 0.5) * sc);
   let p = viewPosAt(px);
   if (p.w == 0.0) {
+    textureStore(outNrm, opx, vec4f(0.5, 0.5, 0.5, 0.0));
     textureStore(outDepth, opx, vec4f(0.0));
     textureStore(outShade, opx, vec4f(1.0, 1.0, 1.0, 0.0));
     return;
@@ -232,6 +234,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     }
   }
   textureStore(outDepth, opx, vec4f(p.z, 0.0, 0.0, 0.0));
+  textureStore(outNrm, opx, vec4f(nrm * 0.5 + 0.5, conf));
   textureStore(outShade, opx, vec4f(outS, outS, outS, 1.0));
 }
 `;
@@ -254,6 +257,8 @@ struct U {
 @group(0) @binding(1) var srcDepth: texture_2d<f32>;
 @group(0) @binding(2) var dst: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(3) var<uniform> u: U;
+@group(0) @binding(4) var srcNrm: texture_2d<f32>;
+@group(0) @binding(5) var<uniform> step: vec4<f32>;   // .x = a-trous stride
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
@@ -264,14 +269,20 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let z0 = textureLoad(srcDepth, px, 0).x;
   if (z0 == 0.0) { textureStore(dst, px, c); return; }
 
-  let r = i32(clamp(u.denoise, 1.0, 4.0));
-  let sig = max(1.0, u.denoise);
-  let ztol = max(0.02, u.tolerance * abs(z0) * 2.0);
+  // A-trous: a fixed 5x5 kernel whose taps are spread by the stride, run
+  // several times with stride 1,2,4. Five passes of 25 taps reach the
+  // radius a 33x33 box would, at a fraction of the cost — and each pass
+  // re-evaluates the edge weights, so the stopping functions stay sharp
+  // instead of smearing the way one wide blur does.
+  let n0 = textureLoad(srcNrm, px, 0).xyz * 2.0 - 1.0;
+  let st = i32(max(1.0, step.x));
+  let ztol = max(0.02, u.tolerance * abs(z0) * 2.0 * f32(st));
+  let kern = array<f32, 3>(0.375, 0.25, 0.0625);   // B3 spline row
   var acc = 0.0;
   var wsum = 0.0;
-  for (var dy = -r; dy <= r; dy++) {
-    for (var dx = -r; dx <= r; dx++) {
-      let q = px + vec2i(dx, dy);
+  for (var dy = -2; dy <= 2; dy++) {
+    for (var dx = -2; dx <= 2; dx++) {
+      let q = px + vec2i(dx, dy) * st;
       if (q.x < 0 || q.y < 0 || q.x >= i32(u.shadeSize.x) || q.y >= i32(u.shadeSize.y)) { continue; }
       let sc = textureLoad(srcShade, q, 0);
       if (sc.w < 0.5) { continue; }
@@ -279,8 +290,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       if (z == 0.0) { continue; }
       let dz = abs(z - z0);
       if (dz > ztol) { continue; }                       // different surface
-      let f = f32(dx * dx + dy * dy) / (2.0 * sig * sig);
-      let w = exp(-f) * (1.0 - dz / ztol);
+      // Orientation stopping function: depth alone happily smooths across
+      // a wall corner, where depth is continuous but the normal flips.
+      let nq = textureLoad(srcNrm, q, 0);
+      let wn = pow(max(dot(n0, nq.xyz * 2.0 - 1.0), 0.0), 32.0);
+      let h = kern[abs(dx)] * kern[abs(dy)];
+      let w = h * (1.0 - dz / ztol) * wn;
+      if (w <= 0.0) { continue; }
       acc += sc.x * w;
       wsum += w;
     }
@@ -330,7 +346,7 @@ export interface PlaneFitSettings {
    *  0 = off. Needs the per-frame sample rotation to have anything to
    *  average. */
   readonly temporal?: number;
-  /** Cross-bilateral denoise radius in shade pixels (1..4). 0 = off. */
+  /** Number of a-trous denoise passes (0..3), strides 1/2/4. 0 = off. */
   readonly denoise?: number;
   /** Replace surface colour with a white diffuse headlight instead of
    *  modulating the point colours. Default false. */
@@ -416,13 +432,24 @@ export function createPlaneFitPass(
   // Ping-pong history for temporal accumulation: this frame reads the
   // previous frame's shade+depth and writes the current one.
   let shadeA: GPUTexture | undefined, shadeB: GPUTexture | undefined;
-  let denTex: GPUTexture | undefined;
+  let denTex: GPUTexture | undefined, denTex2: GPUTexture | undefined;
+  let nrmTex: GPUTexture | undefined;
+  // One small UBO per a-trous level; the stride is the only thing that
+  // changes between passes.
+  const stepUbos = [1, 2, 4].map((st) => {
+    const b = device.createBuffer({
+      size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(b, 0, new Float32Array([st, 0, 0, 0]));
+    return b;
+  });
   let depthA: GPUTexture | undefined, depthB: GPUTexture | undefined;
   let flip = false;
   let frame = 0;
   const ensureTexture = (w: number, h: number): void => {
     if (tex !== undefined && tex.width === w && tex.height === h) return;
-    tex?.destroy(); shadeA?.destroy(); shadeB?.destroy(); denTex?.destroy();
+    tex?.destroy(); shadeA?.destroy(); shadeB?.destroy();
+    denTex?.destroy(); denTex2?.destroy(); nrmTex?.destroy();
     depthA?.destroy(); depthB?.destroy();
     const mkS = (label: string) => device.createTexture({
       size: { width: w, height: h }, format: "rgba8unorm",
@@ -436,6 +463,8 @@ export function createPlaneFitPass(
     });
     shadeA = mkS("planeFit.shadeA"); shadeB = mkS("planeFit.shadeB");
     denTex = mkS("planeFit.denoised");
+    denTex2 = mkS("planeFit.denoised2");
+    nrmTex = mkS("planeFit.normal");
     depthA = mkD("planeFit.depthA"); depthB = mkD("planeFit.depthB");
     tex = shadeA;
   };
@@ -486,6 +515,7 @@ export function createPlaneFitPass(
             { binding: 3, resource: (flip ? shadeA! : shadeB!).createView() },
             { binding: 4, resource: (flip ? depthA! : depthB!).createView() },
             { binding: 5, resource: (flip ? depthB! : depthA!).createView() },
+            { binding: 6, resource: nrmTex!.createView() },
           ],
         });
         const pass = enc.beginComputePass({ label: "planeFit.fit" });
@@ -498,28 +528,35 @@ export function createPlaneFitPass(
         // Both apply pipelines use layout:"auto", so each has its OWN
         // bind group layout — the group must come from the pipeline that
         // will actually be set, or it is rejected as incompatible.
-        const dn = settings.denoise ?? 0;
-        if (dn > 0) {
+        const dn = Math.max(0, Math.min(3, Math.round(settings.denoise ?? 0)));
+        let denOut: GPUTexture | undefined;
+        for (let lvl = 0; lvl < dn; lvl++) {
+          const src = lvl === 0 ? (flip ? shadeB! : shadeA!)
+                                : (lvl % 2 === 1 ? denTex! : denTex2!);
+          const dst = lvl % 2 === 0 ? denTex! : denTex2!;
           const bgd = device.createBindGroup({
             layout: pipeDenoise.getBindGroupLayout(0),
             entries: [
-              { binding: 0, resource: (flip ? shadeB! : shadeA!).createView() },
+              { binding: 0, resource: src.createView() },
               { binding: 1, resource: (flip ? depthB! : depthA!).createView() },
-              { binding: 2, resource: denTex!.createView() },
+              { binding: 2, resource: dst.createView() },
               { binding: 3, resource: { buffer: ubo } },
+              { binding: 4, resource: nrmTex!.createView() },
+              { binding: 5, resource: { buffer: stepUbos[lvl]! } },
             ],
           });
-          const pd = enc.beginComputePass({ label: "planeFit.denoise" });
+          const pd = enc.beginComputePass({ label: `planeFit.atrous${lvl}` });
           pd.setPipeline(pipeDenoise);
           pd.setBindGroup(0, bgd);
           pd.dispatchWorkgroups(Math.ceil(sw / 8), Math.ceil(sh / 8));
           pd.end();
+          denOut = dst;
         }
         const applyPipe = settings.white === true ? pipeApplyWhite : pipeApply;
         const bg = device.createBindGroup({
           layout: applyPipe.getBindGroupLayout(0),
           entries: [
-            { binding: 0, resource: ((settings.denoise ?? 0) > 0 ? denTex! : (flip ? shadeB! : shadeA!)).createView() },
+            { binding: 0, resource: (denOut ?? (flip ? shadeB! : shadeA!)).createView() },
             { binding: 1, resource: sampler },
           ],
         });
