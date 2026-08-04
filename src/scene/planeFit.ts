@@ -151,6 +151,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var shade = 1.0;
   var nrm = vec3f(0.0);
   var haveN = false;
+  var conf = 0.0;
   if (np >= 5u) {
     let c = sum / cnt;
     var cov = mat3x3f(vec3f(0.0), vec3f(0.0), vec3f(0.0));
@@ -167,8 +168,27 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     haveN = true;
     let ndl = abs(dot(n, toCam));
     shade = u.ambient + (1.0 - u.ambient) * ndl;
+
+    // CONFIDENCE. At a silhouette the depth gate rejects the far surface,
+    // so few same-surface neighbours survive and the plane through them is
+    // arbitrary — that is the dark speckle along every edge. A bilateral
+    // blur cannot repair it: at an edge it rejects almost every tap, so
+    // the bad value passes through untouched. Detect the bad fit instead
+    // and fade to flat, which reads as an unshaded pixel rather than a
+    // black one.
+    //   count    — a plane needs comfortably more than 3 points
+    //   residual — how far the neighbours actually lie from the plane
+    var resid = 0.0;
+    for (var i = 0u; i < np; i++) {
+      let dd = dot(n, pts[i] - c);
+      resid += dd * dd;
+    }
+    resid = sqrt(resid / f32(np));
+    let confCount = clamp((f32(np) - 5.0) / 6.0, 0.0, 1.0);
+    let confPlane = clamp(1.0 - resid / max(0.35 * tol, 1e-6), 0.0, 1.0);
+    conf = confCount * confPlane;
   }
-  shade = mix(1.0, shade, u.strength);
+  shade = mix(1.0, shade, u.strength * conf);
 
   // AO against the FITTED normal (the pick attachment's normal slot is
   // effect-dependent and may be absent — the fit is the ground truth here).
