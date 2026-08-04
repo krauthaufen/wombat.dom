@@ -114,8 +114,18 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var cnt = 1.0;
   var pts: array<vec3f, 24>;
   var np = 0u;
+  // Rotate the sample disk per pixel. A FIXED pattern (the AO loop below
+  // already jitters its ring, this one did not) turns the flat-per-cell
+  // staircase in the filled depth into coherent directional error --
+  // visible as diagonal banding across flat surfaces. Decorrelating it
+  // turns that structure into noise, which reads far better and averages
+  // out over neighbouring pixels.
+  let jr = fract(sin(f32(gid.x) * 12.9898 + f32(gid.y) * 78.233) * 43758.5453) * 6.2831853;
+  let jc = cos(jr);
+  let js = sin(jr);
   for (var i = 0u; i < N; i++) {
-    let off = diskOffset(i) * u.radiusPx;
+    let d0 = diskOffset(i);
+    let off = vec2f(d0.x * jc - d0.y * js, d0.x * js + d0.y * jc) * u.radiusPx;
     let q = vec2i(vec2f(px) + off);
     if (q.x < 0 || q.y < 0 || q.x >= i32(u.size.x) || q.y >= i32(u.size.y)) { continue; }
     let vq = viewPosAt(q);
