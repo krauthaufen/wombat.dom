@@ -26,12 +26,18 @@ struct U {
   aoRadius: f32,    // world-space AO radius (0 = AO off)
   aoIntensity: f32,
   projM11: f32,
-  _pad: f32,
+  frame: f32,       // varies the sample rotation per frame
+  temporal: f32,    // history blend weight, 0 = off
+  tempTol: f32,
+  _pad2: f32,
   size: vec2u,       // pick texture (device px)
   shadeSize: vec2u,  // output texture (may be scaled down)
 }
 @group(0) @binding(0) var pick: texture_2d<f32>;
 @group(0) @binding(1) var outShade: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(3) var histShade: texture_2d<f32>;
+@group(0) @binding(4) var histDepth: texture_2d<f32>;
+@group(0) @binding(5) var outDepth: texture_storage_2d<r32float, write>;
 @group(0) @binding(2) var<uniform> u: U;
 
 fn viewPosAt(px: vec2i) -> vec4f {
@@ -105,7 +111,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let sc = vec2f(u.size) / vec2f(u.shadeSize);
   let px = vec2i((vec2f(gid.xy) + 0.5) * sc);
   let p = viewPosAt(px);
-  if (p.w == 0.0) { textureStore(outShade, opx, vec4f(1.0, 1.0, 1.0, 0.0)); return; }
+  if (p.w == 0.0) {
+    textureStore(outDepth, opx, vec4f(0.0));
+    textureStore(outShade, opx, vec4f(1.0, 1.0, 1.0, 0.0));
+    return;
+  }
 
   let tol = max(0.05, u.tolerance * abs(p.z));
 
@@ -120,7 +130,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // visible as diagonal banding across flat surfaces. Decorrelating it
   // turns that structure into noise, which reads far better and averages
   // out over neighbouring pixels.
-  let jr = fract(sin(f32(gid.x) * 12.9898 + f32(gid.y) * 78.233) * 43758.5453) * 6.2831853;
+  let jr = fract(sin(f32(gid.x) * 12.9898 + f32(gid.y) * 78.233 + u.frame * 0.7548) * 43758.5453) * 6.2831853;
   let jc = cos(jr);
   let js = sin(jr);
   for (var i = 0u; i < N; i++) {
@@ -186,7 +196,22 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let ao = clamp(1.0 - occl / 8.0 * u.aoIntensity, 0.0, 1.0);
     shade = shade * ao;
   }
-  textureStore(outShade, opx, vec4f(shade, shade, shade, 1.0));
+  // Temporal accumulation. Valid per-pixel without motion vectors
+  // because the FILL made depth dense: if this pixel's depth matches
+  // what was here last frame, it is the same surface and the history is
+  // usable. Where the camera moved the depth disagrees and we fall back
+  // to this frame, so there is no ghosting -- it converges while still,
+  // which is when the noise is worth removing.
+  var outS = shade;
+  if (u.temporal > 0.0) {
+    let hd = textureLoad(histDepth, opx, 0).x;
+    if (hd > 0.0 && abs(p.z - hd) <= max(0.02, u.tempTol * abs(p.z))) {
+      let hs = textureLoad(histShade, opx, 0).x;
+      outS = mix(hs, shade, u.temporal);
+    }
+  }
+  textureStore(outDepth, opx, vec4f(p.z, 0.0, 0.0, 0.0));
+  textureStore(outShade, opx, vec4f(outS, outS, outS, 1.0));
 }
 `;
 
@@ -224,6 +249,11 @@ export interface PlaneFitSettings {
   readonly tolerance?: number;
   /** Shade floor (ambient). Default 0.35. */
   readonly ambient?: number;
+  /** History blend weight for temporal denoising: the fraction of THIS
+   *  frame mixed in each frame (0.15 ~ converges over ~20 frames).
+   *  0 = off. Needs the per-frame sample rotation to have anything to
+   *  average. */
+  readonly temporal?: number;
   /** Replace surface colour with a white diffuse headlight instead of
    *  modulating the point colours. Default false. */
   readonly white?: boolean;
@@ -296,19 +326,33 @@ export function createPlaneFitPass(
   });
   const sampler = device.createSampler({ magFilter: "linear", minFilter: "linear", label: "planeFit.samp" });
   const ubo = device.createBuffer({
-    size: 112, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "planeFit.u",
+    size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "planeFit.u",
   });
 
   let tex: GPUTexture | undefined;
+  // Ping-pong history for temporal accumulation: this frame reads the
+  // previous frame's shade+depth and writes the current one.
+  let shadeA: GPUTexture | undefined, shadeB: GPUTexture | undefined;
+  let depthA: GPUTexture | undefined, depthB: GPUTexture | undefined;
+  let flip = false;
+  let frame = 0;
   const ensureTexture = (w: number, h: number): void => {
     if (tex !== undefined && tex.width === w && tex.height === h) return;
-    tex?.destroy();
-    tex = device.createTexture({
-      size: { width: w, height: h },
-      format: "rgba8unorm",
+    tex?.destroy(); shadeA?.destroy(); shadeB?.destroy();
+    depthA?.destroy(); depthB?.destroy();
+    const mkS = (label: string) => device.createTexture({
+      size: { width: w, height: h }, format: "rgba8unorm",
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-      label: "planeFit.shade",
+      label,
     });
+    const mkD = (label: string) => device.createTexture({
+      size: { width: w, height: h }, format: "r32float",
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+      label,
+    });
+    shadeA = mkS("planeFit.shadeA"); shadeB = mkS("planeFit.shadeB");
+    depthA = mkD("planeFit.depthA"); depthB = mkD("planeFit.depthB");
+    tex = shadeA;
   };
 
   return {
@@ -323,7 +367,7 @@ export function createPlaneFitPass(
       ensureTexture(sw, sh);
 
       const m = proj.backward;
-      const buf = new ArrayBuffer(112); // 64 mat + 32 scalars + 16 sizes
+      const buf = new ArrayBuffer(128); // 64 mat + 44 scalars + pad + 16 sizes
       const f = new Float32Array(buf, 0, 24);
       f.set([
         m.M00, m.M10, m.M20, m.M30,
@@ -338,8 +382,11 @@ export function createPlaneFitPass(
       f[20] = settings.aoRadius ?? 0.6;
       f[21] = settings.aoIntensity ?? 2;
       f[22] = proj.forward.M11;
-      f[23] = 0;
-      new Uint32Array(buf, 96, 4).set([w, h, sw, sh]);
+      frame = (frame + 1) % 4096;
+      f[23] = frame;
+      f[24] = settings.temporal ?? 0;
+      f[25] = settings.tolerance ?? 0.01;
+      new Uint32Array(buf, 112, 4).set([w, h, sw, sh]);
       device.queue.writeBuffer(ubo, 0, buf);
 
       const enc = device.createCommandEncoder({ label: "planeFit.frame" });
@@ -348,8 +395,11 @@ export function createPlaneFitPass(
           layout: pipeFit.getBindGroupLayout(0),
           entries: [
             { binding: 0, resource: pick.createView() },
-            { binding: 1, resource: tex!.createView() },
+            { binding: 1, resource: (flip ? shadeB! : shadeA!).createView() },
             { binding: 2, resource: { buffer: ubo } },
+            { binding: 3, resource: (flip ? shadeA! : shadeB!).createView() },
+            { binding: 4, resource: (flip ? depthA! : depthB!).createView() },
+            { binding: 5, resource: (flip ? depthB! : depthA!).createView() },
           ],
         });
         const pass = enc.beginComputePass({ label: "planeFit.fit" });
@@ -366,7 +416,7 @@ export function createPlaneFitPass(
         const bg = device.createBindGroup({
           layout: applyPipe.getBindGroupLayout(0),
           entries: [
-            { binding: 0, resource: tex!.createView() },
+            { binding: 0, resource: (flip ? shadeB! : shadeA!).createView() },
             { binding: 1, resource: sampler },
           ],
         });
@@ -380,6 +430,7 @@ export function createPlaneFitPass(
         pass.end();
       }
       device.queue.submit([enc.finish()]);
+      flip = !flip;
     },
     dispose() {
       tex?.destroy();
