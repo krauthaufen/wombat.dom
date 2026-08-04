@@ -261,6 +261,16 @@ const SPHERE_Y_WGSL = SPHERE_COMMON + /* wgsl */ `
   let r = i32(u.radius);
   var bestZ = -1.0;
   var col = vec3f(0.0);
+  // Nearest candidate regardless of coverage. The scan is anisotropic --
+  // dense along each scan line, sparse across it -- so in the far field
+  // the across-line gaps exceed the sphere diameter and pixels fall
+  // between spheres entirely. Inflating every sphere to close them makes
+  // the near field blobby; instead fill only the pixels nothing covered,
+  // with the nearest sphere's colour at its own (flat) depth. Wherever a
+  // sphere really does cover, it still wins, so shapes stay crisp.
+  var fbD = 1e30;
+  var fbZ = -1.0;
+  var fbCol = vec3f(0.0);
   for (var dy = -r; dy <= r; dy++) {
     let q = vec2i(px.x, px.y + dy);
     if (q.y < 0 || q.y >= i32(u.sizeY)) { continue; }
@@ -276,6 +286,23 @@ const SPHERE_Y_WGSL = SPHERE_COMMON + /* wgsl */ `
       if (sd > bestZ) { bestZ = sd; col = unpackCol(rec.w); }
     }
   }
+  // second sweep for the fallback only if nothing covered this pixel
+  if (bestZ <= 0.0) {
+    for (var dy = -r; dy <= r; dy++) {
+      let q = vec2i(px.x, px.y + dy);
+      if (q.y < 0 || q.y >= i32(u.sizeY)) { continue; }
+      for (var s2 = 0; s2 < 2; s2++) {
+        let rec = select(textureLoad(slotB, q, 0), textureLoad(slotA, q, 0), s2 == 0);
+        let z = rec.x;
+        if (z <= 0.0) { continue; }
+        let ddx = (f32(px.x) - rec.y) / u.radius;
+        let ddy = (f32(px.y) - rec.z) / u.radius;
+        let dd2 = ddx * ddx + ddy * ddy;
+        if (dd2 < fbD) { fbD = dd2; fbZ = z; fbCol = unpackCol(rec.w); }
+      }
+    }
+  }
+  if (bestZ <= 0.0 && fbZ > 0.0) { bestZ = fbZ; col = fbCol; }
   if (bestZ <= 0.0) { textureStore(outPick, px, vec4f(0.0)); discard; }
   textureStore(outPick, px, vec4f(0.0, 0.0, bestZ, 0.0));
   return vec4f(col, 1.0);
