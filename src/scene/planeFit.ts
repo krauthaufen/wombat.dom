@@ -30,7 +30,7 @@ struct U {
   temporal: f32,    // history blend weight, 0 = off
   tempTol: f32,
   denoise: f32,     // bilateral radius in px, 0 = off
-  _pad3: f32,
+  priorOnly: f32,   // debug: shade from the cross-product prior only
   size: vec2u,       // pick texture (device px)
   shadeSize: vec2u,  // output texture (may be scaled down)
 }
@@ -120,6 +120,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     return;
   }
 
+
   let tol = max(0.05, u.tolerance * abs(p.z));
 
   // PRIOR: a cheap 4-neighbour cross product, used only to gate the disk
@@ -138,8 +139,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   else if (okx && okny)  { g = cross(vpx.xyz - p.xyz, p.xyz - vpny.xyz); }
   else if (oknx && oky)  { g = cross(p.xyz - vpnx.xyz, vpy.xyz - p.xyz); }
   else if (oknx && okny) { g = cross(p.xyz - vpnx.xyz, p.xyz - vpny.xyz); }
-  var prior = normalize(-p.xyz);            // fronto-parallel fallback
-  if (length(g) > 1e-12) { prior = normalize(g); }
+  // A fronto-parallel fallback is NOT neutral: it gives |N.V| = 1, the
+  // brightest possible shading. Far from the camera the depth buffer is
+  // sparsest, so the fallback fires most often there and the far field
+  // glares white — "bright far from the camera" is really "no normal
+  // here". Track the failure instead and leave those pixels unshaded.
+  var havePrior = length(g) > 1e-12;
+  var prior = normalize(-p.xyz);
+  if (havePrior) { prior = normalize(g); }
   if (dot(prior, -p.xyz) < 0.0) { prior = -prior; }
   let plane = vec4f(prior, -dot(prior, p.xyz));
   // Gate the disk by distance to THAT PLANE, not by depth difference.
@@ -196,7 +203,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     if (dot(n, toCam) < 0.0) { n = -n; }   // orient toward the camera
     nrm = n;
     haveN = true;
-    let ndl = abs(dot(n, toCam));
+    // Diffuse from the view-space Z of the normal: a DIRECTIONAL light
+    // along the camera axis, not a point light at the eye.
+    //
+    // A point light uses dot(N, direction-to-eye), which on a large plane
+    // sweeps ~1 overhead to 0 where the plane goes edge-on, passing
+    // through ZERO there — a dark crease. That same sign change flips the
+    // camera-facing orientation, which is the berry/purple seam in the
+    // normal view. Keying on orientation alone gives a plane ONE diffuse
+    // term everywhere, so a flat ceiling reads flat: no crease, no flip.
+    let ndl = abs(n.z);
     shade = u.ambient + (1.0 - u.ambient) * ndl;
 
     // CONFIDENCE. At a silhouette the depth gate rejects the far surface,
@@ -218,15 +234,30 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let confPlane = clamp(1.0 - resid / max(0.35 * tol, 1e-6), 0.0, 1.0);
     conf = confCount * confPlane;
   }
+  // Degrade to the PRIOR's shading, never to white.
+  //
+  // Fading an unreliable fit toward 1.0 makes low-confidence pixels jump
+  // to full brightness, which draws a hard bright band exactly along
+  // ceiling/wall junctions and soffit edges — precisely where confidence
+  // collapses. The cross-product prior is a real estimate for every
+  // pixel, just a coarser one, so blending toward IT keeps the gradient
+  // continuous and only softens the detail.
+  let shadePrior = u.ambient + (1.0 - u.ambient) * abs(prior.z);
   if (!haveN) {
-    // fall back to the prior instead of going flat: it is a real
-    // estimate, just a coarse one.
     nrm = prior;
     haveN = true;
-    shade = u.ambient + (1.0 - u.ambient) * abs(dot(prior, normalize(-p.xyz)));
-    conf = 0.5;
+    shade = shadePrior;
+  } else if (u.priorOnly > 0.5) {
+    nrm = prior;
+    shade = shadePrior;
+  } else {
+    shade = mix(shadePrior, shade, conf);
   }
-  shade = mix(1.0, shade, u.strength * conf);
+  shade = mix(1.0, shade, u.strength);
+  // alpha 0 = "leave this pixel alone": the apply pass discards, so the
+  // colour passes through unshaded rather than being blown to white, and
+  // the denoise/temporal passes skip it too.
+  let valid = select(0.0, 1.0, havePrior || haveN);
 
   // AO against the FITTED normal (the pick attachment's normal slot is
   // effect-dependent and may be absent — the fit is the ground truth here).
@@ -271,7 +302,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   }
   textureStore(outDepth, opx, vec4f(p.z, 0.0, 0.0, 0.0));
   textureStore(outNrm, opx, vec4f(nrm * 0.5 + 0.5, conf));
-  textureStore(outShade, opx, vec4f(outS, outS, outS, 1.0));
+  textureStore(outShade, opx, vec4f(outS, outS, outS, valid));
 }
 `;
 
@@ -359,6 +390,15 @@ fn vs(@builtin(vertex_index) vi: u32) -> VOut {
   return o;
 }
 
+// Debug view: show the fitted normal itself (view-space, *0.5+0.5).
+// Flat grey (0.5,0.5,0.5) means NO normal was produced there — which is
+// what the "bright far from the camera" glare actually was.
+@fragment
+fn fsNormal(i: VOut) -> @location(0) vec4f {
+  let t = textureSample(shade, samp, i.uv);
+  return vec4f(t.xyz, 1.0);
+}
+
 @fragment
 fn fs(i: VOut) -> @location(0) vec4f {
   let t = textureSample(shade, samp, i.uv);
@@ -384,6 +424,10 @@ export interface PlaneFitSettings {
   readonly temporal?: number;
   /** Number of a-trous denoise passes (0..3), strides 1/2/4. 0 = off. */
   readonly denoise?: number;
+  /** Debug: shade from the cross-product prior instead of the fit. */
+  readonly priorOnly?: number;
+  /** Debug: display the fitted view-space normal instead of shading. */
+  readonly showNormals?: number;
   /** Replace surface colour with a white diffuse headlight instead of
    *  modulating the point colours. Default false. */
   readonly white?: boolean;
@@ -448,6 +492,14 @@ export function createPlaneFitPass(
   // multiplying into it — a plain white surface lit by a headlight,
   // which reads geometry without the point colours competing with it.
   // Blend state is pipeline state, so this needs its own pipeline.
+  const pipeApplyNormal = device.createRenderPipeline({
+    layout: "auto",
+    vertex: { module: applyModule, entryPoint: "vs" },
+    fragment: { module: applyModule, entryPoint: "fsNormal",
+                targets: [{ format: colorFormat }] },
+    primitive: { topology: "triangle-list" },
+    label: "planeFit.apply.normal",
+  });
   const pipeApplyWhite = device.createRenderPipeline({
     layout: "auto",
     vertex: { module: applyModule, entryPoint: "vs" },
@@ -537,6 +589,7 @@ export function createPlaneFitPass(
       f[24] = settings.temporal ?? 0;
       f[25] = settings.tolerance ?? 0.01;
       f[26] = settings.denoise ?? 0;
+      f[27] = settings.priorOnly ?? 0;
       new Uint32Array(buf, 112, 4).set([w, h, sw, sh]);
       device.queue.writeBuffer(ubo, 0, buf);
 
@@ -588,11 +641,13 @@ export function createPlaneFitPass(
           pd.end();
           denOut = dst;
         }
-        const applyPipe = settings.white === true ? pipeApplyWhite : pipeApply;
+        const showN = (settings.showNormals ?? 0) > 0;
+        const applyPipe = showN ? pipeApplyNormal
+                        : (settings.white === true ? pipeApplyWhite : pipeApply);
         const bg = device.createBindGroup({
           layout: applyPipe.getBindGroupLayout(0),
           entries: [
-            { binding: 0, resource: (denOut ?? (flip ? shadeB! : shadeA!)).createView() },
+            { binding: 0, resource: (showN ? nrmTex! : (denOut ?? (flip ? shadeB! : shadeA!))).createView() },
             { binding: 1, resource: sampler },
           ],
         });
