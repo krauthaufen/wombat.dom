@@ -105,6 +105,20 @@ fn smallestEigenvector(a: mat3x3f) -> vec3f {
   return normalize(v);
 }
 
+// Walk outward for a valid neighbour rather than giving up at one step.
+// The depth buffer is stippled where the scan is anisotropic, so a pixel
+// can sit ON a scan line with nothing sampled between lines at exactly
+// +-sp — all four neighbours empty, the prior falls back to
+// fronto-parallel, and the pixel renders (0,0,1) blue despite having
+// perfectly good depth itself.
+fn probeDir(px: vec2i, dir: vec2i, sp: i32) -> vec4f {
+  for (var k = 1; k <= 4; k++) {
+    let v = viewPosAt(px + dir * (sp * k));
+    if (v.w != 0.0) { return v; }
+  }
+  return vec4f(0.0);
+}
+
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
   if (gid.x >= u.shadeSize.x || gid.y >= u.shadeSize.y) { return; }
@@ -125,19 +139,43 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // PRIOR: a cheap 4-neighbour cross product, used only to gate the disk
   // below (the original viewer's sampleSimpleNormal).
   let sp = max(1, i32(round(u.radiusPx / 4.0)));
-  let vpx  = viewPosAt(px + vec2i( sp, 0));
-  let vpnx = viewPosAt(px + vec2i(-sp, 0));
-  let vpy  = viewPosAt(px + vec2i(0,  sp));
-  let vpny = viewPosAt(px + vec2i(0, -sp));
-  let okx  = vpx.w  != 0.0 && abs(vpx.z  - p.z) <= tol;
-  let oknx = vpnx.w != 0.0 && abs(vpnx.z - p.z) <= tol;
-  let oky  = vpy.w  != 0.0 && abs(vpy.z  - p.z) <= tol;
-  let okny = vpny.w != 0.0 && abs(vpny.z - p.z) <= tol;
+  // Walk outward for a valid neighbour rather than giving up at one step.
+  // The depth buffer is stippled where the scan is anisotropic, so a
+  // pixel can sit ON a scan line with nothing sampled between lines at
+  // exactly +-sp — all four neighbours empty, prior falls back to
+  // fronto-parallel, and that pixel renders (0,0,1) blue despite having
+  // perfectly good depth itself.
+  let vpx  = probeDir(px, vec2i( 1, 0), sp);
+  let vpnx = probeDir(px, vec2i(-1, 0), sp);
+  let vpy  = probeDir(px, vec2i(0,  1), sp);
+  let vpny = probeDir(px, vec2i(0, -1), sp);
+  // Pick the CLOSER side per axis; never threshold on depth difference.
+  //
+  // The old gate (abs(dz) <= tol) was meant to reject silhouettes but
+  // actually measures SLOPE, and slope is unbounded on a receding plane.
+  // Concretely: at |z| ~ 10m the budget is 0.1m and a pixel spans ~5mm of
+  // world, so an 80 deg oblique surface steps ~55mm (passes) but an 88
+  // deg one steps ~270mm (rejected). The far end of a ceiling is exactly
+  // where obliquity approaches 90, so every neighbour there was rejected
+  // and the prior fell back to fronto-parallel — the (0,0,1) blue. Any
+  // fixed threshold just moves that failure further out.
+  //
+  // Choosing the nearer-in-depth neighbour on each axis needs no
+  // threshold: on a smooth surface both sides are equivalent, and at a
+  // silhouette the crossing side is far away so the other one wins by
+  // construction. Steep-but-continuous surfaces are then fine at any
+  // obliquity, which is what the ceiling needs.
+  let BIG = 3.0e38;
+  let dpx  = select(BIG, abs(vpx.z  - p.z), vpx.w  != 0.0);
+  let dnx  = select(BIG, abs(vpnx.z - p.z), vpnx.w != 0.0);
+  let dpy  = select(BIG, abs(vpy.z  - p.z), vpy.w  != 0.0);
+  let dny  = select(BIG, abs(vpny.z - p.z), vpny.w != 0.0);
   var g = vec3f(0.0);
-  if (okx && oky)        { g = cross(vpx.xyz - p.xyz, vpy.xyz - p.xyz); }
-  else if (okx && okny)  { g = cross(vpx.xyz - p.xyz, p.xyz - vpny.xyz); }
-  else if (oknx && oky)  { g = cross(p.xyz - vpnx.xyz, vpy.xyz - p.xyz); }
-  else if (oknx && okny) { g = cross(p.xyz - vpnx.xyz, p.xyz - vpny.xyz); }
+  if (min(dpx, dnx) < BIG && min(dpy, dny) < BIG) {
+    let ex = select(p.xyz - vpnx.xyz, vpx.xyz - p.xyz, dpx <= dnx);
+    let ey = select(p.xyz - vpny.xyz, vpy.xyz - p.xyz, dpy <= dny);
+    g = cross(ex, ey);
+  }
   var prior = normalize(-p.xyz);            // fronto-parallel fallback
   if (length(g) > 1e-12) { prior = normalize(g); }
   if (dot(prior, -p.xyz) < 0.0) { prior = -prior; }
