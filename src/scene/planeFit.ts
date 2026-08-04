@@ -31,6 +31,7 @@ struct U {
   tempTol: f32,
   denoise: f32,     // bilateral radius in px, 0 = off
   priorOnly: f32,   // debug: shade from the cross-product prior only
+  priorSlope: f32,  // obliquity the prior's neighbour gate tolerates
   size: vec2u,       // pick texture (device px)
   shadeSize: vec2u,  // output texture (may be scaled down)
 }
@@ -146,11 +147,29 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // allowance — a surface up to ~8:1 oblique still counts as connected.
   let p11p = 1.0 / max(abs(u.projInv[1][1]), 1e-9);
   let wpp = 2.0 * abs(p.z) / (p11p * f32(u.size.y));
-  let tolP = max(tol, f32(sp) * wpp * 8.0);
-  let okx  = vpx.w  != 0.0 && abs(vpx.z  - p.z) <= tolP;
-  let oknx = vpnx.w != 0.0 && abs(vpnx.z - p.z) <= tolP;
-  let oky  = vpy.w  != 0.0 && abs(vpy.z  - p.z) <= tolP;
-  let okny = vpny.w != 0.0 && abs(vpny.z - p.z) <= tolP;
+  // Slope allowance. 8:1 is not enough where a plane approaches the
+  // vanishing line — the ceiling's far edge is far more oblique than
+  // that, so the prior failed there and handed the fit a fronto-parallel
+  // gate plane, which then rejected the real surface. Only a true
+  // silhouette jump should be rejected here; the fit's own plane gate
+  // does the fine filtering afterwards.
+  let tolP = max(tol, f32(sp) * wpp * max(u.priorSlope, 1.0));
+  // NO depth gate: tolerate any obliquity.
+  //
+  // The depth buffer here is continuous (every covered pixel sits on some
+  // sphere's face), so a cross product of neighbouring view positions
+  // ALWAYS yields a normal. Rejecting neighbours was the only way to end
+  // up with none — and any fixed obliquity budget is wrong somewhere,
+  // because a plane approaching the vanishing line has unbounded slope.
+  // That is what left the ceiling's far end blue. A neighbour across a
+  // silhouette does give a wrong normal, but the 24-sample fit gates on
+  // this prior's PLANE afterwards and the confidence term catches it —
+  // and a wrong-but-plausible normal beats no normal, which renders as
+  // fronto-parallel glare.
+  let okx  = vpx.w  != 0.0;
+  let oknx = vpnx.w != 0.0;
+  let oky  = vpy.w  != 0.0;
+  let okny = vpny.w != 0.0;
   var g = vec3f(0.0);
   if (okx && oky)        { g = cross(vpx.xyz - p.xyz, vpy.xyz - p.xyz); }
   else if (okx && okny)  { g = cross(vpx.xyz - p.xyz, p.xyz - vpny.xyz); }
@@ -445,6 +464,8 @@ export interface PlaneFitSettings {
   readonly priorOnly?: number;
   /** Debug: display the fitted view-space normal instead of shading. */
   readonly showNormals?: number;
+  /** Obliquity the prior's neighbour gate tolerates. Default 8. */
+  readonly priorSlope?: number;
   /** Replace surface colour with a white diffuse headlight instead of
    *  modulating the point colours. Default false. */
   readonly white?: boolean;
@@ -607,6 +628,7 @@ export function createPlaneFitPass(
       f[25] = settings.tolerance ?? 0.01;
       f[26] = settings.denoise ?? 0;
       f[27] = settings.priorOnly ?? 0;
+      f[28] = settings.priorSlope ?? 8;
       new Uint32Array(buf, 112, 4).set([w, h, sw, sh]);
       device.queue.writeBuffer(ubo, 0, buf);
 

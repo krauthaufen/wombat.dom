@@ -298,6 +298,11 @@ const SPHERE_Y_WGSL = SPHERE_COMMON + /* wgsl */ `
         let ddx = (f32(px.x) - rec.y) / u.radius;
         let ddy = (f32(px.y) - rec.z) / u.radius;
         let dd2 = ddx * ddx + ddy * ddy;
+        // Bound it CIRCULARLY and tightly. A separable scan covers a BOX,
+        // so an unbounded "nearest candidate" fills an isolated point out
+        // to a square — which is the non-circular points. 1.4x the sphere
+        // radius closes gaps up to ~0.4 R while keeping every point round.
+        if (dd2 > 1.96) { continue; }
         if (dd2 < fbD) { fbD = dd2; fbZ = z; fbCol = unpackCol(rec.w); }
       }
     }
