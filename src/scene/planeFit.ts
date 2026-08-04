@@ -199,7 +199,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // visible as diagonal banding across flat surfaces. Decorrelating it
   // turns that structure into noise, which reads far better and averages
   // out over neighbouring pixels.
-  let jr = fract(sin(f32(gid.x) * 12.9898 + f32(gid.y) * 78.233 + u.frame * 0.7548) * 43758.5453) * 6.2831853;
+  // Per-PIXEL rotation only — deliberately NOT per frame. Varying it per
+  // frame existed to give temporal accumulation something to average;
+  // with accumulation gone it would just make the fit flicker, so the
+  // same camera pose must always produce the same image.
+  let jr = fract(sin(f32(gid.x) * 12.9898 + f32(gid.y) * 78.233) * 43758.5453) * 6.2831853;
   let jc = cos(jr);
   let js = sin(jr);
   for (var i = 0u; i < N; i++) {
