@@ -1242,7 +1242,7 @@ function buildRenderObject(
   // M1 (docs/scene-templates.md): name effect uniforms nothing in scope
   // resolves — today they silently read zero at draw time. Deduped per
   // (effect, missing-set); per-leaf cost is a few Set probes.
-  warnUnresolvedUniforms(effect, state.uniforms, injectedNames(opts), leaf.instanceAttributes, sgSourceOf(leaf));
+  warnUnresolvedUniforms(effect, state.uniforms, injectedNames(opts), leaf.instanceAttributes, sgSourceOf(leaf), leaf.storageBuffers);
   // `<Sg Uniform={…}>` scope entries, split into scalars vs textures/
   // samplers — memoised PER CHAIN NODE, extending the parent's cached
   // split (scene-templates M2): leaves reuse ancestor texture/sampler

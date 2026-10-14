@@ -607,6 +607,8 @@ export function warnUnresolvedUniforms(
   instanceProvided?: { tryFind(name: string): unknown },
   /** Stamped call site (`sgSourceOf`) — named in the warning. */
   srcLoc?: string,
+  /** Per-leaf storage buffers — the effect reads them like uniforms. */
+  storageProvided?: { tryFind(name: string): unknown },
 ): void {
   let missing: string[] | undefined;
   for (const name of effectUniformNamesMemo(effect)) {
@@ -614,6 +616,7 @@ export function warnUnresolvedUniforms(
     if (scopeUniforms.tryFind(name) !== undefined) continue;
     if (extraProvided !== undefined && extraProvided.has(name)) continue;
     if (instanceProvided !== undefined && instanceProvided.tryFind(name) !== undefined) continue;
+    if (storageProvided !== undefined && storageProvided.tryFind(name) !== undefined) continue;
     (missing ??= []).push(name);
   }
   if (missing === undefined) return;

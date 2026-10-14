@@ -31,6 +31,9 @@ Scene-layer status is listed in `README.md §Scene roadmap` and
 ## Tooling
 
 - `npm test` — vitest with `happy-dom`, smoke + binding tests.
+- `npx vitest run --config vitest.browser.cdp.config.ts` — the
+  `tests-browser/` real-GPU tests in an already running Chromium reached
+  over CDP (`WOMBAT_CDP_URL`, default `http://127.0.0.1:9222`).
 - `npm run typecheck` — `tsc --noEmit`.
 - `npm run build` — clean + emit to `dist/`.
 - `npm run prepublishOnly` chains typecheck + test + build.
