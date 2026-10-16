@@ -85,6 +85,11 @@ interface ElementReg {
 
 interface SeenFlag { __wombatSeen?: RegionRouter; }
 
+/** How long a scene pick may delay the DOM-world bubble before it runs anyway.
+ *  Generous next to a normal GPU readback (~1 frame), short enough that a
+ *  stalled pick is not perceptible as input lag. */
+const PICK_BUBBLE_TIMEOUT_MS = 250;
+
 export class RegionRouter implements EventRegion {
   private readonly handlers = new Map<Element, ElementReg>();
   private readonly sceneLeaves = new Map<Element, SceneLeaf>();
@@ -180,10 +185,21 @@ export class RegionRouter implements EventRegion {
       if (!prop.stopped) this.runPhase(path, "bubble", name, ev, prop, true);
       return;
     }
-    void res.then(() => {
-      if (this.disposed) return;
+    // The DOM-world bubble (the camera controller is one) must run even if the
+    // pick never settles. A rejected pick used to strand it silently, and a
+    // hung one strands it forever: the viewport stops responding to input and
+    // no amount of clicking recovers, because every later event waits on its
+    // own stalled dispatch too. Run it on settle — either way — and cap the
+    // wait so a hang degrades to "the camera moved before the pick resolved"
+    // instead of a dead viewport.
+    let bubbled = false;
+    const runBubble = (): void => {
+      if (bubbled || this.disposed) return;
+      bubbled = true;
       if (!prop.stopped) this.runPhase(path, "bubble", name, ev, prop, true);
-    });
+    };
+    void res.then(runBubble, runBubble);
+    setTimeout(runBubble, PICK_BUBBLE_TIMEOUT_MS);
   }
 
   /** Fire one phase's handlers. Returns nothing; sets `prop.stopped`. */

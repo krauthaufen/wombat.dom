@@ -15,6 +15,7 @@ import {
   type aval, type ChangeableValue, type IDisposable,
 } from "@aardworx/wombat.adaptive";
 import { Trafo3d, V2d, V3d, V4d } from "@aardworx/wombat.base";
+import type { DomParticipantHost, DomParticipantHandle } from "../picking/dispatcher.js";
 
 // ---------------------------------------------------------------------------
 // Animation kinds + easings
@@ -363,6 +364,22 @@ export interface OrbitAttachOptions {
    * depth); without it pan falls back to the radius-scaled heuristic.
    */
   proj?: aval<Trafo3d>;
+  /**
+   * Join the unified DOM ↔ scene event walk instead of installing native
+   * pointer/wheel listeners on `target`. Pass the RenderControl `onReady`
+   * `input` host.
+   *
+   * REQUIRED whenever `target` is a canvas inside a mounted wombat.dom
+   * region: the region router owns that canvas in the capture phase and
+   * calls `stopPropagation()`, so native listeners added here never fire
+   * and the camera silently does nothing. Mirrors the same option on
+   * `FreeFlyController` — see `docs/unified-event-propagation.md`.
+   *
+   * As a bubble participant the camera runs after the scene walk, so a
+   * scene handler that stops propagation suppresses it. Touch/gesture
+   * pinch guards and the per-frame integration stay native either way.
+   */
+  input?: DomParticipantHost;
 }
 
 export class OrbitController {
@@ -457,6 +474,45 @@ export class OrbitController {
     });
   }
 
+  /**
+   * Animate the orbit CENTRE and the camera LOCATION together over one
+   * curve, deriving radius / phi / theta from the pair as it goes.
+   *
+   * `flyTo` moves only the centre. Pairing it with `setTargetRadius` — the
+   * obvious way to "recentre here and zoom in" — runs two different
+   * integrators at once: a timed easing for the centre and an exponential
+   * spring for the radius. They finish at different times, so the move reads
+   * as two steps in sequence. The step() integrator already handles the
+   * combined case (it interpolates both and re-derives the spherical
+   * parameters); this is the setter it was missing.
+   */
+  flyToLocation(
+    center: V3d,
+    location: V3d,
+    kind: AnimationKind = Anim.Tanh,
+    durationMs = 600,
+  ): void {
+    this.update(s => {
+      const now = performance.now();
+      const eye = deriveView(s).eye;
+      return {
+        ...s,
+        userModifiedCenter: true,
+        userModifiedRadius: true,
+        panAnimation: undefined,
+        centerAnimation: {
+          kind, startTimeMs: now, stopTimeMs: now + durationMs,
+          startValue: s.center, stopValue: center,
+        },
+        locationAnimation: {
+          kind, startTimeMs: now, stopTimeMs: now + durationMs,
+          startValue: eye, stopValue: location,
+        },
+        lastRenderMs: undefined,
+      };
+    });
+  }
+
   /** Manually advance integration. Tests pass synthetic `nowMs`. */
   tick(nowMs?: number): void {
     const t = nowMs ?? performance.now();
@@ -476,6 +532,22 @@ export class OrbitController {
     // F# `dragStarts` map equivalent via the state's MMB/L button hooks.
     interface PtrInfo { x: number; y: number; type: string; button: number; anchor?: V3d }
     const pointers = new Map<number, PtrInfo>();
+
+    // Pointer capture is claimed on press. Native mode captures the browser
+    // pointer so off-target moves keep flowing; unified mode (opts.input)
+    // claims the DISPATCHER's pointer capture, which also makes subsequent
+    // moves skip the scene pick — without it every orbit move triggers a GPU
+    // pick readback, and the scene walk consumes the drag over geometry.
+    let partHandle: DomParticipantHandle | undefined;
+    const capture = opts.input !== undefined
+      ? {
+          set: (id: number): void => partHandle?.capturePointer(id),
+          release: (id: number): void => partHandle?.releasePointer(id),
+        }
+      : {
+          set: (id: number): void => { try { (target as Element).setPointerCapture?.(id); } catch { /* inactive pointer */ } },
+          release: (id: number): void => { try { (target as Element).releasePointerCapture?.(id); } catch { /* ignore */ } },
+        };
     // Last known pick distance — background pans reuse it (falls back
     // to the orbit radius before the first anchored pan).
     let lastPanDepth = Math.max(this.state.value.radius, 0.3);
@@ -512,13 +584,33 @@ export class OrbitController {
       const isMouse = e.pointerType === "mouse";
       // For mouse, only react to L/M/R; touch/pen always count.
       if (isMouse && e.button !== 0 && e.button !== 1 && e.button !== 2) return;
+      // A fresh primary MOUSE press means nothing else can legitimately be
+      // mid-drag: any surviving entry is a pointerup we never received (a
+      // capture left dangling by a scene-side swap, a release outside the
+      // document, a lost window). Clear them, or the camera looks frozen and
+      // no amount of clicking brings it back.
+      if (isMouse && e.isPrimary) {
+        for (const [id, info] of [...pointers]) {
+          if (info.type !== "mouse") continue;
+          capture.release(id);
+          pointers.delete(id);
+        }
+        this.update(s2 => {
+          if (s2.dragStarts.size === 0) return s2;
+          const m = new Map(s2.dragStarts);
+          for (const [id] of [...m]) if (!pointers.has(id)) m.delete(id);
+          return { ...s2, dragStarts: m, lastRenderMs: undefined };
+        });
+      } else if (pointers.has(e.pointerId)) {
+        capture.release(e.pointerId);
+      }
       pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType, button: e.button });
       this.update(s => ({
         ...s,
         dragStarts: new Map(s.dragStarts).set(e.pointerId, { pos: { x: e.clientX, y: e.clientY }, button: isMouse ? e.button : -1 }),
         lastRenderMs: undefined,
       }));
-      (target as Element).setPointerCapture?.(e.pointerId);
+      capture.set(e.pointerId);
       e.preventDefault();
 
       // Pick-anchored navigation: resolve the world point under the
@@ -553,7 +645,7 @@ export class OrbitController {
         m.delete(e.pointerId);
         return { ...s, dragStarts: m, lastRenderMs: undefined };
       });
-      (target as Element).releasePointerCapture?.(e.pointerId);
+      capture.release(e.pointerId);
       void wasPan; // pick anchoring happens at pointer-DOWN now
     };
 
@@ -746,11 +838,43 @@ export class OrbitController {
     };
     const onGesture = (e: Event): void => e.preventDefault();
 
-    target.addEventListener("pointerdown", onPointerDown as EventListener);
-    target.addEventListener("pointermove", onPointerMove as EventListener);
-    target.addEventListener("pointerup", onPointerUp as EventListener);
-    target.addEventListener("pointercancel", onPointerUp as EventListener);
-    target.addEventListener("wheel", onWheel, { passive: false });
+    if (opts.input !== undefined) {
+      // Unified walk: the camera is a DOM-world BUBBLE participant, so an
+      // inner scene handler that stops propagation runs first and can
+      // suppress it. Handlers return void — the camera never stops the walk.
+      partHandle = opts.input.registerDomParticipant({
+        bubble: {
+          pointerdown:   (e: Event) => { onPointerDown(e as PointerEvent); },
+          pointermove:   (e: Event) => { onPointerMove(e as PointerEvent); },
+          pointerup:     (e: Event) => { onPointerUp(e as PointerEvent); },
+          pointercancel: (e: Event) => { onPointerUp(e as PointerEvent); },
+          wheel:         (e: Event) => { onWheel(e as WheelEvent); },
+        },
+      });
+    } else {
+      target.addEventListener("pointerdown", onPointerDown as EventListener);
+      target.addEventListener("pointermove", onPointerMove as EventListener);
+      target.addEventListener("pointerup", onPointerUp as EventListener);
+      target.addEventListener("pointercancel", onPointerUp as EventListener);
+      target.addEventListener("wheel", onWheel, { passive: false });
+    }
+    // Drags must not survive losing the window. If the pointer goes away while
+    // a button is held — alt-tab, an OS menu, a tab switch, a pointerup
+    // delivered outside the document — the browser never sends pointerup and
+    // the drag stays open: the camera keeps spinning and the next click has to
+    // clean it up (or does not, if the stale pointerId never returns).
+    const cancelAllDrags = (): void => {
+      for (const id of pointers.keys()) capture.release(id);
+      pointers.clear();
+      this.update(s2 => (s2.dragStarts.size === 0 ? s2 : {
+        ...s2, dragStarts: new Map(), lastRenderMs: undefined,
+      }));
+    };
+    const onWindowBlur = (): void => cancelAllDrags();
+    const onVisibility = (): void => { if (document.hidden) cancelAllDrags(); };
+    window.addEventListener("blur", onWindowBlur);
+    document.addEventListener("visibilitychange", onVisibility);
+
     target.addEventListener("contextmenu", onContextMenu);
     target.addEventListener("touchstart", onTouchGuard as EventListener, { passive: false });
     target.addEventListener("touchmove", onTouchGuard as EventListener, { passive: false });
@@ -760,11 +884,17 @@ export class OrbitController {
 
     return () => {
       cb.dispose();
-      target.removeEventListener("pointerdown", onPointerDown as EventListener);
-      target.removeEventListener("pointermove", onPointerMove as EventListener);
-      target.removeEventListener("pointerup", onPointerUp as EventListener);
-      target.removeEventListener("pointercancel", onPointerUp as EventListener);
-      target.removeEventListener("wheel", onWheel);
+      if (partHandle !== undefined) {
+        partHandle.release();
+      } else {
+        target.removeEventListener("pointerdown", onPointerDown as EventListener);
+        target.removeEventListener("pointermove", onPointerMove as EventListener);
+        target.removeEventListener("pointerup", onPointerUp as EventListener);
+        target.removeEventListener("pointercancel", onPointerUp as EventListener);
+        target.removeEventListener("wheel", onWheel);
+      }
+      window.removeEventListener("blur", onWindowBlur);
+      document.removeEventListener("visibilitychange", onVisibility);
       target.removeEventListener("contextmenu", onContextMenu);
       target.removeEventListener("touchstart", onTouchGuard as EventListener);
       target.removeEventListener("touchmove", onTouchGuard as EventListener);

@@ -424,6 +424,23 @@ async function initialise(
     if (typeof wantStorage === "number" && wantStorage > 8) {
       requiredLimits.maxStorageBuffersPerShaderStage = wantStorage;
     }
+    // Same idea for the arena's per-chunk ceiling: `buildArenaState` caps a
+    // heap chunk at `device.limits.maxStorageBufferBindingSize`, and the
+    // WebGPU default is 128 MB while desktop adapters offer 2 GB. Since a
+    // chunk spill is currently a hard error (multi-chunk bucket routing is
+    // still open), a scene bigger than 128 MB of vertex + index data fails to
+    // render on hardware that could hold it many times over. Ask for what the
+    // adapter actually has; adapters at the default are unchanged.
+    const wantBinding = adapter.limits.maxStorageBufferBindingSize;
+    if (typeof wantBinding === "number" && wantBinding > 134217728) {
+      requiredLimits.maxStorageBufferBindingSize = wantBinding;
+      const wantBuffer = adapter.limits.maxBufferSize;
+      // maxBufferSize must be >= maxStorageBufferBindingSize or the device
+      // request is rejected outright.
+      if (typeof wantBuffer === "number" && wantBuffer >= wantBinding) {
+        requiredLimits.maxBufferSize = wantBuffer;
+      }
+    }
     device = await adapter.requestDevice(
       Object.keys(requiredLimits).length > 0 ? { requiredLimits } : {},
     );
