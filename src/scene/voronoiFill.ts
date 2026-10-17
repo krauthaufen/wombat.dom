@@ -78,7 +78,7 @@ fn seedZ(s: u32, revZ: f32) -> f32 {
 `;
 
 const INIT_WGSL = SEED_COMMON + /* wgsl */ `
-struct IU { reversedZ: f32, _p0: f32, _p1: f32, _p2: f32 }
+struct IU { reversedZ: f32, partIndexOnly: f32, _p1: f32, _p2: f32 }
 @group(0) @binding(0) var pick: texture_2d<f32>;
 @group(0) @binding(1) var seedOut: texture_storage_2d<r32uint, write>;
 @group(0) @binding(2) var<uniform> iu: IU;
@@ -87,8 +87,17 @@ struct IU { reversedZ: f32, _p0: f32, _p1: f32, _p2: f32 }
 fn main(@builtin(global_invocation_id) gid: vec3u) {
   let dim = textureDimensions(seedOut);
   if (gid.x >= dim.x || gid.y >= dim.y) { return; }
-  let z = textureLoad(pick, vec2i(gid.xy), 0).z;
-  if (z > 0.0 && z < 1.0) {
+  let s = textureLoad(pick, vec2i(gid.xy), 0);
+  let z = s.z;
+  // Seeding EVERY pixel with depth is right when the frame is one point
+  // cloud and wrong otherwise: a mesh edge becomes a seed and the fill
+  // spreads it, so thin geometry (a wireframe, a line) grows into solid
+  // bars. The pick G-buffer's .w is PickPartIndex — written by the splat
+  // shaders, left at 0 by ordinary geometry — so seeding only those
+  // keeps the fill to the cloud that needs it. Non-seed pixels still act
+  // as occluders downstream; they simply do not spread.
+  let isCloud = iu.partIndexOnly <= 0.5 || s.w > 0.0;
+  if (z > 0.0 && z < 1.0 && isCloud) {
     textureStore(seedOut, vec2i(gid.xy), vec4u(packSeed(0, 0, z, iu.reversedZ), 0, 0, 0));
   } else {
     textureStore(seedOut, vec2i(gid.xy), vec4u(INVALID, 0, 0, 0));
@@ -797,6 +806,13 @@ fn fs(i: VOut) -> @location(0) vec4f {
 export interface VoronoiFillSettings {
   /** Max fill radius in device pixels. Default 24 (clamped 1..64). */
   readonly maxRadius?: number;
+  /** Seed the fill ONLY from pixels whose pick `.w` (PickPartIndex) is
+   *  non-zero — the splat shaders write one, ordinary geometry does not.
+   *  Leave off (the default) when the frame is a single point cloud;
+   *  turn it on when a cloud shares the scene with meshes or tiles,
+   *  whose edges would otherwise seed the fill and be smeared into solid
+   *  shapes. */
+  readonly partIndexOnly?: boolean;
   /** Reversed-Z depth convention (near -> 1). Default true. */
   readonly reversedZ?: boolean;
   /** Occlusion reach in device pixels: within this radius a nearer seed
@@ -1062,7 +1078,8 @@ export function createVoronoiFillPass(
         return filledPick;
       }
 
-      device.queue.writeBuffer(initUbo, 0, new Float32Array([revZ ? 1 : 0, 0, 0, 0]));
+      device.queue.writeBuffer(initUbo, 0,
+        new Float32Array([revZ ? 1 : 0, settings.partIndexOnly ? 1 : 0, 0, 0]));
       const enc = device.createCommandEncoder({ label: "vfill.frame" });
       enc.copyTextureToTexture({ texture: colorTex }, { texture: colorCopy! }, { width: w, height: h });
       {
