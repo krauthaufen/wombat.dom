@@ -29,7 +29,7 @@ struct U {
   radiusWorld: f32,
   intensity: f32,
   projM11: f32,
-  _pad: f32,
+  pickGroup: f32,   // >= 0 = occlude only this group (floor of pick .w)
   size: vec2u,
 }
 @group(0) @binding(0) var pick: texture_2d<f32>;
@@ -40,6 +40,23 @@ fn viewPosAt(px: vec2i) -> vec4f {
   let s = textureLoad(pick, px, 0);
   let z = s.z;
   if (z <= 0.0 || z >= 1.0) { return vec4f(0.0); }
+  // Group filter. A screen-space pass belongs to a DATASET, not to the
+  // frame: run unfiltered over a scene holding several and it fits a
+  // plane across depths from different surfaces, seeds a fill from a
+  // mesh edge, or occludes one dataset with another's geometry.
+  //
+  // The G-buffer already carries a per-fragment value the scene chooses
+  // - PickPartIndex in .w - so a dataset tags its fragments with a
+  // group number through a uniform and each pass is given the number it
+  // owns. Cheaper than rendering the groups to separate targets: one
+  // scene pass, no extra attachments, no compositing, and two datasets
+  // can run the SAME effect with different settings by running the pass
+  // twice with different group numbers.
+  //
+  // The integer part is the group; the fraction is left for the scene
+  // to use (spacingScale reads .w as a world-space spacing, so a
+  // scene wanting both packs group + spacing with spacing < 1).
+  if (u.pickGroup >= 0.0 && floor(s.w) != u.pickGroup) { return vec4f(0.0); }
   let uv = (vec2f(px) + 0.5) / vec2f(u.size);
   let ndc = vec4f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, z, 1.0);
   let v = u.projInv * ndc;
@@ -154,6 +171,13 @@ export interface GtaoSettings {
   readonly radius?: number;
   /** Occlusion strength. Default 1.4. */
   readonly intensity?: number;
+  /** Occlude only the fragments tagged with this group number — the
+   *  integer part of the pick G-buffer's `.w` (PickPartIndex), which a
+   *  scene writes through a uniform. Omit (or -1) for the whole frame.
+   *  Note GTAO reads the G-buffer's NORMAL slot, so it only means
+   *  anything for geometry that writes real normals; point splats do
+   *  not, which is why a cloud takes its AO through the plane fit. */
+  readonly pickGroup?: number;
 }
 
 /** `ambientOcclusion` prop of `RenderControl`: on/off (adaptive so it can be
@@ -251,7 +275,7 @@ export function createGtaoPass(
       f[16] = settings.radius ?? 4;
       f[17] = settings.intensity ?? 1.4;
       f[18] = proj.forward.M11;
-      f[19] = 0;
+      f[19] = settings.pickGroup ?? -1;
       new Uint32Array(buf, 80, 2).set([w, h]);
       device.queue.writeBuffer(ubo, 0, buf);
 

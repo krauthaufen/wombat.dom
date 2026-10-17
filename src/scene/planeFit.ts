@@ -30,7 +30,7 @@ struct U {
   temporal: f32,    // history blend weight, 0 = off
   tempTol: f32,
   denoise: f32,     // bilateral radius in px, 0 = off
-  partIndexOnly: f32, // 1 = shade only pixels that wrote a PickPartIndex
+  pickGroup: f32,   // >= 0 = shade only this group (floor of pick .w)
   size: vec2u,       // pick texture (device px)
   shadeSize: vec2u,  // output texture (may be scaled down)
 }
@@ -46,15 +46,23 @@ fn viewPosAt(px: vec2i) -> vec4f {
   let s = textureLoad(pick, px, 0);
   let z = s.z;
   if (z <= 0.0 || z >= 1.0) { return vec4f(0.0); }
-  // Scene-wide shading is wrong in a scene that is not all one point
-  // cloud: this pass multiplies its result into EVERY pixel, so meshes
-  // and tiles come out darkened by a plane fitted to depths that are
-  // not samples of a surface they belong to. The pick G-buffer's .w is
-  // PickPartIndex, which the splat shaders write and ordinary geometry
-  // leaves at 0, so it separates the two at no cost. Reported as "no
-  // geometry" rather than skipped at the end, so the fit never takes
-  // foreign pixels as neighbours either.
-  if (u.partIndexOnly > 0.5 && s.w <= 0.0) { return vec4f(0.0); }
+  // Group filter. A screen-space pass belongs to a DATASET, not to the
+  // frame: run unfiltered over a scene holding several and it fits a
+  // plane across depths from different surfaces, seeds a fill from a
+  // mesh edge, or occludes one dataset with another's geometry.
+  //
+  // The G-buffer already carries a per-fragment value the scene chooses
+  // - PickPartIndex in .w - so a dataset tags its fragments with a
+  // group number through a uniform and each pass is given the number it
+  // owns. Cheaper than rendering the groups to separate targets: one
+  // scene pass, no extra attachments, no compositing, and two datasets
+  // can run the SAME effect with different settings by running the pass
+  // twice with different group numbers.
+  //
+  // The integer part is the group; the fraction is left for the scene
+  // to use (spacingScale reads .w as a world-space spacing, so a
+  // scene wanting both packs group + spacing with spacing < 1).
+  if (u.pickGroup >= 0.0 && floor(s.w) != u.pickGroup) { return vec4f(0.0); }
   let uv = (vec2f(px) + 0.5) / vec2f(u.size);
   let ndc = vec4f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, z, 1.0);
   let v = u.projInv * ndc;
@@ -337,7 +345,7 @@ const DENOISE_WGSL = /* wgsl */ `
 struct U {
   projInv: mat4x4f, radiusPx: f32, tolerance: f32, ambient: f32,
   strength: f32, aoRadius: f32, aoIntensity: f32, projM11: f32,
-  frame: f32, temporal: f32, tempTol: f32, denoise: f32, partIndexOnly: f32,
+  frame: f32, temporal: f32, tempTol: f32, denoise: f32, pickGroup: f32,
   size: vec2u, shadeSize: vec2u,
 }
 @group(0) @binding(0) var srcShade: texture_2d<f32>;
@@ -443,13 +451,11 @@ export interface PlaneFitSettings {
   readonly temporal?: number;
   /** Number of a-trous denoise passes (0..3), strides 1/2/4. 0 = off. */
   readonly denoise?: number;
-  /** Shade ONLY pixels whose pick `.w` (PickPartIndex) is non-zero —
-   *  i.e. geometry that opted in by writing one, which the point splat
-   *  shaders do and ordinary meshes do not. Leave off (the default) for
-   *  a scene that is entirely one point cloud; turn it on wherever a
-   *  cloud shares the frame with meshes, tiles or a volume, which would
-   *  otherwise be shaded by a fit that says nothing about them. */
-  readonly partIndexOnly?: boolean;
+  /** Shade only the fragments tagged with this group number — the
+   *  integer part of the pick G-buffer's `.w` (PickPartIndex), which a
+   *  scene writes through a uniform. Omit (or -1) to shade everything,
+   *  which is right only when the frame is a single dataset. */
+  readonly pickGroup?: number;
   /** Replace surface colour with a white diffuse headlight instead of
    *  modulating the point colours. Default false. */
   readonly white?: boolean;
@@ -619,7 +625,7 @@ export function createPlaneFitPass(
       f[24] = settings.temporal ?? 0;
       f[25] = settings.tolerance ?? 0.01;
       f[26] = settings.denoise ?? 0;
-      f[27] = settings.partIndexOnly ? 1 : 0;
+      f[27] = settings.pickGroup ?? -1;
       new Uint32Array(buf, 112, 4).set([w, h, sw, sh]);
       device.queue.writeBuffer(ubo, 0, buf);
 
