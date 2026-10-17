@@ -291,7 +291,22 @@ const SPHERE_Y_WGSL = SPHERE_COMMON + /* wgsl */ `
       if (sd > bestZ) { bestZ = sd; col = unpackCol(rec.w); }
     }
   }
-  if (bestZ <= 0.0) { textureStore(outPick, px, vec4f(0.0)); discard; }
+  // Composite against what the scene already drew. The JFA path has
+  // always done this (it only overwrites a rendered pixel when the seed
+  // is distinctly nearer); the sphere path never did, because with a
+  // frame that is only a point cloud there is nothing else to be behind.
+  // Put a wireframe or a mesh in the same scene and a sphere thrown by a
+  // point BEHIND it painted straight over it.
+  //
+  // Reversed-Z: nearer is greater, and sd is built as z + ndcRadius(z),
+  // so the comparison is in the same space as the pick's own depth.
+  let own = textureLoad(pickTex, px, 0);
+  let ownValid = own.z > 0.0 && own.z < 1.0;
+  // Preserve the scene's pick where no sphere wins, rather than zeroing
+  // it: downstream passes read this as the frame's G-buffer, and a zero
+  // would tell them the basemap has no geometry at all.
+  if (bestZ <= 0.0) { textureStore(outPick, px, own); discard; }
+  if (ownValid && own.z >= bestZ) { textureStore(outPick, px, own); discard; }
   textureStore(outPick, px, vec4f(0.0, 0.0, bestZ, 0.0));
   return vec4f(col, 1.0);
 }
