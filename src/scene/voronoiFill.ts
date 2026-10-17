@@ -199,7 +199,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 // exactly this reason).
 const SPHERE_COMMON = /* wgsl */ `
 struct SU { projInv: mat4x4f, sizeX: f32, sizeY: f32, radius: f32,
-            nearPlane: f32, reversedZ: f32, _p0: f32, _p1: f32, _p2: f32 }
+            nearPlane: f32, reversedZ: f32, pickGroup: f32, _p1: f32, _p2: f32 }
 @group(0) @binding(0) var pickTex: texture_2d<f32>;
 @group(0) @binding(1) var colTex: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> u: SU;
@@ -245,8 +245,13 @@ struct XOut { @location(0) a: vec4f, @location(1) b: vec4f }
   for (var dx = -r; dx <= r; dx++) {
     let q = vec2i(px.x + dx, px.y);
     if (q.x < 0 || q.x >= i32(u.sizeX)) { continue; }
-    let z = textureLoad(pickTex, q, 0).z;
+    let sq = textureLoad(pickTex, q, 0);
+    let z = sq.z;
     if (z <= 0.0) { continue; }
+    // Same group filter as the JFA seed pass: a sphere splat must only
+    // be thrown by the dataset that asked for one, or the basemap and
+    // the wireframe grow spheres of their own.
+    if (u.pickGroup >= 0.0 && floor(sq.w) != u.pickGroup) { continue; }
     let d = f32(dx) / u.radius;
     if (abs(d) > 1.0) { continue; }
     // depth of this sphere AT THIS PIXEL (dy = 0 here) -- the ranking
@@ -1032,6 +1037,7 @@ export function createVoronoiFillPass(
         su[16] = w; su[17] = h; su[18] = sphR;
         su[19] = settings.nearPlane ?? 0.05;
         su[20] = revZ ? 1 : 0;
+        su[21] = settings.pickGroup ?? -1;
         device.queue.writeBuffer(sphUbo, 0, su);
         const enc0 = device.createCommandEncoder({ label: "vfill.sphere" });
         enc0.copyTextureToTexture({ texture: colorTex }, { texture: colorCopy! },
