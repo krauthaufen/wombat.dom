@@ -305,8 +305,11 @@ const SPHERE_Y_WGSL = SPHERE_COMMON + /* wgsl */ `
   // Preserve the scene's pick where no sphere wins, rather than zeroing
   // it: downstream passes read this as the frame's G-buffer, and a zero
   // would tell them the basemap has no geometry at all.
-  if (bestZ <= 0.0) { textureStore(outPick, px, own); discard; }
-  if (ownValid && own.z >= bestZ) { textureStore(outPick, px, own); discard; }
+  // Alpha 0 = leave the colour as the scene drew it. Never discard
+  // here: this invocation still has to write the filled pick, and a
+  // discarded fragment performs no stores.
+  if (bestZ <= 0.0) { textureStore(outPick, px, own); return vec4f(0.0); }
+  if (ownValid && own.z >= bestZ) { textureStore(outPick, px, own); return vec4f(0.0); }
   textureStore(outPick, px, vec4f(0.0, 0.0, bestZ, 0.0));
   return vec4f(col, 1.0);
 }
@@ -950,7 +953,20 @@ export function createVoronoiFillPass(
   const pipeSphY = device.createRenderPipeline({
     layout: "auto",
     vertex: { module: sphYMod, entryPoint: "vs" },
-    fragment: { module: sphYMod, entryPoint: "fs", targets: [{ format: colorFormat }] },
+    // Straight-alpha blend, NOT discard. This pass also writes the
+    // filled pick through a storage texture, and a discarded fragment
+    // performs no stores — so every pixel the pass declined to fill
+    // kept the PREVIOUS frame's pick, which downstream passes then
+    // shaded from. That is an uncleared target in all but name, and it
+    // flickers. Returning alpha 0 leaves the colour untouched while the
+    // store still happens.
+    fragment: { module: sphYMod, entryPoint: "fs", targets: [{
+      format: colorFormat,
+      blend: {
+        color: { operation: "add", srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" },
+        alpha: { operation: "add", srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" },
+      },
+    }] },
     primitive: { topology: "triangle-list" },
   });
   const sphUbo = device.createBuffer({
