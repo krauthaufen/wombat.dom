@@ -1080,10 +1080,14 @@ export function createVoronoiFillPass(
         {
           const bg = device.createBindGroup({
             layout: pipeSphY.getBindGroupLayout(0),
-            // NB: the Y pass never reads pickTex/colTex, and layout:"auto"
-            // prunes unused bindings — listing 0/1 here is a validation
-            // error, not a harmless extra.
+            // layout:"auto" derives the layout from the bindings the
+            // shader USES, so this list has to track the shader exactly:
+            // listing an unused binding is a validation error, and
+            // omitting a used one is "Number of entries did not match".
+            // The Y pass reads pickTex (binding 0) to composite against
+            // the scene's depth; it still never reads colTex (1).
             entries: [
+              { binding: 0, resource: pick.createView() },
               { binding: 2, resource: { buffer: sphUbo } },
               { binding: 3, resource: slotA!.createView() },
               { binding: 4, resource: slotB!.createView() },
