@@ -593,8 +593,14 @@ export function createPlaneFitPass(
       ensureTexture(sw, sh);
 
       const m = proj.backward;
-      const buf = new ArrayBuffer(128); // 64 mat + 44 scalars + pad + 16 sizes
-      const f = new Float32Array(buf, 0, 24);
+      const buf = new ArrayBuffer(128); // 64 mat + 48 scalars + 16 sizes
+      // 28, not 24: the struct runs mat4(16) + 8 scalars + temporal,
+      // tempTol, denoise, partIndexOnly = 28 floats before the two
+      // uvec2 sizes at byte 112. A 24-long view silently DROPS the
+      // writes to f[24..27] — typed arrays ignore out-of-range stores —
+      // so temporal denoising and the a-trous passes never reached the
+      // shader at all, whatever they were set to.
+      const f = new Float32Array(buf, 0, 28);
       f.set([
         m.M00, m.M10, m.M20, m.M30,
         m.M01, m.M11, m.M21, m.M31,
