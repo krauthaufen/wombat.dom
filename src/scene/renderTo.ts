@@ -79,6 +79,11 @@ export interface RenderSceneToOptions {
   /** Per-frame clock threaded into the traversal state; defaults to
    *  the ambient RenderControl clock. */
   readonly time?: aval<number>;
+  /** Extra usage flags for the color attachments, ORed on top of
+   *  RENDER_ATTACHMENT | TEXTURE_BINDING. A screen-space pass run over
+   *  this target needs `COPY_SRC | COPY_DST` — the canvas attachment
+   *  has them, an offscreen one does not. */
+  readonly extraUsage?: GPUTextureUsageFlags;
   readonly label?: string;
 }
 
@@ -127,9 +132,25 @@ class TaskFramebuffer extends AdaptiveResource<IFramebuffer> {
   protected override create(): void { this.fbo.acquire(); }
   protected override destroy(): void { this.fbo.release(); }
 
+  /** How many times this target has actually rendered.
+   *
+   *  The framebuffer VALUE is the same object every frame, so nothing
+   *  downstream can tell a frame that re-rendered from one that was
+   *  served from the cache. That matters to any consumer whose work is
+   *  destructive — a screen-space pass that writes over the colour
+   *  attachment compounds if it runs twice on one render, and the
+   *  result is the image smearing while the camera stands still. Such
+   *  a consumer compares this between evaluations and does nothing
+   *  when it has not moved.
+   */
+  renders = 0;
+
   override compute(token: AdaptiveToken): IFramebuffer {
     const fb = this.fbo.getValue(token);
-    if (!this.isDisposed()) this.renderFrame(token);
+    if (!this.isDisposed()) {
+      this.renderFrame(token);
+      this.renders++;
+    }
     return fb;
   }
 }
@@ -198,6 +219,7 @@ export function renderSceneTo(
   });
   const fbo = allocateFramebuffer(device, signature, opts.size, {
     ...(opts.label !== undefined ? { labelPrefix: opts.label } : {}),
+    ...(opts.extraUsage !== undefined ? { extraUsage: opts.extraUsage } : {}),
   });
 
   const { view, proj } = resolveCamera(scene, opts, "renderSceneTo");
@@ -252,6 +274,7 @@ export function renderToPickable(
   });
   const fbo = allocateFramebuffer(device, baseSignature, opts.size, {
     labelPrefix: opts.label ?? "renderToPickable",
+    ...(opts.extraUsage !== undefined ? { extraUsage: opts.extraUsage } : {}),
   });
 
   const { view, proj } = resolveCamera(scene, opts, "renderToPickable");
