@@ -24,8 +24,8 @@
 // tears down the compiled task, the pick artifacts, and the acquired
 // pick ids regardless of outstanding texture refs.
 
-import { AVal, type AdaptiveToken, type aval } from "@aardworx/wombat.adaptive";
-import { Trafo3d, V2i } from "@aardworx/wombat.base";
+import { AVal, HashMap, type AdaptiveToken, type aval } from "@aardworx/wombat.adaptive";
+import { Trafo3d, V2i, V4f } from "@aardworx/wombat.base";
 import {
   AdaptiveResource,
   ITexture,
@@ -84,6 +84,23 @@ export interface RenderSceneToOptions {
    *  this target needs `COPY_SRC | COPY_DST` — the canvas attachment
    *  has them, an offscreen one does not. */
   readonly extraUsage?: GPUTextureUsageFlags;
+  /** Additional colour attachments, by name and format.
+   *
+   *  For a scene whose fragments carry a SECOND quantity the frame needs
+   *  — the way a point cloud's splat passes need each point's exact
+   *  sub-pixel centre, which the 1px rasterisation has already thrown
+   *  away by the time any screen-space pass runs.
+   *
+   *  A separate attachment rather than a spare channel of the pick
+   *  G-buffer ON PURPOSE: the pick slots mean what picking says they
+   *  mean, and borrowing one would trade a rendering feature against
+   *  hit-testing. The original Blazor point renderer carries exactly
+   *  this as its own `Center` target.
+   *
+   *  An effect that does not write the attachment leaves it at its
+   *  clear value, so adding one changes nothing for scenes that ignore
+   *  it. Retrieve them with `colorTexture(name)`. */
+  readonly extraColors?: Readonly<Record<string, GPUTextureFormat>>;
   readonly label?: string;
 }
 
@@ -155,6 +172,22 @@ class TaskFramebuffer extends AdaptiveResource<IFramebuffer> {
   }
 }
 
+
+// An extra colour attachment that nothing clears keeps LAST FRAME's
+// contents (loadOp defaults to "load"), and a consumer then reads a
+// centre for a point that is no longer there. Default every extra to
+// transparent black, while leaving any clear the caller gave alone.
+function withExtraClears(
+  clear: ClearValues | undefined,
+  extras: Readonly<Record<string, GPUTextureFormat>> | undefined,
+): ClearValues | undefined {
+  const names = Object.keys(extras ?? {});
+  if (names.length === 0) return clear;
+  let colors = clear?.colors ?? HashMap.empty<string, V4f>();
+  for (const n of names) if (!colors.containsKey(n)) colors = colors.add(n, new V4f(0, 0, 0, 0));
+  return { ...(clear ?? {}), colors } as ClearValues;
+}
+
 function textureAccessors(
   base: AdaptiveResource<IFramebuffer>,
   signature: FramebufferSignature,
@@ -213,7 +246,7 @@ export function renderSceneTo(
   const format = opts.format ?? "rgba8unorm";
   const depthFormat = opts.depthFormat === undefined ? "depth24plus" : opts.depthFormat;
   const signature = createFramebufferSignature({
-    colors: { [colorName]: format },
+    colors: { [colorName]: format, ...(opts.extraColors ?? {}) },
     ...(depthFormat !== null ? { depthStencil: { format: depthFormat } } : {}),
     ...(opts.sampleCount !== undefined ? { sampleCount: opts.sampleCount } : {}),
   });
@@ -228,10 +261,11 @@ export function renderSceneTo(
     .withCamera(view, proj)
     .withTime(opts.time ?? globalTime());
 
+  const sceneClear = withExtraClears(opts.clear, opts.extraColors);
   const task = runtime.compile(signature, compileScene(scene, {
     initialState: initial,
     ...(opts.defaultEffect !== undefined ? { defaultEffect: opts.defaultEffect } : {}),
-    ...(opts.clear !== undefined ? { clear: opts.clear } : {}),
+    ...(sceneClear !== undefined ? { clear: sceneClear } : {}),
   }));
 
   let disposed = false;
@@ -268,7 +302,7 @@ export function renderToPickable(
   const format = opts.format ?? "rgba8unorm";
   const depthFormat = opts.depthFormat === undefined ? "depth24plus" : opts.depthFormat;
   const baseSignature = createFramebufferSignature({
-    colors: { [colorName]: format },
+    colors: { [colorName]: format, ...(opts.extraColors ?? {}) },
     ...(depthFormat !== null ? { depthStencil: { format: depthFormat } } : {}),
     ...(opts.sampleCount !== undefined ? { sampleCount: opts.sampleCount } : {}),
   });
@@ -278,6 +312,7 @@ export function renderToPickable(
   });
 
   const { view, proj } = resolveCamera(scene, opts, "renderToPickable");
+  const pickClear = withExtraClears(opts.clear, opts.extraColors);
 
   // The PickProducer wraps the offscreen target exactly like it wraps
   // the canvas attachment in RenderControl — the "target" here is the
@@ -291,7 +326,7 @@ export function renderToPickable(
     time: opts.time ?? globalTime(),
     ...(opts.transparency !== undefined ? { transparency: opts.transparency } : {}),
     ...(opts.defaultEffect !== undefined ? { defaultEffect: opts.defaultEffect } : {}),
-    ...(opts.clear !== undefined ? { clear: opts.clear } : {}),
+    ...(pickClear !== undefined ? { clear: pickClear } : {}),
     colorAttachmentName: colorName,
   });
 

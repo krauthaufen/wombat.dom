@@ -203,6 +203,36 @@ struct SU { projInv: mat4x4f, sizeX: f32, sizeY: f32, radius: f32,
 @group(0) @binding(0) var pickTex: texture_2d<f32>;
 @group(0) @binding(1) var colTex: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> u: SU;
+// Each point's exact sub-pixel centre, as an OFFSET from its texel
+// centre BIASED INTO [0,1] (0.5 = no offset), with .z > 0 marking "this
+// texel holds a point".
+//
+// Biased and 8-bit because the attachment has to be CHEAP. A render
+// target's colour attachments share a 32-byte-per-sample budget, and
+// this one sits beside an rgba8unorm colour and an rgba32float pick: at
+// rgba32float it pushed the total to 40 and every submit on the target
+// was rejected. 8 bits over a one-pixel range is 1/255 px of
+// resolution, two orders of magnitude finer than the half-pixel error
+// it exists to remove.
+//
+// A 1px rasterisation snaps every point to the pixel grid, so without
+// this the splat's disc and its sphere depth are quantised by up to half
+// a pixel -- at r = 3 that is 17% of the radius, and the error is
+// spatially correlated, which is what reads as grain rather than noise.
+// The original Blazor renderer carries the same quantity as its own
+// Center target.
+//
+// When the attachment is absent the host binds a 1x1 zero texture and
+// every lookup falls back to the texel centre, which is exactly the old
+// behaviour.
+@group(0) @binding(6) var ctrTex: texture_2d<f32>;
+// The point's centre in pixel coordinates.
+fn centreAt(q: vec2i) -> vec2f {
+  let c = textureLoad(ctrTex, q, 0);
+  let base = vec2f(q) + vec2f(0.5, 0.5);
+  if (c.z <= 0.0) { return base; }
+  return base + (c.xy - vec2f(0.5, 0.5));
+}
 
 // The sphere's radius as an NDC-DEPTH delta at this pixel's depth. NOT a
 // constant: reversed-Z is ndc = near / -z, so the same world radius maps
@@ -252,12 +282,13 @@ struct XOut { @location(0) a: vec4f, @location(1) b: vec4f }
     // be thrown by the dataset that asked for one, or the basemap and
     // the wireframe grow spheres of their own.
     if (u.pickGroup >= 0.0 && floor(sq.w) != u.pickGroup) { continue; }
-    let d = f32(dx) / u.radius;
+    let ctr = centreAt(q);
+    let d = (ctr.x - (f32(px.x) + 0.5)) / u.radius;
     if (abs(d) > 1.0) { continue; }
     // depth of this sphere AT THIS PIXEL (dy = 0 here) -- the ranking
     // proxy; the true winner is only known once dy is known.
     let sd = z + ndcRadius(z) * sqrt(max(0.0, 1.0 - d * d));
-    let rec = vec4f(z, f32(q.x), f32(q.y), packCol(textureLoad(colTex, q, 0)));
+    let rec = vec4f(z, ctr.x, ctr.y, packCol(textureLoad(colTex, q, 0)));
     if (sd > bestZ) { secZ = bestZ; B = A; bestZ = sd; A = rec; }
     else if (sd > secZ) { secZ = sd; B = rec; }
   }
@@ -283,8 +314,8 @@ const SPHERE_Y_WGSL = SPHERE_COMMON + /* wgsl */ `
       let rec = select(textureLoad(slotB, q, 0), textureLoad(slotA, q, 0), s == 0);
       let z = rec.x;
       if (z <= 0.0) { continue; }
-      let dxp = (f32(px.x) - rec.y) / u.radius;
-      let dyp = (f32(px.y) - rec.z) / u.radius;
+      let dxp = ((f32(px.x) + 0.5) - rec.y) / u.radius;
+      let dyp = ((f32(px.y) + 0.5) - rec.z) / u.radius;
       let d2 = dxp * dxp + dyp * dyp;
       if (d2 > 1.0) { continue; }
       let sd = z + ndcRadius(z) * sqrt(1.0 - d2);
@@ -884,6 +915,14 @@ export interface VoronoiFillSettings {
    *  N*pi*r^2 fragments for sphere sprites. Approximate — see the pass
    *  comment for what the k=2 truncation gives up. */
   readonly sphereFill?: number;
+  /** Name of the extra colour attachment carrying each point's
+   *  sub-pixel centre (`.xy` = offset in pixels from the texel centre,
+   *  `.z > 0` = "a point is here"). The scene's point effect writes it;
+   *  see `renderToPickable`'s `extraColors`.
+   *
+   *  Omitted, or absent from the framebuffer, and the splat falls back
+   *  to the texel centre — the behaviour before this existed. */
+  readonly centerAttachment?: string;
   readonly spacingScale?: number;
   /** > 0 blends the neighbouring Voronoi cells' colours (depth-gated)
    *  instead of copying the winning seed's colour flat. */
@@ -1012,8 +1051,30 @@ export function createVoronoiFillPass(
     });
   };
 
+  // A 1x1 zero texture stands in when the scene publishes no centres:
+  // `.z` is 0 there, so `centreAt` returns the texel centre and the
+  // splat behaves exactly as it did before. Cheaper and far less
+  // error-prone than compiling a second variant of the shader.
+  let ctrDummy: GPUTexture | undefined;
+  let ctrFb: IFramebuffer | undefined;
+  const ctrView = (): GPUTextureView => {
+    const name = settings.centerAttachment;
+    if (name !== undefined && ctrFb !== undefined) {
+      const v = ctrFb.colors.tryFind(name);
+      if (v !== undefined) return v;
+    }
+    if (ctrDummy === undefined) {
+      ctrDummy = device.createTexture({
+        size: [1, 1], format: "rgba32float", label: "vfill.center.none",
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      });
+    }
+    return ctrDummy.createView();
+  };
+
   return {
     run(fb, pick, colorName, needPick, proj) {
+      ctrFb = fb;
       const colorView = fb.colors.tryFind(colorName);
       const colorTex = fb.colorTextures?.tryFind?.(colorName);
       if (colorView === undefined || colorTex === undefined) return undefined;
@@ -1080,6 +1141,7 @@ export function createVoronoiFillPass(
               { binding: 0, resource: pick.createView() },
               { binding: 1, resource: colorCopy!.createView() },
               { binding: 2, resource: { buffer: sphUbo } },
+              { binding: 6, resource: ctrView() },
             ],
           });
           const p = enc0.beginRenderPass({
@@ -1203,8 +1265,9 @@ export function createVoronoiFillPass(
       return wantPick ? filledPick : undefined;
     },
     dispose() {
-      for (const t of [seedA, seedB, colorCopy, filledPick]) t?.destroy();
-      seedA = seedB = colorCopy = filledPick = undefined;
+      for (const t of [seedA, seedB, colorCopy, filledPick, ctrDummy]) t?.destroy();
+      seedA = seedB = colorCopy = filledPick = ctrDummy = undefined;
+      ctrFb = undefined;
       resolveUbo.destroy(); initUbo.destroy();
       for (const b of stepUbos) b.destroy();
     },

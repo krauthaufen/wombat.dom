@@ -40,6 +40,9 @@ struct U {
 @group(0) @binding(4) var histDepth: texture_2d<f32>;
 @group(0) @binding(5) var outDepth: texture_storage_2d<r32float, write>;
 @group(0) @binding(6) var outNrm: texture_storage_2d<rgba8unorm, write>;
+// The fitted surface's own view-space z along this pixel's ray, or 0
+// where no plane was fitted. See the write-back pass.
+@group(0) @binding(7) var outPlaneZ: texture_storage_2d<r32float, write>;
 @group(0) @binding(2) var<uniform> u: U;
 
 fn viewPosAt(px: vec2i) -> vec4f {
@@ -241,8 +244,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var nrm = vec3f(0.0);
   var haveN = false;
   var conf = 0.0;
+  // The point the fitted plane passes through. Defaults to this pixel,
+  // which makes the plane correction a no-op wherever no fit happened.
+  var anchor = p.xyz;
   if (np >= 5u) {
     let c = sum / cnt;
+    anchor = c;
     var cov = mat3x3f(vec3f(0.0), vec3f(0.0), vec3f(0.0));
     let d0 = p.xyz - c;
     cov[0] += d0 * d0.x; cov[1] += d0 * d0.y; cov[2] += d0 * d0.z;
@@ -328,6 +335,28 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       outS = mix(hs, shade, u.temporal);
     }
   }
+  // The fitted surface, as a view-space z along THIS pixel's ray.
+  //
+  // This is what makes the depth buffer describe a surface instead of a
+  // field of splat spheres: the fit already knows the plane, and the
+  // ray/plane intersection is where the surface really is. The
+  // reference renderer does the same thing in its blit (it writes
+  // Depth straight out of the plane), and everything downstream that
+  // marches or composites against this depth gets geometry rather than
+  // bumps.
+  var planeZ = 0.0;
+  if (haveN) {
+    let dir = normalize(p.xyz);
+    let den = dot(nrm, dir);
+    if (abs(den) > 1e-6) {
+      let t = dot(nrm, anchor) / den;
+      let zz = dir.z * t;
+      // In front of the eye only. A plane seen edge-on solves to a
+      // point behind the camera, and that is not a correction.
+      if (zz < 0.0) { planeZ = zz; }
+    }
+  }
+  textureStore(outPlaneZ, opx, vec4f(planeZ, 0.0, 0.0, 0.0));
   textureStore(outDepth, opx, vec4f(p.z, 0.0, 0.0, 0.0));
   textureStore(outNrm, opx, vec4f(nrm * 0.5 + 0.5, conf));
   textureStore(outShade, opx, vec4f(outS, outS, outS, 1.0));
@@ -402,6 +431,64 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 }
 `;
 
+
+// ---------------------------------------------------------------------------
+// Write-back: the pick G-buffer's depth becomes the FITTED surface
+// ---------------------------------------------------------------------------
+//
+// A pass of its own, and a second texture, for two reasons that are not
+// negotiable:
+//
+//   WebGPU forbids binding one texture as both sampled and writable
+//   storage in a single pass, so the corrected pick cannot be written
+//   over the pick being read.
+//
+//   The fit runs at `resolutionScale` (0.5 by default) and a depth
+//   cannot be bilinearly upsampled -- across a silhouette the average
+//   of two surfaces is a third surface that is not there. So this
+//   samples the fit NEAREST and keeps the correction only where the
+//   fitted z agrees with the pixel's own, which is exactly the places
+//   where the half-res fit was describing this pixel's surface at all.
+const WRITEBACK_WGSL = /* wgsl */ `
+struct W {
+  projInv: mat4x4f,
+  near: f32, tol: f32, _p0: f32, _p1: f32,
+  size: vec2u, fitSize: vec2u,
+}
+@group(0) @binding(0) var pickIn: texture_2d<f32>;
+@group(0) @binding(1) var planeZ: texture_2d<f32>;
+@group(0) @binding(2) var pickOut: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(3) var<uniform> u: W;
+
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  if (gid.x >= u.size.x || gid.y >= u.size.y) { return; }
+  let px = vec2i(gid.xy);
+  let s = textureLoad(pickIn, px, 0);
+  // Copy first, unconditionally: this is a different texture from the
+  // input, so a pixel that is not corrected still has to carry its
+  // original G-buffer across or it would read as empty.
+  textureStore(pickOut, px, s);
+  let z = s.z;
+  if (z <= 0.0 || z >= 1.0) { return; }
+
+  let uv = (vec2f(px) + 0.5) / vec2f(u.size);
+  let ndc = vec4f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, z, 1.0);
+  let v = u.projInv * ndc;
+  let vz = v.z / v.w;
+
+  let q = vec2i(vec2f(px) * (vec2f(u.fitSize) / vec2f(u.size)));
+  let pz = textureLoad(planeZ, q, 0).x;
+  if (pz >= 0.0) { return; }                       // 0 = no fit here
+  if (abs(pz - vz) > max(0.05, u.tol * abs(vz))) { return; }
+
+  // Reversed-Z with an infinite far plane: ndc = near / distance.
+  let nz = u.near / max(-pz, 1e-6);
+  if (nz <= 0.0 || nz >= 1.0) { return; }
+  textureStore(pickOut, px, vec4f(s.x, s.y, nz, s.w));
+}
+`;
+
 const APPLY_WGSL = /* wgsl */ `
 @group(0) @binding(0) var shade: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
@@ -472,6 +559,13 @@ export interface PlaneFitSettings {
    *  fit/AO are low-frequency — 0.5 is 4x cheaper and visually near-
    *  identical (bilinear upsample on apply). Default 0.5. */
   readonly resolutionScale?: number;
+  /** Replace the pick G-buffer's depth with the FITTED PLANE's depth.
+   *
+   *  The depth buffer then describes the surface the fit found rather
+   *  than the splat spheres that were rasterised, which is what the
+   *  reference renderer publishes. Costs one full-resolution pass and a
+   *  second pick-shaped texture. Default false. */
+  readonly depthFromPlane?: boolean;
 }
 
 export type PlaneFitOption =
@@ -481,7 +575,9 @@ export type PlaneFitOption =
 
 export interface PlaneFitPass {
   /** Call AFTER the scene rendered into `fb` (and typically before AO). */
-  run(fb: IFramebuffer, pickTexture: GPUTexture, proj: Trafo3d, colorName: string): void;
+  /** Returns the pick texture downstream passes should use: the same
+   *  one when `depthFromPlane` is off, the corrected one when it is. */
+  run(fb: IFramebuffer, pickTexture: GPUTexture, proj: Trafo3d, colorName: string): GPUTexture | undefined;
   dispose(): void;
 }
 
@@ -494,6 +590,17 @@ export function createPlaneFitPass(
     layout: "auto",
     compute: { module: device.createShaderModule({ code: FIT_WGSL, label: "planeFit.fit" }), entryPoint: "main" },
   });
+  const pipeWriteback = device.createComputePipeline({
+    layout: "auto",
+    compute: { module: device.createShaderModule({ code: WRITEBACK_WGSL, label: "planeFit.writeback" }),
+               entryPoint: "main" },
+  });
+  const wbUbo = device.createBuffer({
+    size: 96, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    label: "planeFit.writeback.u",
+  });
+  let planeZTex: GPUTexture | undefined;
+  let fixedPick: GPUTexture | undefined;
   const pipeDenoise = device.createComputePipeline({
     layout: "auto",
     compute: { module: device.createShaderModule({ code: DENOISE_WGSL, label: "planeFit.denoise" }),
@@ -584,13 +691,15 @@ export function createPlaneFitPass(
     denTex2 = mkS("planeFit.denoised2");
     nrmTex = mkS("planeFit.normal");
     depthA = mkD("planeFit.depthA"); depthB = mkD("planeFit.depthB");
+    planeZTex?.destroy();
+    planeZTex = mkD("planeFit.planeZ");
     tex = shadeA;
   };
 
   return {
     run(fb, pick, proj, colorName) {
       const colorView = fb.colors.tryFind(colorName);
-      if (colorView === undefined) return;
+      if (colorView === undefined) return undefined;
       const w = pick.width;
       const h = pick.height;
       const scale = Math.min(1, Math.max(0.2, settings.resolutionScale ?? 0.5));
@@ -641,6 +750,7 @@ export function createPlaneFitPass(
             { binding: 4, resource: (flip ? depthA! : depthB!).createView() },
             { binding: 5, resource: (flip ? depthB! : depthA!).createView() },
             { binding: 6, resource: nrmTex!.createView() },
+            { binding: 7, resource: planeZTex!.createView() },
           ],
         });
         const pass = enc.beginComputePass({ label: "planeFit.fit" });
@@ -696,11 +806,61 @@ export function createPlaneFitPass(
         pass.draw(3);
         pass.end();
       }
+      // Write-back, after the fit has produced planeZ for this frame.
+      let outPick: GPUTexture | undefined;
+      if (settings.depthFromPlane === true) {
+        if (fixedPick === undefined || fixedPick.width !== w || fixedPick.height !== h) {
+          fixedPick?.destroy();
+          fixedPick = device.createTexture({
+            size: { width: w, height: h }, format: "rgba32float",
+            usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+            label: "planeFit.pick.fitted",
+          });
+        }
+        // The near plane, read off the projection rather than passed in:
+        // unprojecting ndc z = 1 lands exactly on it, so this cannot
+        // disagree with the matrix the rest of the frame used.
+        const pi = proj.backward;
+        const nx = pi.M23 + pi.M33, nw = pi.M33 + pi.M33;
+        const wv = pi.M30 * 0 + pi.M31 * 0 + pi.M32 * 1 + pi.M33;
+        const zv = pi.M20 * 0 + pi.M21 * 0 + pi.M22 * 1 + pi.M23;
+        const near = Math.abs(wv) > 1e-12 ? Math.abs(zv / wv) : 0.05;
+        void nx; void nw;
+        const wb = new ArrayBuffer(96);
+        const wf = new Float32Array(wb);
+        wf.set([pi.M00, pi.M10, pi.M20, pi.M30,
+                pi.M01, pi.M11, pi.M21, pi.M31,
+                pi.M02, pi.M12, pi.M22, pi.M32,
+                pi.M03, pi.M13, pi.M23, pi.M33], 0);
+        wf[16] = near;
+        wf[17] = settings.tolerance ?? 0.01;
+        new Uint32Array(wb, 80, 4).set([w, h, sw, sh]);
+        device.queue.writeBuffer(wbUbo, 0, wb);
+        const bgw = device.createBindGroup({
+          layout: pipeWriteback.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: pick.createView() },
+            { binding: 1, resource: planeZTex!.createView() },
+            { binding: 2, resource: fixedPick.createView() },
+            { binding: 3, resource: { buffer: wbUbo } },
+          ],
+        });
+        const pw = enc.beginComputePass({ label: "planeFit.writeback" });
+        pw.setPipeline(pipeWriteback);
+        pw.setBindGroup(0, bgw);
+        pw.dispatchWorkgroups(Math.ceil(w / 8), Math.ceil(h / 8));
+        pw.end();
+        outPick = fixedPick;
+      }
       device.queue.submit([enc.finish()]);
       flip = !flip;
+      return outPick;
     },
     dispose() {
       tex?.destroy();
+      planeZTex?.destroy(); fixedPick?.destroy();
+      planeZTex = fixedPick = undefined;
+      wbUbo.destroy();
       tex = undefined;
       ubo.destroy();
     },
