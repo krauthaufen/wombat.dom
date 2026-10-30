@@ -341,7 +341,15 @@ const SPHERE_Y_WGSL = SPHERE_COMMON + /* wgsl */ `
   // discarded fragment performs no stores.
   if (bestZ <= 0.0) { textureStore(outPick, px, own); return vec4f(0.0); }
   if (ownValid && own.z >= bestZ) { textureStore(outPick, px, own); return vec4f(0.0); }
-  textureStore(outPick, px, vec4f(0.0, 0.0, bestZ, 0.0));
+  // Carry the GROUP through. Every candidate in the slots passed the X
+  // pass's group filter, so the winning sphere's group is u.pickGroup by
+  // construction. Writing 0 here instead told every downstream
+  // group-filtered pass (EDL, AO, the plane fit) that the filled pixels
+  // belong to group 0, and each of them then rejected the whole cloud
+  // and did nothing at all. The pick is this frame's G-buffer: a pass
+  // that rewrites it owes its readers the tag they filter on.
+  // pickGroup < 0 means "no filter", where any value does; keep it 0.
+  textureStore(outPick, px, vec4f(0.0, 0.0, bestZ, max(0.0, u.pickGroup)));
   return vec4f(col, 1.0);
 }
 `;

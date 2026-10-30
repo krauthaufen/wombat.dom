@@ -78,6 +78,12 @@ export {
 } from "./transparency.js";
 
 export {
+  createEdlPass,
+  type EdlPass,
+  type EdlSettings,
+} from "./edl.js";
+
+export {
   createGtaoPass,
   gtaoConfig,
   type GtaoOption,
