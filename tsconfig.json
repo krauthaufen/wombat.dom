@@ -23,6 +23,6 @@
       "@aardworx/wombat.dom/scene": ["./src/scene/index.ts"]
     }
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts", "tests/**/*.tsx"],
+  "include": ["src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts", "tests/**/*.tsx", "tests-browser/**/*.ts"],
   "exclude": ["tests/memharness.test.ts"]
 }

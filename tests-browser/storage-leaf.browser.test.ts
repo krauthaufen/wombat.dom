@@ -6,7 +6,7 @@
 // and a buffer reallocation all reach the rendered image.
 
 import { describe, expect, it } from "vitest";
-import { AVal, AdaptiveToken, HashMap, cval, transact } from "@aardworx/wombat.adaptive";
+import { AVal, AdaptiveToken, HashMap, cval, transact, type aval } from "@aardworx/wombat.adaptive";
 import { V4f } from "@aardworx/wombat.base";
 import { stage, type Effect } from "@aardworx/wombat.shader";
 import { parseShader, type EntryRequest } from "@aardworx/wombat.shader/frontend";
@@ -104,7 +104,7 @@ describe("storage-buffer leaf without vertex attributes (real GPU)", () => {
       const leaf = Sg.leaf({
         vertexAttributes: HashMap.empty<string, BufferView>(),
         drawCall,
-        storageBuffers: HashMap.empty<string, AVal<IBuffer>>().add("rects", rects).add("corners", corners),
+        storageBuffers: HashMap.empty<string, aval<IBuffer>>().add("rects", rects).add("corners", corners),
       });
       const scene = Sg.shader(effect(), Sg.uniform({ vol }, Sg.cullMode(AVal.constant("none"))(leaf)));
 

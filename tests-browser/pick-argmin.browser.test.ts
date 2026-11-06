@@ -25,7 +25,7 @@ const CY = 40;
 type Pixels = (x: number, y: number) => readonly [number, number, number, number];
 type Meta = ReadonlyArray<readonly [number, number]>;
 
-function makeTex(): Float32Array {
+function makeTex(): Float32Array<ArrayBuffer> {
   return new Float32Array(W * H * 4);
 }
 function setPx(buf: Float32Array, x: number, y: number, s0: number, s2 = 0): void {
@@ -96,8 +96,9 @@ describe("pick argmin kernel (real WebGPU)", () => {
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
     device.queue.writeTexture({ texture: tex }, buf, { bytesPerRow: W * 16, rowsPerImage: H }, { width: W, height: H });
-    const metaFlat = new Float32Array(sc.meta.flatMap((p) => [p[0], p[1]]));
-    const metaBuf = device.createBuffer({ size: Math.max(8, metaFlat.byteLength), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    // the kernel reads metadata[id] = [effR, modeSign, priority, pad] (pickMetadata.ts)
+    const metaFlat = new Float32Array(sc.meta.flatMap((p) => [p[0], p[1], 0, 0]));
+    const metaBuf = device.createBuffer({ size: Math.max(16, metaFlat.byteLength), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(metaBuf, 0, metaFlat);
 
     const enc = device.createCommandEncoder();

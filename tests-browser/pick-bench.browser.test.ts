@@ -30,6 +30,7 @@ import {
   type PickArgminCompute,
   type PickArgminResult,
 } from "../src/scene/picking/pickArgminCompute.js";
+import { METADATA_FLOATS_PER_ID } from "../src/scene/picking/pickMetadata.js";
 import { PickRegistry } from "../src/scene/picking/registry.js";
 import { spiralHitTest } from "../src/scene/picking/spiralHitTest.js";
 import type { PickRegion } from "../src/scene/picking/readback.js";
@@ -56,13 +57,13 @@ function buildRegistry(n: number): PickRegistry {
     const z = 0.1 + (i / n) * 0.8;
     const box = Intersectable.box(Box3d.fromMinMax(new V3d(cx - 0.04, cy - 0.04, z), new V3d(cx + 0.04, cy + 0.04, z + 0.02)));
     reg.acquire({
-      handlers: [{ handlers: {}, local2World: AVal.constant(Trafo3d.identity) }],
+      handlers: [{ handlers: {}, local2World: () => AVal.constant(Trafo3d.identity) }],
       cursor: undefined,
       pickThrough: false,
       active: AVal.constant(true),
       view: AVal.constant(ID_VIEW),
       proj: AVal.constant(ID_VIEW),
-      model: AVal.constant(Trafo3d.identity),
+      model: () => AVal.constant(Trafo3d.identity),
       pixelSnapRadius: AVal.constant(1),
       intersectable: AVal.constant(box),
     });
@@ -127,8 +128,10 @@ describe("pick benchmark (real WebGPU)", () => {
     const tex = device.createTexture({ size: { width: W, height: H }, format: "rgba32float", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
     device.queue.writeTexture({ texture: tex }, buf, { bytesPerRow: W * 16, rowsPerImage: H }, { width: W, height: H });
     const maxId = reg.size() + 2;
-    const meta = new Float32Array(maxId * 2).fill(-1);
-    if (pixelId !== undefined) { meta[pixelId * 2] = 16; meta[pixelId * 2 + 1] = 1; }
+    // metadata[id] = [effR, modeSign, priority, pad] (see pickMetadata.ts)
+    const F = METADATA_FLOATS_PER_ID;
+    const meta = new Float32Array(maxId * F).fill(-1);
+    if (pixelId !== undefined) { meta[pixelId * F] = 16; meta[pixelId * F + 1] = 1; meta[pixelId * F + 2] = 0; meta[pixelId * F + 3] = 0; }
     const metaBuf = device.createBuffer({ size: meta.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(metaBuf, 0, meta);
     return { tex, metaBuf };
