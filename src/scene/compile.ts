@@ -36,7 +36,9 @@
 import {
   AList, ASet, AVal,
   HashMap,
+  AbstractReader, IndexListDelta, ElementSet, ElementRemove,
   type alist, type aset, type aval,
+  type AdaptiveToken, type Index, type IOpReader,
 } from "@aardworx/wombat.adaptive";
 import { M44f, Trafo3d, V3d, V3f } from "@aardworx/wombat.base";
 import { RenderTree, UniformProvider, AttributeProvider } from "@aardworx/wombat.rendering/core";
@@ -57,6 +59,7 @@ import type {
   SgLeaf, SgNode, TrafoValue,
 } from "./sg.js";
 import { materializeRowSg } from "./sg.js";
+import { LiveSet, LoweringScope, NOOP_DISPOSE, collect, own, probeDelay } from "./lifetime.js";
 import { TraversalState, UniformScopeChain, composeTrafoValue } from "./traversalState.js";
 import { applyInstancing, validateInstancingSubtree } from "./instancing.js";
 import { isITexture, resolveTextureAval } from "./textureResolver.js";
@@ -74,6 +77,12 @@ import { getPlan, RowProvider, type TemplatePlan } from "./templatePlan.js";
 // ---------------------------------------------------------------------------
 
 export interface CompileSceneOptions {
+  /**
+   * The compiled scene's lifetime. When given, everything the lowering
+   * acquired (pick ids, `Sg.delay` scopes, at any depth) is released when
+   * it ends. Without it those live as long as the process, as before.
+   */
+  readonly lifetime?: { onDispose(fn: () => void): void };
   /** Initial state — mostly for tests. Defaults to `TraversalState.empty`. */
   readonly initialState?: TraversalState;
   /**
@@ -153,12 +162,9 @@ export interface PickingOptions {
   /**
    * Notification hook called once per `registry.acquire()` performed
    * during `lower` (i.e. once per leaf with `pickPath !== "none"`).
-   * The reactive structural cases (Group / UnorderedGroup /
-   * AdaptiveGroup) override this hook on their recursive `lower`
-   * call so the pickIds produced under each child are collected into
-   * a cleanup list keyed by the child's mapped result; when the
-   * adaptive collection evicts that result, the cleanup releases all
-   * pickIds it acquired.
+   * Releases don't depend on it: every acquired pickId is owned by
+   * the enclosing lowering (see `lifetime.ts`) and released when that
+   * lowering leaves the render tree.
    */
   readonly onAcquire?: (pickId: number) => void;
 }
@@ -186,9 +192,11 @@ export function compileScene(
   // lowering that orders leaves by pass first, scene-graph order
   // second. Otherwise the structural lower path is identical to the
   // pre-Phase-1 behaviour.
-  const tree = sceneUsesPassStatic(sg)
-    ? lowerByPass(sg, initial, opts)
-    : lower(sg, initial, opts);
+  const { value: tree, dispose } = collect(opts.picking?.registry, () =>
+    sceneUsesPassStatic(sg)
+      ? lowerByPass(sg, initial, opts)
+      : lower(sg, initial, opts));
+  opts.lifetime?.onDispose(dispose);
   const cmds: Command[] = [];
   if (opts.clear !== undefined) {
     cmds.push({ kind: "Clear", values: opts.clear });
@@ -234,7 +242,7 @@ function sceneUsesPassStatic(node: SgNode): boolean {
     case "PickContext":
       return sceneUsesPassStatic(node.child);
     case "Delay":
-      try { return sceneUsesPassStatic(node.create(TraversalState.empty)); }
+      try { return sceneUsesPassStatic(probeDelay(node, TraversalState.empty)); }
       catch { return false; }
     case "Instanced":
       return sceneUsesPassStatic(node.child);
@@ -311,7 +319,7 @@ function collectPassValues(node: SgNode, pass: number, out: Set<number>): Set<nu
     // Why force here: same static pass-set scan.
     case "AdaptiveGroup": return collectPassValues(node.child.force(), pass, out);
     case "Delay": {
-      try { return collectPassValues(node.create(TraversalState.empty), pass, out); }
+      try { return collectPassValues(probeDelay(node, TraversalState.empty), pass, out); }
       catch { return out; }
     }
     case "Row":
@@ -349,12 +357,12 @@ function lower(
 
     case "Group": {
       // alist<SgNode> → alist<RenderTree>; outer is OrderedFromList.
-      // `.map` fires per inserted child — re-validate the new
-      // subtree if we're inside an `Sg.Instanced` scope.
-      const children: alist<RenderTree> = node.children.map(
-        child => lowerInsideInstancing(child, state, opts),
-      );
-      return RenderTree.orderedFromList(children);
+      // Each child's lowering owns what it acquired: released when the
+      // child is removed or replaced, or when this group is released.
+      // Re-validates the new subtree inside an `Sg.Instanced` scope.
+      const live = new LiveSet();
+      own(() => live.releaseAll());
+      return RenderTree.orderedFromList(mapOwned(node.children, live, (child) => lowerWithCleanup(child, state, opts)));
     }
 
     case "UnorderedGroup": {
@@ -384,9 +392,18 @@ function lower(
         fast: undefined,
         dc0: undefined,
       };
+      // Releasing this group releases the children it still holds (a
+      // constant set never removes, and a dropped reader never says so).
+      const live = new LiveSet();
+      own(() => live.releaseAll());
       const entries: aset<GroupEntry> = ASet.mapUse(
-        (child: SgNode) => lowerGroupEntry(child, state, opts, anchor),
-        (e) => { e.dispose(); },
+        (child: SgNode) => {
+          const { value, dispose } = collect(opts.picking?.registry, () => lowerGroupEntry(child, state, opts, anchor));
+          const e: GroupEntry = { ...value, dispose: both(value.dispose, dispose) };
+          live.add(e.dispose);
+          return e;
+        },
+        (e) => { live.release(e.dispose); },
         node.children,
       );
       const rows = entries.choose((e) => e.row);
@@ -398,14 +415,9 @@ function lower(
     }
 
     case "AdaptiveGroup":
-      // single-slot subtree swap: aval<SgNode> → aval<RenderTree>.
-      // TODO(adaptive-cleanup): mirror UnorderedGroup's mapUse here —
-      // an `aval.mapUse` (release-on-tick) variant is needed so a
-      // swap of the inner SgNode releases the previous lowering's
-      // pickIds.
-      return RenderTree.adaptive(node.child.map(
-        child => lowerInsideInstancing(child, state, opts),
-      ));
+      // single-slot subtree swap: aval<SgNode> → aval<RenderTree>. A swap
+      // releases the previous lowering (after the new one is built).
+      return RenderTree.adaptive(swapOwned(node.child, (child) => lowerWithCleanup(child, state, opts)));
 
     case "Trafo":
       return lower(node.child, state.pushTrafo(node.value), opts);
@@ -426,7 +438,10 @@ function lower(
       // Dynamic uniform set — re-evaluate the whole child each time
       // the uniform-key set changes. Per-key avals already update
       // independently inside the leaf.
-      return RenderTree.adaptive(entries.map(map => lower(node.child, state.pushUniforms(map), opts)));
+      return RenderTree.adaptive(swapOwned(entries, (map) => {
+        const { value, dispose } = collect(opts.picking?.registry, () => lower(node.child, state.pushUniforms(map), opts));
+        return { tree: value, dispose };
+      }));
     }
 
     case "BlendMode":
@@ -462,12 +477,16 @@ function lower(
     case "Proj":
       return lower(node.child, state.withCamera(state.view, node.proj), opts);
 
-    case "Delay":
+    case "Delay": {
       // Run the creator with the accumulated state. The returned
       // sub-tree is lowered with the SAME state — Delay isn't a
       // scope that pushes anything; it just builds the child from
-      // what it sees.
-      return lower(node.create(state), state, opts);
+      // what it sees. Its scope belongs to the enclosing owner: it
+      // ends when this lowering leaves the render tree.
+      const scope = new LoweringScope();
+      own(() => scope.dispose());
+      return lower(node.create(state, scope), state, opts);
+    }
 
     case "DepthTest":   return lower(node.child, state.pushDepthTest(node.mode), opts);
     case "DepthMask":   return lower(node.child, state.pushDepthMask(node.write), opts);
@@ -540,15 +559,7 @@ interface LoweredChild {
   readonly tree: RenderTree;
   readonly dispose: () => void;
 }
-const _NOOP_DISPOSE = (): void => {};
-// One shared child-options object per (opts) — the old code spread the
-// full CompileSceneOptions + picking objects PER CHILD, which at heap
-// scale (hundreds of thousands of leaves) was measurable JS memory.
-// The shared onAcquire pushes into whichever ids array is currently on
-// the sink stack (lowering is synchronous, so plain save/restore keeps
-// nested collections correct with the same replace-semantics).
-let _idSink: number[] | undefined;
-const _childOptsCache = new WeakMap<CompileSceneOptions, CompileSceneOptions>();
+const _NOOP_DISPOSE = NOOP_DISPOSE;
 // Instance-tables step 2 (docs/instance-tables.md): unordered-group
 // children that lower to a SINGLE leaf and stage to a row-eligible
 // template get their uniform provider swapped for the shared-plan
@@ -941,23 +952,66 @@ function lowerWithCleanup(
   state: TraversalState,
   opts: CompileSceneOptions,
 ): LoweredChild {
-  if (opts.picking === undefined) {
-    return { tree: lowerInsideInstancing(child, state, opts), dispose: _NOOP_DISPOSE };
+  const { value: tree, dispose } = collect(opts.picking?.registry, () => lowerInsideInstancing(child, state, opts));
+  return { tree, dispose };
+}
+
+/** Both disposers, once each. */
+function both(a: () => void, b: () => void): () => void {
+  if (a === NOOP_DISPOSE) return b;
+  if (b === NOOP_DISPOSE) return a;
+  return () => { a(); b(); };
+}
+
+/**
+ * `alist.map` whose results own a lifetime: a removed or replaced
+ * element's lowering is released (per reader: each reader lowers its own
+ * copy, as `map` does). Every live lowering is also in `live`, which the
+ * enclosing owner releases.
+ */
+function mapOwned<A>(list: alist<A>, live: LiveSet, lowering: (a: A) => LoweredChild): alist<RenderTree> {
+  return AList.ofReader(() => new OwnedMapReader(list, live, lowering));
+}
+
+class OwnedMapReader<A> extends AbstractReader<IndexListDelta<RenderTree>> {
+  private readonly _reader: IOpReader<IndexListDelta<A>>;
+  private readonly _owned = new Map<Index, () => void>();
+  constructor(list: alist<A>, private readonly _live: LiveSet, private readonly _lowering: (a: A) => LoweredChild) {
+    super(IndexListDelta.empty<RenderTree>());
+    this._reader = list.getReader();
   }
-  let shared = _childOptsCache.get(opts);
-  if (shared === undefined) {
-    shared = { ...opts, picking: { ...opts.picking, onAcquire: (pid) => { _idSink?.push(pid); } } };
-    _childOptsCache.set(opts, shared);
+  override compute(tok: AdaptiveToken): IndexListDelta<RenderTree> {
+    return this._reader.getChanges(tok).map((i, op) => {
+      const old = this._owned.get(i);
+      if (op.tag === "Set") {
+        const c = this._lowering(op.value);
+        if (c.dispose !== NOOP_DISPOSE) { this._owned.set(i, c.dispose); this._live.add(c.dispose); }
+        else this._owned.delete(i);
+        if (old !== undefined) this._live.release(old);
+        return ElementSet(c.tree);
+      }
+      this._owned.delete(i);
+      if (old !== undefined) this._live.release(old);
+      return ElementRemove;
+    });
   }
-  const ids: number[] = [];
-  const prev = _idSink;
-  _idSink = ids;
-  let tree: RenderTree;
-  try { tree = lowerInsideInstancing(child, state, shared); }
-  finally { _idSink = prev; }
-  if (ids.length === 0) return { tree, dispose: _NOOP_DISPOSE };
-  const registry = opts.picking.registry;
-  return { tree, dispose: () => { for (const id of ids) registry.release(id); } };
+}
+
+/**
+ * `aval.map` to a lowered subtree that owns a lifetime: on a swap the new
+ * subtree is built first, then the previous one released; releasing the
+ * enclosing owner releases the current one.
+ */
+function swapOwned<A>(value: aval<A>, lowering: (a: A) => LoweredChild): aval<RenderTree> {
+  let current: (() => void) | undefined;
+  own(() => { const c = current; current = undefined; c?.(); });
+  return value.map((a) => {
+    const c = lowering(a);
+    const previous = current;
+    current = c.dispose;
+    previous?.();
+    return c.tree;
+  });
 }
 
 function lowerInsideInstancing(
@@ -1097,6 +1151,7 @@ function lowerLeaf(
       ...(state.pickTag !== undefined ? { tag: state.pickTag } : {}),
     }, mode);
     pickId = pid;
+    own(pid);
     if (opts.picking.onAcquire !== undefined) opts.picking.onAcquire(pid);
   }
 

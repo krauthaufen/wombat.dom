@@ -24,6 +24,7 @@
 // tears down the compiled task, the pick artifacts, and the acquired
 // pick ids regardless of outstanding texture refs.
 
+import { LoweringScope } from "./lifetime.js";
 import { AVal, HashMap, type AdaptiveToken, type aval } from "@aardworx/wombat.adaptive";
 import { Trafo3d, V2i, V4f } from "@aardworx/wombat.base";
 import {
@@ -262,7 +263,9 @@ export function renderSceneTo(
     .withTime(opts.time ?? globalTime());
 
   const sceneClear = withExtraClears(opts.clear, opts.extraColors);
+  const life = new LoweringScope();
   const task = runtime.compile(signature, compileScene(scene, {
+    lifetime: life,
     initialState: initial,
     ...(opts.defaultEffect !== undefined ? { defaultEffect: opts.defaultEffect } : {}),
     ...(sceneClear !== undefined ? { clear: sceneClear } : {}),
@@ -284,6 +287,7 @@ export function renderSceneTo(
       if (disposed) return;
       disposed = true;
       task.dispose();
+      life.dispose();
     },
   };
 }

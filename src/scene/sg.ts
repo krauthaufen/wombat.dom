@@ -341,7 +341,7 @@ export interface SgProj {
  */
 export interface SgDelay {
   readonly kind: "Delay";
-  readonly create: (state: import("./traversalState.js").TraversalState) => SgNode;
+  readonly create: (state: import("./traversalState.js").TraversalState, scope: import("./lifetime.js").SceneScope) => SgNode;
 }
 
 // ---------------------------------------------------------------------------

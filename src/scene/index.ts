@@ -42,6 +42,8 @@ export {
   composeModel,
 } from "./traversalState.js";
 
+export type { SceneScope } from "./lifetime.js";
+
 export {
   forEachLeaf,
   collectLeaves,

@@ -166,6 +166,8 @@ them costs more than it's worth; carry the rationale forward.
   arrays/alists. Whether to add `aset` support to DOM children
   (with arbitrary ordering by hash) is open; F# DomNode uses
   `alist` only.
-- **`<Sg.Adaptive>` unmount cleanup timing** (rAF vs sync). The
-  rendering layer's resource refcount should make either fine,
-  but pin the convention before the first scene swap test.
+- **`<Sg.Adaptive>` unmount cleanup timing** (rAF vs sync). Pinned to
+  sync for the lowering's own acquisitions (pick ids, `Sg.delay`
+  scopes): a swap releases the previous lowering right after building
+  the new one (`src/scene/lifetime.ts`). GPU resources still go through
+  the rendering layer's refcount.

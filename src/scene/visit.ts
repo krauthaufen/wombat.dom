@@ -13,6 +13,7 @@
 //   * collecting `IIntersectable`s for the BVH path (M10)
 //   * static analysis (e.g. counting leaves, dumping the tree)
 
+import { probeDelay } from "./lifetime.js";
 import { AVal } from "@aardworx/wombat.adaptive";
 import type { SgNode, SgLeaf } from "./sg.js";
 import { materializeRowSg } from "./sg.js";
@@ -96,7 +97,7 @@ export function forEachLeaf(
     case "Delay":
       // Run the creator with the accumulated state and recurse
       // into whatever sub-tree it returns — same state.
-      forEachLeaf(node.create(state), state, visit);
+      forEachLeaf(probeDelay(node, state), state, visit);
       return;
     case "Row":
       // Pre-staged row — visit its materialized subtree.

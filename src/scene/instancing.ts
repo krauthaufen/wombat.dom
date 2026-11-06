@@ -19,6 +19,7 @@
 // streams, runs the trafo CPU pre-merge, and overrides the leaf's
 // `instanceCount`. See `docs/auto-instancing.md` for design.
 
+import { probeDelay } from "./lifetime.js";
 import { AVal, HashMap, type aval } from "@aardworx/wombat.adaptive";
 import { Trafo3d } from "@aardworx/wombat.base";
 import { IBuffer, type BufferView, type DrawCall,
@@ -73,7 +74,7 @@ export function validateInstancingSubtree(child: SgNode): void {
       case "Delay":
         // Delay's creator may produce arbitrary subtrees; force once
         // for the validation pass. If that throws, surface as-is.
-        try { walk(node.create(undefined as never)); } catch { /* nothing to validate */ }
+        try { walk(probeDelay(node, undefined as never)); } catch { /* nothing to validate */ }
         return;
       case "Row":
         // Pre-staged rows inside an instancing scope are off the fast

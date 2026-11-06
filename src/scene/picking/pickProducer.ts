@@ -12,6 +12,7 @@
 //     exposes `pickPixel` through an `IRenderPickContext` so picking
 //     recurses into offscreen ("portal") scenes.
 
+import { LoweringScope } from "../lifetime.js";
 import { AVal, HashMap, type AdaptiveToken, type aval } from "@aardworx/wombat.adaptive";
 import { V4f, type Trafo3d } from "@aardworx/wombat.base";
 import type { Runtime } from "@aardworx/wombat.rendering";
@@ -125,6 +126,7 @@ export function createPickProducer(
   // Lower + compile. When transparency is on, transparencyTask lowers
   // the scene itself via compileScene's pass hooks and threads the same
   // pick registry.
+  const life = new LoweringScope();
   const task = opts.transparency
     ? transparencyTask(runtime, device, pickFb.signature, target.size, sceneTree, {
         ...(typeof opts.transparency === "string" ? { mode: opts.transparency } : {}),
@@ -140,6 +142,7 @@ export function createPickProducer(
         },
       })
     : runtime.compile(pickFb.signature, compileScene(sceneTree, {
+        lifetime: life,
         initialState: initial,
         ...(opts.defaultEffect !== undefined ? { defaultEffect: opts.defaultEffect } : {}),
         clear: clearWithPick,
@@ -235,6 +238,7 @@ export function createPickProducer(
       argmin.dispose();
       pickMetadata.dispose();
       task.dispose();
+      life.dispose();
       pickFb.dispose();
     },
   };

@@ -23,6 +23,7 @@
 // runs in a `ref` callback on canvas mount and is asynchronous —
 // the first frame appears one rAF after the device is ready.
 
+import { probeDelay } from "./lifetime.js";
 import { AVal, avalAddCallback, cval, transact, type aval } from "@aardworx/wombat.adaptive";
 import { Trafo3d, V2i } from "@aardworx/wombat.base";
 import {
@@ -847,7 +848,7 @@ export function sniffViewProj(node: SgNode): SniffResult {
         cur = cur.child;
         continue;
       case "Delay":
-        try { cur = cur.create(TraversalState.empty); }
+        try { cur = probeDelay(cur, TraversalState.empty); }
         catch { return out; }
         continue;
       default:

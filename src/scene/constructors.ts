@@ -252,10 +252,18 @@ function camera(view: aval<Trafo3d>, proj: aval<Trafo3d>, child: SgChild): SgNod
   return viewScope(view, projScope(proj, child));
 }
 
+/**
+ * `create` runs once per traversal with the accumulated state and the
+ * lifetime of the subtree it builds: `scope.onDispose` runs when that
+ * lowered subtree leaves the render tree (removed, swapped out, or the
+ * compiled scene disposed); each traversal gets its own scope. Pass
+ * discovery may also run it as a probe with `TraversalState.empty`, whose
+ * scope has ended when `create` returns.
+ */
 function delay(
-  create: (state: import("./traversalState.js").TraversalState) => SgChild,
+  create: (state: import("./traversalState.js").TraversalState, scope: import("./lifetime.js").SceneScope) => SgChild,
 ): SgNode {
-  return { kind: "Delay", create: (state) => coerceChild(create(state)) };
+  return { kind: "Delay", create: (state, scope) => coerceChild(create(state, scope)) };
 }
 
 // ---------------------------------------------------------------------------

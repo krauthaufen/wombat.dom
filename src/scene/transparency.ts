@@ -13,6 +13,7 @@
 //               dropped against the opaque depth at resolve time.
 //
 // Framebuffers are reactive (allocated against `size: aval`); resize re-allocates.
+import { LoweringScope } from "./lifetime.js";
 import { AList, AVal, AdaptiveToken, HashMap, type aval } from "@aardworx/wombat.adaptive";
 import { V2f, V3f, V4f } from "@aardworx/wombat.base";
 import {
@@ -293,7 +294,9 @@ export function transparencyTask(
   // passes — NOT the WBOIT/build pass (which composes its own writer). `base`
   // therefore excludes it; opaque/pick passes spread `withPicking` back in.
   const { picking, ...compileRest } = opts.compile ?? {};
-  const base: CompileSceneOptions = { autoUniforms: false, ...compileRest };
+  // Every pass's lowering lives as long as this task.
+  const life = new LoweringScope();
+  const base: CompileSceneOptions = { autoUniforms: false, ...compileRest, lifetime: life };
   const withPicking = picking !== undefined ? { picking } : {};
   const black = opts.clearColor ?? new V4f(0, 0, 0, 1);
   const quadBuf = AVal.constant(IBuffer.fromHost(FS_QUAD));
@@ -409,6 +412,7 @@ export function transparencyTask(
       },
       dispose(): void {
         opaqueTask.dispose(); wboitTask.dispose(); compositeTask.dispose(); pickTask?.dispose();
+        life.dispose();
         for (const b of fboCache.values()) b.destroy();
         fboCache.clear();
       },
@@ -527,6 +531,7 @@ export function transparencyTask(
     dispose(): void {
       opaqueTask.dispose(); buildTask.dispose(); resolveTask.dispose();
       opaquePickTask?.dispose(); transparentPickTask?.dispose();
+      life.dispose();
       for (const b of interCache.values()) b.destroy();
       interCache.clear();
       counter.destroy(); nDepth.destroy(); nColor.destroy(); nNext.destroy();
