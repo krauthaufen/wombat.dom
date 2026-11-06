@@ -11,8 +11,8 @@
 // No real GPU here — RenderTree is a pure data structure.
 
 import { describe, expect, it } from "vitest";
-import { AList, AVal, HashMap, cval, transact } from "@aardworx/wombat.adaptive";
-import { Trafo3d, V3d } from "@aardworx/wombat.base";
+import { AList, AVal, HashMap, cval, transact, type aval } from "@aardworx/wombat.adaptive";
+import { Trafo3d, V2i, V3d } from "@aardworx/wombat.base";
 import type {
   BufferView, DrawCall, Effect, IFramebuffer, RenderTree,
 } from "@aardworx/wombat.rendering/core";
@@ -132,6 +132,14 @@ describe("compileScene — auto-injected uniforms", () => {
     for (const k of ["ModelTrafo", "ViewTrafo", "ProjTrafo", "ViewProjTrafo", "ViewportSize"]) {
       expect(lt.object.uniforms.tryGet(k)).toBeDefined();
     }
+  });
+
+  it("ViewportSize is the viewport as a V2i (what the uniform packers read)", () => {
+    const initialState = TraversalState.empty.withViewport(AVal.constant({ width: 640, height: 480 }));
+    const cmds = compileScene(Sg.shader(fakeEffect, leaf()), { initialState });
+    const lt = getLeafObject(singleRender(cmds));
+    const v = AVal.force(lt.object.uniforms.tryGet("ViewportSize") as aval<V2i>);
+    expect([v.x, v.y]).toEqual([640, 480]);
   });
 
   it("autoUniforms: false suppresses the injection", () => {

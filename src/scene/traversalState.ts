@@ -53,7 +53,7 @@ import {
   HashMap,
   type aval,
 } from "@aardworx/wombat.adaptive";
-import { Trafo3d, V3d, V3f, type IIntersectable } from "@aardworx/wombat.base";
+import { Trafo3d, V2i, V3d, V3f, type IIntersectable } from "@aardworx/wombat.base";
 import type { Effect } from "@aardworx/wombat.shader";
 import type { BlendState, BufferView, PipelineState, IUniformProvider } from "@aardworx/wombat.rendering/core";
 import type {
@@ -943,7 +943,11 @@ export function deriveAutoUniform(
           const o = v.backward.transformPos(V3d.zero);
           return new V3f(o.x, o.y, o.z);
         });
-      case "ViewportSize": return viewport;
+      // The render target's size in pixels as a V2i (Aardvark's type):
+      // the uniform packers read `.x`/`.y`, so the raw `{width, height}`
+      // the render control supplies packed as NaN.
+      case "ViewportSize":
+        return AVal.map(viewport, (v: { width: number; height: number }) => new V2i(v.width, v.height));
       default: return undefined;
     }
   }
