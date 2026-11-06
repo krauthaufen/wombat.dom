@@ -11,6 +11,7 @@ export interface Disposable {
 export class Scope implements Disposable {
   private _disposables: Disposable[] = [];
   private _disposed = false;
+  private _parent: Scope | undefined;
 
   /**
    * The unified event region (RegionRouter) this scope belongs to, set on
@@ -42,6 +43,7 @@ export class Scope implements Disposable {
     const c = new Scope();
     if (this.region !== undefined) c.region = this.region;
     this.add(c);
+    if (!this._disposed) c._parent = this;
     return c;
   }
 
@@ -52,6 +54,16 @@ export class Scope implements Disposable {
   dispose(): void {
     if (this._disposed) return;
     this._disposed = true;
+    // A child disposed on its own (an alist row, a swapped arm) leaves its
+    // parent's list, or long-lived parents keep every dead child.
+    const p = this._parent;
+    if (p !== undefined) {
+      this._parent = undefined;
+      if (!p._disposed) {
+        const i = p._disposables.lastIndexOf(this);
+        if (i >= 0) p._disposables.splice(i, 1);
+      }
+    }
     const ds = this._disposables;
     this._disposables = [];
     for (let i = ds.length - 1; i >= 0; i--) {

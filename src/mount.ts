@@ -157,7 +157,7 @@ function bindElementProps(
   for (const [name, value] of Object.entries(props)) {
     if (name === "children") continue;
     if (name === "ref" && typeof value === "function") {
-      (value as (e: Element) => void)(el);
+      (value as (e: Element, s: Scope) => void)(el, scope);
       continue;
     }
     bindAttr(el, name, value, scope, scheduler);

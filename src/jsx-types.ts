@@ -6,6 +6,7 @@
 
 import type { aval, alist, amap } from "@aardworx/wombat.adaptive";
 import type { VNode } from "./vnode.js";
+import type { Scope } from "./scope.js";
 import type { SgNode } from "./scene/sg.js";
 
 // `aval`/`alist` here are `any`-parameterized intentionally: the JSX
@@ -49,7 +50,8 @@ interface CommonAttrs {
   tabIndex?: AdaptiveOr<number>;
   role?: AdaptiveOr<string>;
   "aria-label"?: AdaptiveOr<string>;
-  ref?: (el: Element) => void;
+  /** Called once the element is created; `scope` ends with the element. */
+  ref?: (el: Element, scope: Scope) => void;
   /** Spread of attributes via amap<string, value>. */
   attrs?: amap<string, AdaptivePrimitive | EventListenerOrEventListenerObject>;
   children?: ChildLike | ChildLike[];
