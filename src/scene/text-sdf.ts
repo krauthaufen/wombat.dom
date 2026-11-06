@@ -373,8 +373,33 @@ export interface SdfTextArgs {
   scope?: SgScopeProps;
 }
 
+/**
+ * The SDF text's depth state and the scope left to wrap it in. The text sets
+ * its depth state inside its tree, where it wins over a wrapping scope's, so
+ * a caller's DepthTest / DepthMask are taken out of the scope and used there
+ * instead (e.g. labels over everything: "always", no depth writes). Default:
+ * the projection's test (reversed-Z aware), depth writes on.
+ */
+export function sdfTextDepth(scope: SgScopeProps | undefined): {
+  depthTest: NonNullable<SgScopeProps["DepthTest"]>;
+  depthMask: NonNullable<SgScopeProps["DepthMask"]>;
+  scope: SgScopeProps | undefined;
+} {
+  const { DepthTest, DepthMask, ...rest } = (scope ?? {}) as SgScopeProps;
+  return {
+    // reversed-Z (M22 >= 0, e.g. the infinite-far reversed perspective)
+    // needs greater-equal — a hardcoded less-equal silently inverts the
+    // test there and text only shows THROUGH nearer geometry.
+    depthTest: DepthTest ?? ambProj.map((p) =>
+      (p.forward.M22 >= 0 ? "greater-equal" : "less-equal") as GPUCompareFunction),
+    depthMask: DepthMask ?? true,
+    scope: scope === undefined ? undefined : (rest as SgScopeProps),
+  };
+}
+
 export function buildSdfTextScene(args: SdfTextArgs): SgNode {
-  const { font, text, align, kerning, cache, color, aaWidth, scope } = args;
+  const { font, text, align, kerning, cache, color, aaWidth } = args;
+  const { depthTest, depthMask, scope } = sdfTextDepth(args.scope);
   const layout = layoutText(font, text, { kerning });
   const emScale = 1 / (font.unitsPerEm || 1);
   const totalAdvance = layout.advance * emScale;
@@ -490,9 +515,8 @@ export function buildSdfTextScene(args: SdfTextArgs): SgNode {
     // e.g. the infinite-far reversed perspective) needs greater-equal —
     // a hardcoded less-equal silently inverts the test there and text
     // only shows THROUGH nearer geometry.
-    DepthTest: ambProj.map((p) =>
-      (p.forward.M22 >= 0 ? "greater-equal" : "less-equal") as GPUCompareFunction),
-    DepthMask: true,
+    DepthTest: depthTest,
+    DepthMask: depthMask,
     ...(alignTrafo !== undefined ? { Trafo: alignTrafo } : {}),
     children: leafChildren,
   } as never);
