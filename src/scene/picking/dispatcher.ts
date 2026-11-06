@@ -462,14 +462,19 @@ export class PickDispatcher implements SceneEventDispatch {
       // Moves flood and may be coalesced away; discrete events (down/
       // up/click) must always resolve — a double-click's first UP
       // otherwise loses its hit and the tap latch never arms.
+      // Only moves are lossy: a move a newer event overtook is dropped. A
+      // discrete event always dispatches, even when a newer move settled
+      // first (a coalesced-away move settles at once, ahead of a click
+      // still queued behind the in-flight pick — dropping the click there
+      // lost ctrl-clicks a few hundred ms apart).
       const coalesce = kind === "OnPointerMove";
       return resolvePixel(devX, devY, coalesce).then(async (result) => {
-        if (seq < this.lastSettledSeq) return;
+        if (coalesce && seq < this.lastSettledSeq) return;
         const hit = await this.resolve(result, devX, devY);
         // Portal recursion awaited — a newer event may have settled
-        // meanwhile; drop stale results (same seq policy as above).
-        if (seq < this.lastSettledSeq) return;
-        this.lastSettledSeq = seq;
+        // meanwhile; drop stale moves (same policy as above).
+        if (coalesce && seq < this.lastSettledSeq) return;
+        if (seq > this.lastSettledSeq) this.lastSettledSeq = seq;
         this.runUnified(ev, kind, domName, cssX, cssY, hit, rect, sx, sy, pointerId, extProp);
       });
     };
