@@ -349,6 +349,11 @@ export class PickRegistry {
     return this.entries.get(id);
   }
 
+  /** Every live scope, pixel and BVH path alike (`SceneQuery.raycast`). */
+  scopes(): IterableIterator<LeafPickScope> {
+    return this.entries.values();
+  }
+
   /**
    * Drop a previously-acquired pickId. Removes the scope record from
    * `entries`/`modes` and, when the scope landed in the BVH path,

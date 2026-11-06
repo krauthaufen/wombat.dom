@@ -38,6 +38,16 @@ export interface SceneQuery {
 
   /** Convenience: turn a cursor pixel + camera into a ray, then call `intersect`. */
   pickAt(cursorPixel: aval<V2d>): aval<HitInfo | undefined>;
+
+  /**
+   * The closest hit of a world-space ray with `tmin <= t <= tmax`, now
+   * (current values, no dependencies): every live scope with an
+   * intersectable, pixel-path ones included, which `intersect` leaves
+   * out. For event-time queries off the cursor's ray: draping a line
+   * over a surface, a ray cast from above. Each intersectable is asked
+   * only for the stretch of the ray inside its box.
+   */
+  raycast(ray: Ray3d, tmin?: number, tmax?: number): HitInfo | undefined;
 }
 
 export function createSceneQuery(
@@ -105,7 +115,62 @@ export function createSceneQuery(
     return intersect(rayAval);
   };
 
-  return { intersect, pickAt };
+  const raycast = (ray: Ray3d, tmin = 0, tmax = Number.POSITIVE_INFINITY): HitInfo | undefined => {
+    const vFwd = view.force().forward;
+    let bestT = tmax;
+    let bestHit: HitInfo | undefined;
+    for (const scope of registry.scopes()) {
+      if (scope.intersectable === undefined) continue;
+      if (!scope.active.force()) continue;
+      if (scope.noEvents !== undefined && scope.noEvents.force()) continue;
+      const isect = scope.intersectable.force();
+      const trafo = scope.model().force();
+      // the local ray keeps the world ray's parameter (direction not renormalised)
+      const localRay = ray.transformed(trafo.inverse());
+      const span = slab(localRay, isect.boundingBox, tmin, bestT);
+      if (span === undefined) continue;
+      const hit = isect.intersects(localRay, span[0], span[1]);
+      if (hit === undefined || hit.t < tmin || hit.t > bestT) continue;
+      bestT = hit.t;
+      const worldPos = trafo.transformPos(hit.point);
+      bestHit = {
+        pickId: scope.pickId,
+        worldPos,
+        viewPos: vFwd.transformPos(worldPos),
+        worldNormal: normalize(transposedTransformDir(trafo.backward, hit.normal)),
+        partIndex: 0,
+        scope,
+      };
+    }
+    return bestHit;
+  };
+
+  return { intersect, pickAt, raycast };
+}
+
+/** The parameter range of `ray` inside `box` clipped to [t0, t1], widened a
+ *  little (boxes are tight around float geometry); undefined on a miss. */
+function slab(ray: Ray3d, box: import("@aardworx/wombat.base").Box3d, t0: number, t1: number): [number, number] | undefined {
+  if (box.isEmpty()) return undefined;
+  const o = [ray.origin.x, ray.origin.y, ray.origin.z];
+  const d = [ray.direction.x, ray.direction.y, ray.direction.z];
+  const lo = [box.min.x, box.min.y, box.min.z];
+  const hi = [box.max.x, box.max.y, box.max.z];
+  let a = t0, b = t1;
+  for (let i = 0; i < 3; i++) {
+    const pad = 1e-6 * Math.max(1, Math.abs(lo[i]!), Math.abs(hi[i]!));
+    const l = lo[i]! - pad, h = hi[i]! + pad;
+    if (d[i] === 0) {
+      if (o[i]! < l || o[i]! > h) return undefined;
+      continue;
+    }
+    let ta = (l - o[i]!) / d[i]!, tb = (h - o[i]!) / d[i]!;
+    if (ta > tb) { const x = ta; ta = tb; tb = x; }
+    if (ta > a) a = ta;
+    if (tb < b) b = tb;
+    if (a > b) return undefined;
+  }
+  return [a, b];
 }
 
 // ---------------------------------------------------------------------------

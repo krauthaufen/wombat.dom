@@ -108,3 +108,61 @@ describe("createSceneQuery", () => {
     expect(AVal.force(q.intersect(AVal.constant(ray)))).toBeUndefined();
   });
 });
+
+describe("SceneQuery.raycast", () => {
+  const query = (reg: PickRegistry) => createSceneQuery(
+    reg, AVal.constant(Trafo3d.identity), AVal.constant(Trafo3d.identity), AVal.constant(new V2i(100, 100)));
+  const acquire = (reg: PickRegistry, at: V3d, pickPath: "pixel" | "bvh", active = true) => reg.acquire({
+    handlers: [], cursor: undefined, pickThrough: false,
+    active: AVal.constant(active),
+    view: AVal.constant(Trafo3d.identity),
+    proj: AVal.constant(Trafo3d.identity),
+    model: () => AVal.constant(Trafo3d.translation(at)),
+    pixelSnapRadius: AVal.constant(1),
+    intersectable: AVal.constant(unitBox()),
+    pickPath,
+  });
+
+  it("hits pixel-path scopes, which intersect leaves out", () => {
+    const reg = new PickRegistry();
+    const id = acquire(reg, new V3d(0, 0, 5), "pixel");
+    const ray = new Ray3d(new V3d(0, 0, -10), new V3d(0, 0, 1));
+    expect(AVal.force(query(reg).intersect(AVal.constant(ray)))).toBeUndefined();
+    const hit = query(reg).raycast(ray);
+    expect(hit?.pickId).toBe(id);
+    expect(hit!.worldPos.z).toBeCloseTo(4, 9);
+  });
+
+  it("takes the nearest hit over both paths, skips inactive scopes and misses", () => {
+    const reg = new PickRegistry();
+    acquire(reg, new V3d(0, 0, 20), "bvh");
+    const near = acquire(reg, new V3d(0, 0, 10), "pixel");
+    acquire(reg, new V3d(0, 0, 3), "pixel", false);
+    acquire(reg, new V3d(50, 0, 5), "pixel");
+    const hit = query(reg).raycast(new Ray3d(new V3d(0, 0, -10), new V3d(0, 0, 1)));
+    expect(hit?.pickId).toBe(near);
+    expect(hit!.worldPos.z).toBeCloseTo(9, 9);
+  });
+
+  it("keeps the world ray's parameter under scaled models and honours tmin/tmax", () => {
+    const reg = new PickRegistry();
+    reg.acquire({
+      handlers: [], cursor: undefined, pickThrough: false, active: AVal.constant(true),
+      view: AVal.constant(Trafo3d.identity), proj: AVal.constant(Trafo3d.identity),
+      model: () => AVal.constant(Trafo3d.scaling(10)),
+      pixelSnapRadius: AVal.constant(1), intersectable: AVal.constant(unitBox()), pickPath: "pixel",
+    });
+    const ray = new Ray3d(new V3d(0, 0, -100), new V3d(0, 0, 2));
+    const hit = query(reg).raycast(ray);
+    expect(hit!.worldPos.z).toBeCloseTo(-10, 9);
+    expect(query(reg).raycast(ray, 0, 40)).toBeUndefined();
+    // a second box behind: tmin past the first one's entry finds it
+    reg.acquire({
+      handlers: [], cursor: undefined, pickThrough: false, active: AVal.constant(true),
+      view: AVal.constant(Trafo3d.identity), proj: AVal.constant(Trafo3d.identity),
+      model: () => AVal.constant(Trafo3d.translation(new V3d(0, 0, 40))),
+      pixelSnapRadius: AVal.constant(1), intersectable: AVal.constant(unitBox()), pickPath: "pixel",
+    });
+    expect(query(reg).raycast(ray, 46)!.worldPos.z).toBeCloseTo(39, 9);
+  });
+});

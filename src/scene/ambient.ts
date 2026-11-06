@@ -109,4 +109,10 @@ export const query: SceneQuery = {
     const viewportV2i: aval<V2i> = c.viewport.map(v => new V2i(v.width, v.height));
     return createSceneQuery(reg, c.view, c.proj, viewportV2i).pickAt(cursorPixel);
   }),
+  raycast: (ray, tmin, tmax) => {
+    const c = current.force();
+    const reg = c.registry ?? emptyRegistry();
+    const viewportV2i: aval<V2i> = c.viewport.map(v => new V2i(v.width, v.height));
+    return createSceneQuery(reg, c.view, c.proj, viewportV2i).raycast(ray, tmin, tmax);
+  },
 };
