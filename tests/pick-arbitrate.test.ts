@@ -153,3 +153,45 @@ describe("arbitratePick — 5-case merge", () => {
     warn.mockRestore();
   });
 });
+
+describe("arbitratePick — exact refine of a pixel-path winner", () => {
+  // A slab z ∈ [0.4, 0.5]: identity view/proj, the pointer's ray runs
+  // along +z from z = -1, so the surface lies at t = 1.4.
+  const slab = Intersectable.box(Box3d.fromMinMax(new V3d(-1, -1, 0.4), new V3d(1, 1, 0.5)));
+  const acquirePixel = (reg: PickRegistry): number =>
+    reg.acquire({
+      handlers: [{ handlers: noHandlers(), local2World: () => AVal.constant(Trafo3d.identity) }],
+      cursor: undefined,
+      pickThrough: false,
+      active: AVal.constant(true),
+      view: AVal.constant(Trafo3d.identity),
+      proj: AVal.constant(Trafo3d.identity),
+      model: () => AVal.constant(Trafo3d.identity),
+      pixelSnapRadius: AVal.constant(1),
+      pickPath: "pixel",
+      intersectable: AVal.constant(slab),
+    });
+
+  it("a coarse pixel depth near the surface is replaced by the exact hit", () => {
+    const reg = new PickRegistry();
+    const id = acquirePixel(reg);
+    const hit = arbitratePick(pixelWinner(id, { slot2: 0.38 }), POINTER, reg, Trafo3d.identity, Trafo3d.identity, VP);
+    expect(hit?.scope.pickId).toBe(id);
+    expect(hit?.isPixel).toBe(true);
+    expect(hit?.viewPos.z).toBeCloseTo(0.4, 9);
+  });
+
+  it("no surface near the pixel's point → the pixel result as is", () => {
+    const reg = new PickRegistry();
+    const id = acquirePixel(reg);
+    const hit = arbitratePick(pixelWinner(id, { slot2: 0.0 }), POINTER, reg, Trafo3d.identity, Trafo3d.identity, VP);
+    expect(hit?.scope.pickId).toBe(id);
+    expect(hit?.viewPos.z).toBeCloseTo(0.0, 9);
+  });
+
+  it("a pixel-path intersectable stays out of the BVH", () => {
+    const reg = new PickRegistry();
+    acquirePixel(reg);
+    expect(arbitratePick(noPixel(), POINTER, reg, Trafo3d.identity, Trafo3d.identity, VP)).toBeUndefined();
+  });
+});

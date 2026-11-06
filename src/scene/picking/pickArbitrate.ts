@@ -167,6 +167,22 @@ export function arbitratePick(
       // eslint-disable-next-line no-console
       console.warn("[picking] cannot pick-through pixel-picked objects");
     }
+    // Exact refine: a pixel-path scope that carries an intersectable
+    // (not in the BVH) gets the winning pixel's ray intersected with its
+    // OWN geometry, near the pixel's point only. Falls back to the pixel
+    // result when that misses.
+    const refined = portalUv === undefined && result !== undefined
+      ? refinePixel(pixScope, result.px, result.py, sX, sY, pBwd, vBwd, vBwd.transformPos(pixVp))
+      : undefined;
+    if (refined !== undefined) {
+      return {
+        scope: pixScope,
+        viewPos: vFwd.transformPos(refined.worldPoint),
+        viewNormal: normalize(transposedTransformDir(vBwd, refined.worldNormal)),
+        partIndex: pixPi,
+        isPixel: true, hoverPickId,
+      };
+    }
     return {
       scope: pixScope, viewPos: pixVp, viewNormal: pixN, partIndex: pixPi,
       isPixel: true, hoverPickId,
@@ -243,6 +259,42 @@ function bvhClosest(
   });
   if (hit === undefined) return undefined;
   return { scope: hit.value.scope, worldPoint: hit.point, worldNormal: hit.normal };
+}
+
+/**
+ * The relative half-width of the search window around the pixel's point
+ * along its ray: the pixel depth is a float32 NDC depth (its error grows
+ * with distance²/near), so the exact surface lies within a few percent.
+ */
+export const PIXEL_REFINE_WINDOW = 0.05;
+
+/**
+ * Intersects the ray through pixel (px, py) with the pixel-path scope's
+ * intersectable, restricted to ±`PIXEL_REFINE_WINDOW` of the distance to
+ * the pixel's world point. Undefined when the scope has no intersectable
+ * or the window holds no surface.
+ */
+function refinePixel(
+  scope: LeafPickScope, px: number, py: number, sX: number, sY: number,
+  pBwd: M44d, vBwd: M44d, pixelWorld: V3d,
+): { worldPoint: V3d; worldNormal: V3d } | undefined {
+  if ((scope.pickPath ?? "bvh") !== "pixel" || scope.intersectable === undefined) return undefined;
+  const ray = rayFor(px, py, sX, sY, pBwd, vBwd);
+  const t0 = pixelWorld.sub(ray.origin).dot(ray.direction);
+  if (!(t0 > 0)) return undefined;
+  const r = PIXEL_REFINE_WINDOW * t0;
+  const trafo = AVal.force(scope.model());
+  const local = ray.transformed(trafo.inverse());
+  // The local ray's direction is not unit under a scaling trafo: bound it
+  // by the world-space window mapped onto local t.
+  const scale = local.direction.length();
+  const lh = AVal.force(scope.intersectable).intersects(
+    new Ray3d(local.origin, local.direction.div(scale)), (t0 - r) * scale, (t0 + r) * scale);
+  if (lh === undefined) return undefined;
+  return {
+    worldPoint: trafo.transformPos(lh.point),
+    worldNormal: transposedTransformDir(trafo.backward, lh.normal),
+  };
 }
 
 // ---------------------------------------------------------------------------

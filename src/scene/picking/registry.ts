@@ -111,7 +111,11 @@ export interface LeafPickScope {
    *
    *   - "pixel" — pick-chain rendered to pickFb; the dispatcher
    *               resolves hits via the spiral readback. BVH-add is
-   *               skipped (the scene-wide BVH stays small).
+   *               skipped (the scene-wide BVH stays small). An
+   *               intersectable on a pixel-path scope REFINES its pixel
+   *               hits instead: the winning pixel's ray is intersected
+   *               with it near the pixel's point (pickArbitrate
+   *               `refinePixel`), the pixel result kept on a miss.
    *   - "bvh"   — pick-chain rendered AND the intersectable joins
    *               the BVH. `sceneQuery.intersect` and the
    *               dispatcher's pickThrough fall-through both work.
