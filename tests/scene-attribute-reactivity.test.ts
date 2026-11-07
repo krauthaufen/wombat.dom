@@ -4,6 +4,7 @@
 // verified by the scene-no-force audit; here we verify functional
 // correctness end-to-end.
 
+import { __basePassTree } from "../src/scene/compile.js";
 import { describe, expect, it } from "vitest";
 import { AVal, HashMap, cval, transact } from "@aardworx/wombat.adaptive";
 import type {
@@ -39,7 +40,7 @@ function singleRender(cmds: ReturnType<typeof compileScene>): RenderTree {
   const list = AVal.force(cmds.content);
   const r = list.toArray().find(c => c.kind === "Render");
   if (r === undefined || r.kind !== "Render") throw new Error("no render command");
-  return r.tree;
+  return __basePassTree(r.tree);
 }
 
 function leafOf(rt: RenderTree): RenderTree & { kind: "Leaf" } {

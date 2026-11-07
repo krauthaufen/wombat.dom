@@ -55,6 +55,7 @@ export { Sg, collectSgChildren, type SgScopeProps } from "./constructors.js";
 export {
   compileScene,
   __setRowLowering,
+  __basePassTree,
   type CompileSceneOptions,
 } from "./compile.js";
 export { markHostBufferAVal, isMarkedHostBufferAVal } from "./hostBuffers.js";

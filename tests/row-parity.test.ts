@@ -4,6 +4,7 @@
 // plain and Instanced spines), register the same number of pick
 // scopes, and shadow parent scopes identically.
 
+import { __basePassTree } from "../src/scene/compile.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AVal, HashMap, type aval } from "@aardworx/wombat.adaptive";
 import { Trafo3d, V3d } from "@aardworx/wombat.base";
@@ -111,7 +112,7 @@ function lowerScene(rows: boolean): {
   const cmds = compileScene(scene, { picking: { registry } });
   const list = AVal.force(cmds.content);
   const r = list.toArray().find((c: { kind: string }) => c.kind === "Render") as { tree: RenderTree };
-  return { leaves: leafObjects(r.tree), registrySize: registry.size() };
+  return { leaves: leafObjects(__basePassTree(r.tree)), registrySize: registry.size() };
 }
 
 beforeEach(() => __setRowLowering(true));
@@ -134,7 +135,7 @@ describe("row lowering — formal parity vs classic", () => {
       const cmds = compileScene(scene, { picking: { registry }, injectUniforms: inject });
       const list = AVal.force(cmds.content);
       const r = list.toArray().find((c: { kind: string }) => c.kind === "Render") as { tree: RenderTree };
-      return leafObjects(r.tree);
+      return leafObjects(__basePassTree(r.tree));
     };
     const classic = lower(false);
     const rows = lower(true);

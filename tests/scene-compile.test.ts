@@ -10,6 +10,7 @@
 //
 // No real GPU here — RenderTree is a pure data structure.
 
+import { __basePassTree } from "../src/scene/compile.js";
 import { describe, expect, it } from "vitest";
 import { AList, AVal, HashMap, cval, transact, type aval } from "@aardworx/wombat.adaptive";
 import { Trafo3d, V2i, V3d } from "@aardworx/wombat.base";
@@ -55,7 +56,7 @@ function singleRender(cmds: ReturnType<typeof compileScene>): RenderTree {
   // ofList yields a single Render command unless `clear` is set.
   const r = list.toArray().find(c => c.kind === "Render");
   if (r === undefined || r.kind !== "Render") throw new Error("no render command");
-  return r.tree;
+  return __basePassTree(r.tree);
 }
 
 function getLeafObject(tree: RenderTree): RenderTree extends infer _ ? RenderTree & { kind: "Leaf" } : never {

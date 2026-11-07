@@ -27,16 +27,10 @@ const compileTs = resolve(here, "..", "src", "scene", "compile.ts");
  * source comment immediately preceding the line.
  */
 const ALLOWLIST: readonly string[] = [
-  // sceneUsesPassStatic — STATIC structural pre-pass, runs once at
-  // compileScene time to decide whether to bucket-by-pass.
-  "for (const c of node.children.content.force()) if (sceneUsesPassStatic(c)) return true;",
-  "case \"AdaptiveGroup\": return sceneUsesPassStatic(node.child.force());",
-  // collectPassValues — STATIC scan for the SET of distinct render passes,
-  // once at compileScene time. Only the pass set is snapshotted; the
-  // contents of each pass stay reactive (lowerByPass re-lowers per pass
-  // through the ordinary reactive `lower` path).
-  "for (const c of node.children.content.force()) collectPassValues(c, pass, out);",
-  "case \"AdaptiveGroup\": return collectPassValues(node.child.force(), pass, out);",
+  // seedConstantPasses — isConstant-guarded reads of constant groups /
+  // adaptive values at compileScene time (passes in constant structure).
+  "for (const c of node.children.content.force()) seedConstantPasses(c, out);",
+  "seedConstantPasses(node.child.force(), out);",
   // Uniform key-set static snapshot at the bucketing boundary.
   "const entries = node.bag.kind === \"Static\" ? node.bag.entries : node.bag.entries.content.force();",
   // state.noEvents.isConstant fast path — force on a constant aval has

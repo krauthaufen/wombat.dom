@@ -6,6 +6,7 @@
 //   - the leaf's uniforms map carries `PickId`;
 //   - opts.picking absent → no behavioural change.
 
+import { __basePassTree } from "../src/scene/compile.js";
 import { describe, expect, it } from "vitest";
 import { AVal, HashMap } from "@aardworx/wombat.adaptive";
 import { stage, type Effect } from "@aardworx/wombat.shader";
@@ -79,7 +80,7 @@ function singleRender(cmds: ReturnType<typeof compileScene>): RenderTree {
   const list = AVal.force(cmds.content);
   const r = list.toArray().find(c => c.kind === "Render");
   if (r === undefined || r.kind !== "Render") throw new Error("no render command");
-  return r.tree;
+  return __basePassTree(r.tree);
 }
 
 function getLeaf(tree: RenderTree): RenderTree & { kind: "Leaf" } {

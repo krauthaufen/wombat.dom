@@ -119,7 +119,7 @@ export class LiveSet {
 
 /**
  * Runs a Delay's creator as a PROBE: for a scan that only looks at the
- * returned subtree and never renders it (pass discovery, instancing
+ * returned subtree and never renders it (instancing
  * validation, leaf visits, the render control's camera sniffing). Its
  * scope has ended when the creator returns, so anything registered on it
  * runs at once.

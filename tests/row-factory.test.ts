@@ -3,6 +3,7 @@
 // `rowWrap(loc, f)`; these gates pin the wrapper's value-driven
 // behavior and the Row node's lowering paths.
 
+import { __basePassTree } from "../src/scene/compile.js";
 import { beforeEach, describe, expect, it } from "vitest";
 import { AVal, HashMap } from "@aardworx/wombat.adaptive";
 import { stage, type Effect } from "@aardworx/wombat.shader";
@@ -67,7 +68,7 @@ function renderTreeOf(scene: SgNode): RenderTree {
   const cmds = compileScene(scene, {});
   const list = AVal.force(cmds.content);
   const render = list.toArray().find((c: { kind: string }) => c.kind === "Render") as { tree: RenderTree };
-  return render.tree;
+  return __basePassTree(render.tree);
 }
 
 function parts(tree: RenderTree): { rows: unknown[]; classic: RenderTree[] } {
@@ -220,7 +221,7 @@ describe("SgRow lowering", () => {
     const cmds = compileScene(scene, { passFilter: (rp) => rp === 1000 });
     const list = AVal.force(cmds.content);
     const render = list.toArray().find((c: { kind: string }) => c.kind === "Render") as { tree: RenderTree };
-    expect(leavesOf(render.tree).length).toBe(0);
+    expect(leavesOf(__basePassTree(render.tree)).length).toBe(0);
     for (const w of wrapped) expect((w as SgRow).tree).toBeUndefined();
   });
 

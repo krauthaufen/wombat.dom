@@ -4,6 +4,7 @@
 // `markHostBufferAVal`); anything else must NOT assert and keeps
 // the reactive predicate.
 
+import { __basePassTree } from "../src/scene/compile.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AVal, HashMap, cval } from "@aardworx/wombat.adaptive";
 import { stage, type Effect } from "@aardworx/wombat.shader";
@@ -87,7 +88,7 @@ function loweredLeaves(scene: ReturnType<typeof Sg.shader>): RenderObject[] {
       for (const c of content) walk(c);
     }
   };
-  walk(render.tree);
+  walk(__basePassTree(render.tree));
   return out;
 }
 

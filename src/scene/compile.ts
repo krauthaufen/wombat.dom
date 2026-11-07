@@ -34,8 +34,8 @@
 // comment and an allowlist entry.
 
 import {
-  AList, ASet, AVal,
-  HashMap,
+  AList, ASet, AVal, AdaptiveObject,
+  HashMap, clist, transactIfNecessary,
   AbstractReader, IndexListDelta, ElementSet, ElementRemove,
   type alist, type aset, type aval,
   type AdaptiveToken, type Index, type IOpReader,
@@ -188,14 +188,9 @@ export function compileScene(
   // cache computes the pipeline-state content key just once instead of
   // once per leaf, and `derivePipelineState` runs once instead of N×.
   const initial = base.withPipelineState(derivePipelineState(base, opts));
-  // If the scene uses any `Sg.pass` scope, fall through to a flat
-  // lowering that orders leaves by pass first, scene-graph order
-  // second. Otherwise the structural lower path is identical to the
-  // pre-Phase-1 behaviour.
+  // Passes are found while lowering, not by a pre-walk: see `PassSplit`.
   const { value: tree, dispose } = collect(opts.picking?.registry, () =>
-    sceneUsesPassStatic(sg)
-      ? lowerByPass(sg, initial, opts)
-      : lower(sg, initial, opts));
+    new PassSplit(sg, initial, opts).build());
   opts.lifetime?.onDispose(dispose);
   const cmds: Command[] = [];
   if (opts.clear !== undefined) {
@@ -205,135 +200,204 @@ export function compileScene(
   return AList.ofList(cmds);
 }
 
-/**
- * Static one-shot scan: does this SG tree contain a `Pass` scope
- * anywhere? Runs ONCE at `compileScene` time to decide whether to
- * bucket leaves by pass at all. The answer is constant for a given
- * SG tree shape, so the `.force()` calls below are not on the live
- * render path — they're construction-boundary reads. Any subsequent
- * structural reshuffle of the SG flows through `lower`'s reactive
- * paths (Group / UnorderedGroup / AdaptiveGroup → orderedFromList /
- * unorderedFromSet / RenderTree.adaptive); the pass split itself is
- * not re-evaluated, but the contents of each bucket remain reactive.
- *
- * Why force here: see above — STATIC at compile-scene time, allowed.
- */
-function sceneUsesPassStatic(node: SgNode): boolean {
-  switch (node.kind) {
-    case "Pass": return true;
-    case "Empty": case "Leaf": return false;
-    case "Group": {
-      for (const c of node.children.content.force()) if (sceneUsesPassStatic(c)) return true;
-      return false;
-    }
-    case "UnorderedGroup": {
-      for (const c of node.children.content.force()) if (sceneUsesPassStatic(c)) return true;
-      return false;
-    }
-    case "AdaptiveGroup": return sceneUsesPassStatic(node.child.force());
-    case "Trafo": case "Shader": case "Uniform": case "BlendMode":
-    case "Cursor": case "PickThrough": case "Intersectable":
-    case "PixelSnapRadius": case "PickPriority": case "PickTag": case "On": case "Active": case "View": case "Proj":
-    case "DepthTest": case "DepthMask": case "DepthBias": case "DepthClamp":
-    case "CullMode": case "FrontFace": case "FillMode":
-    case "BlendConstant": case "ColorMask": case "StencilMode":
-    case "VertexAttributes": case "InstanceAttributes": case "Index": case "Mode":
-    case "NoEvents": case "ForcePixelPicking": case "CanFocus":
-    case "PickContext":
-      return sceneUsesPassStatic(node.child);
-    case "Delay":
-      try { return sceneUsesPassStatic(probeDelay(node, TraversalState.empty)); }
-      catch { return false; }
-    case "Instanced":
-      return sceneUsesPassStatic(node.child);
-    case "Row":
-      // The staged key records every node kind on the spine — answer
-      // without materializing (Pass inside a row template is rare).
-      return rowKeyHasPass(node.staged.template.key);
-  }
-}
-
 /** Does a staged template's key contain a `Pass` scope? Kinds are
  *  encoded verbatim as `Kind(` parts joined by NUL. */
 function rowKeyHasPass(key: string): boolean {
   return key.startsWith("Pass(") || key.includes("\u0000Pass(");
 }
 
-/**
- * Pass-grouped lowering — REACTIVE.
- *
- * The tree is lowered once PER DISTINCT PASS (ascending), each time
- * through the ordinary reactive `lower` path with a pass-scoped leaf
- * filter, and the resulting sub-trees are concatenated in pass order.
- * Ordering between passes therefore comes from the concatenation, while
- * everything INSIDE each pass keeps its normal reactivity — adaptive
- * groups, asets/alists, streamed tile leaves and `Active` flips all still
- * propagate.
- *
- * The previous implementation eagerly force-walked the whole SG once and
- * bucketed the lowered leaves. That froze every adaptive container in a
- * Pass-using scene: a streaming scene (tiles arriving in a clist) simply
- * stopped updating — and, because nothing marked any more, the on-demand
- * render loop stopped too (the "Sg.Pass makes the scene vanish/freeze"
- * bug). Lowering N times costs one extra traversal per pass (N is 2–3 in
- * practice) and buys back full reactivity.
- *
- * The SET of distinct passes is still discovered by a static scan
- * (`collectPassValues`): a pass value that only appears later, inside an
- * adaptive subtree that was empty at compile time, is not picked up.
- * Leaves in such a pass are dropped rather than mis-ordered.
- */
-function lowerByPass(node: SgNode, state: TraversalState, opts: CompileSceneOptions): RenderTree {
-  const passes = [...collectPassValues(node, state.renderPass, new Set<number>())].sort((a, b) => a - b);
-  if (passes.length <= 1) return lower(node, state, opts);
-  const userFilter = opts.passFilter;
-  const trees: RenderTree[] = [];
-  for (const p of passes) {
-    const passOpts: CompileSceneOptions = {
-      ...opts,
-      passFilter: (rp: number) => rp === p && (userFilter === undefined || userFilter(rp)),
-    };
-    trees.push(lower(node, state, passOpts));
-  }
-  return RenderTree.ordered(...trees);
+/** Lowering options as `lower` sees them: the public options plus the
+ *  pass sink of the base lowering (see `PassSplit`). */
+interface LowerOptions extends CompileSceneOptions {
+  readonly passSink?: PassSplit;
 }
 
 /**
- * Static scan for the distinct `renderPass` values a tree can produce.
- * Structural containers are forced ONCE here (construction-boundary read,
- * not on the live path) — only the SET of passes is snapshotted; the
- * contents of each pass stay fully reactive (see `lowerByPass`).
+ * Render passes (`Sg.pass`, `Sg.transparent`, …) — REACTIVE, no pre-walk.
+ *
+ * Lower passes draw before higher ones; within a pass, scene-graph
+ * order. The tree is lowered once per pass in use, each time through
+ * the ordinary reactive `lower` with a leaf filter for that pass, and
+ * the per-pass trees sit in a list ordered by pass. Everything inside a
+ * pass keeps its reactivity (adaptive groups, streamed leaves, `Active`).
+ *
+ * Which passes are in use is found while lowering instead of by an eager
+ * walk of the whole scene (that walk forced every adaptive container of
+ * a large scene a second time — half its load). The lowering of the
+ * BASE pass (the initial state's, `RenderPass.main` by default), which
+ * always exists, reports every `Pass` scope it lowers; a pass gets its
+ * own lowering while some lowered `Pass` scope names it and loses it
+ * when the last one leaves the render tree (removed, swapped out). So a
+ * pass that first appears at runtime — inside an adaptive subtree, or
+ * because the model changed a subtree's pass — is drawn, in order.
+ *
+ * Reports made while the scene is being evaluated are applied right
+ * after that evaluation (`AdaptiveObject.runAfterEvaluate`, a
+ * transaction), so a pass first met during a frame is drawn from the
+ * next one. `Pass` scopes reachable from the root through CONSTANT
+ * structure only (scopes, constant groups and adaptive values) are
+ * known at compile time and drawn from the first frame; those behind an
+ * adaptive container or an `Sg.delay` creator follow one evaluation
+ * later.
  */
-function collectPassValues(node: SgNode, pass: number, out: Set<number>): Set<number> {
-  switch (node.kind) {
-    case "Empty": return out;
-    case "Leaf": out.add(pass); return out;
-    case "Pass": return collectPassValues(node.child, node.pass, out);
-    case "Group":
-    case "UnorderedGroup": {
-      // Why force here: STATIC pass-set discovery at compileScene time (see
-      // the doc above) — the per-pass CONTENTS stay reactive.
-      for (const c of node.children.content.force()) collectPassValues(c, pass, out);
-      return out;
+class PassSplit {
+  private readonly _base: number;
+  /** Lowered `Pass` scopes per pass (base lowering only). */
+  private readonly _counts = new Map<number, number>();
+  /** Passes with a lowering: the list entry and its release. */
+  private readonly _lowered = new Map<number, { index: Index; dispose: () => void }>();
+  private _list: clist<RenderTree> | undefined = undefined;
+  private _scheduled = false;
+  private _disposed = false;
+
+  constructor(
+    private readonly _sg: SgNode,
+    private readonly _state: TraversalState,
+    private readonly _opts: CompileSceneOptions,
+  ) {
+    this._base = _state.renderPass;
+  }
+
+  /** Lowers the base pass and the passes known at compile time; returns
+   *  the pass-ordered tree. Runs inside compileScene's root `collect`. */
+  build(): RenderTree {
+    const user = this._opts.passFilter;
+    const passes = new Set<number>();
+    seedConstantPasses(this._sg, passes);
+    // Constant structure never changes: these stay for the scene's life.
+    for (const p of passes) if (this._wanted(p)) this._counts.set(p, (this._counts.get(p) ?? 0) + 1);
+    const base = this._base;
+    const baseTree = lower(this._sg, this._state, {
+      ...this._opts,
+      passFilter: user === undefined ? (rp) => rp === base : (rp) => rp === base && user(rp),
+      passSink: this,
+    } as LowerOptions);
+    // Released first (releases run in reverse): later reports are moot.
+    own(() => this._dispose());
+    const ordinals = [...this._counts.keys()].filter((p) => this._counts.get(p)! > 0);
+    ordinals.push(base);
+    ordinals.sort((a, b) => a - b);
+    const trees: RenderTree[] = [];
+    const lowered: { p: number; dispose: () => void }[] = [];
+    for (const p of ordinals) {
+      if (p === base) { trees.push(baseTree); lowered.push({ p, dispose: NOOP_DISPOSE }); continue; }
+      const c = this._lowerPass(p);
+      trees.push(c.tree);
+      lowered.push({ p, dispose: c.dispose });
     }
-    // Why force here: same static pass-set scan.
-    case "AdaptiveGroup": return collectPassValues(node.child.force(), pass, out);
-    case "Delay": {
-      try { return collectPassValues(probeDelay(node, TraversalState.empty), pass, out); }
-      catch { return out; }
+    const list = clist<RenderTree>(trees);
+    let i = 0;
+    for (const [index] of list.value.toArrayIndexed()) {
+      const e = lowered[i++]!;
+      this._lowered.set(e.p, { index, dispose: e.dispose });
     }
-    case "Row":
-      // A row IS a leaf for pass discovery — a `Pass` scope INSIDE the
-      // row's template (rare) forces materialization instead.
-      if (rowKeyHasPass(node.staged.template.key)) {
-        return collectPassValues(materializeRowSg(node), pass, out);
+    this._list = list;
+    const root = RenderTree.orderedFromList(list);
+    _passRoots.set(root, baseTree);
+    return root;
+  }
+
+  /** A lowered `Pass` scope of the base lowering; held until the
+   *  enclosing owner releases it. */
+  report(pass: number): void {
+    if (!this._wanted(pass)) return;
+    this._counts.set(pass, (this._counts.get(pass) ?? 0) + 1);
+    if (this._counts.get(pass) === 1 && !this._lowered.has(pass)) this._schedule();
+    own(() => {
+      const n = this._counts.get(pass)! - 1;
+      this._counts.set(pass, n);
+      if (n === 0 && this._lowered.has(pass)) this._schedule();
+    });
+  }
+
+  /** The base pass is always lowered; a pass the user filter rejects
+   *  would lower to nothing. */
+  private _wanted(pass: number): boolean {
+    if (pass === this._base) return false;
+    const user = this._opts.passFilter;
+    return user === undefined || user(pass);
+  }
+
+  private _lowerPass(pass: number): LoweredChild {
+    const user = this._opts.passFilter;
+    const passFilter = user === undefined ? (rp: number) => rp === pass : (rp: number) => rp === pass && user(rp);
+    const { value: tree, dispose } = collect(this._opts.picking?.registry, () =>
+      lower(this._sg, this._state, { ...this._opts, passFilter }));
+    return { tree, dispose };
+  }
+
+  private _schedule(): void {
+    // While `build` runs, the list is built from the counts afterwards.
+    if (this._scheduled || this._list === undefined) return;
+    this._scheduled = true;
+    AdaptiveObject.runAfterEvaluate(() => this._sync());
+  }
+
+  private _sync(): void {
+    this._scheduled = false;
+    const list = this._list;
+    if (this._disposed || list === undefined) return;
+    transactIfNecessary(() => {
+      for (const [p, e] of [...this._lowered]) {
+        if (p === this._base || (this._counts.get(p) ?? 0) > 0) continue;
+        this._lowered.delete(p);
+        list.remove(e.index);
+        e.dispose();
       }
-      out.add(pass);
-      return out;
+      for (const [p, n] of this._counts) {
+        if (n <= 0) { this._counts.delete(p); continue; }
+        if (this._lowered.has(p)) continue;
+        let pos = 0;
+        for (const q of this._lowered.keys()) if (q < p) pos++;
+        const c = this._lowerPass(p);
+        this._lowered.set(p, { index: list.insertAt(pos, c.tree), dispose: c.dispose });
+      }
+    });
+  }
+
+  private _dispose(): void {
+    this._disposed = true;
+    for (const [p, e] of this._lowered) if (p !== this._base) e.dispose();
+    this._lowered.clear();
+  }
+}
+
+const _passRoots = new WeakMap<RenderTree, RenderTree>();
+
+/** TEST-ONLY: the base pass's lowering inside a compiled scene's
+ *  pass-ordered root (the root itself for any other tree). */
+export function __basePassTree(tree: RenderTree): RenderTree {
+  return _passRoots.get(tree) ?? tree;
+}
+
+/**
+ * The passes named by `Pass` scopes reachable from `node` through
+ * constant structure only: scopes, groups whose children are constant,
+ * adaptive groups whose value is. Adaptive containers and `Sg.delay`
+ * creators are not entered — their passes are reported while lowering.
+ */
+function seedConstantPasses(node: SgNode, out: Set<number>): void {
+  switch (node.kind) {
+    case "Empty": case "Leaf": case "Delay": return;
+    case "Pass": out.add(node.pass); seedConstantPasses(node.child, out); return;
+    case "Group": case "UnorderedGroup":
+      if (!node.children.isConstant) return;
+      // AVal.force OK: isConstant guard — a constant collection's content.
+      for (const c of node.children.content.force()) seedConstantPasses(c, out);
+      return;
+    case "AdaptiveGroup":
+      if (!node.child.isConstant) return;
+      // AVal.force OK: isConstant guard — a constant value.
+      seedConstantPasses(node.child.force(), out);
+      return;
+    case "Row":
+      // The staged key records every node kind on the spine.
+      if (rowKeyHasPass(node.staged.template.key)) seedConstantPasses(materializeRowSg(node), out);
+      return;
     default: {
       // every remaining node kind is a single-child scope
       const child = (node as { child?: SgNode }).child;
-      return child !== undefined ? collectPassValues(child, pass, out) : out;
+      if (child !== undefined) seedConstantPasses(child, out);
     }
   }
 }
@@ -499,10 +563,9 @@ function lower(
     case "ColorMask":   return lower(node.child, state.pushColorMask(node.mask), opts);
     case "StencilMode": return lower(node.child, state.pushStencilMode(node.mode), opts);
     case "Pass": {
-      // When opts.passBuckets is present (top-level lowering with
-      // pass-grouping requested) the leaves below this scope route
-      // into the corresponding bucket. Otherwise, ignore — leaves
-      // emit as ordered in the surrounding tree.
+      // The base pass's lowering reports the pass (see `PassSplit`); the
+      // leaves below are kept or dropped by the lowering's pass filter.
+      (opts as LowerOptions).passSink?.report(node.pass);
       return lower(node.child, state.pushRenderPass(node.pass), opts);
     }
     case "VertexAttributes":
@@ -826,7 +889,7 @@ function lowerGroupEntry(
   // Pre-staged rows in a PASS-FILTERED compile: the leaf's render pass
   // is the state's (the template carries no Pass scope — key check),
   // so the filter decision needs no tree. Without this, a pass that
-  // excludes the rows (the OIT opaque compile, per-pass lowerByPass)
+  // excludes the rows (the OIT opaque compile, another pass's lowering)
   // would materialize EVERY row just to lower it to Empty — and the
   // cached trees would resurrect the retention rowWrap exists to kill.
   if (

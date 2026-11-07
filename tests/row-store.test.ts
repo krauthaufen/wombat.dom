@@ -2,6 +2,7 @@
 // rows in the group's RowSet; a SECOND shape in the same group lowers
 // classically and the efficiency report says so (mixed-plan-group).
 
+import { __basePassTree } from "../src/scene/compile.js";
 import { beforeEach, describe, expect, it } from "vitest";
 import { AVal, HashMap } from "@aardworx/wombat.adaptive";
 import { stage, type Effect } from "@aardworx/wombat.shader";
@@ -71,7 +72,7 @@ describe("row-store admission", () => {
     const cmds = compileScene(scene, {});
     const list = AVal.force(cmds.content);
     const render = list.toArray().find((c: { kind: string }) => c.kind === "Render") as { tree: RenderTree };
-    const { rows, classic } = parts(render.tree);
+    const { rows, classic } = parts(__basePassTree(render.tree));
     expect(rows.length).toBe(3);
     expect(classic.length).toBe(0);
   });
@@ -85,7 +86,7 @@ describe("row-store admission", () => {
     const cmds = compileScene(scene, {});
     const list = AVal.force(cmds.content);
     const render = list.toArray().find((c: { kind: string }) => c.kind === "Render") as { tree: RenderTree };
-    const { rows } = parts(render.tree);
+    const { rows } = parts(__basePassTree(render.tree));
     expect(rows.length).toBe(3);
     const posViews = rows.map((r) => {
       const va = (r as { vertexAttributes?: { tryGet(n: string): BufferView | undefined } }).vertexAttributes;
@@ -104,7 +105,7 @@ describe("row-store admission", () => {
     const cmds = compileScene(scene, {});
     const list = AVal.force(cmds.content);
     const render = list.toArray().find((c: { kind: string }) => c.kind === "Render") as { tree: RenderTree };
-    const { rows, classic } = parts(render.tree);
+    const { rows, classic } = parts(__basePassTree(render.tree));
     expect(rows.length).toBe(2);
     expect(classic.length).toBe(1);
     const bail = sceneEfficiency().bails.find((x) => x.reason === "mixed-plan-group");
