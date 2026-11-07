@@ -15,6 +15,24 @@ both **shipped** — they're no longer open.
 
 ## Open
 
+### `Sg.pass`: a pass value that appears at runtime drops its leaves (bug)
+- `lowerByPass` (src/scene/compile.ts) finds the SET of pass ordinals once,
+  by a static scan at `compileScene` time (`collectPassValues`), then lowers
+  the tree once per known pass with a pass filter. A leaf whose pass ordinal
+  first appears later — an adaptive subtree that was empty at compile time,
+  or an `Sg.pass` whose value changes because the model changed (e.g. PRo3D's
+  per-surface priority edited in the UI) — matches no filter and is silently
+  not rendered. Also: a scene with no `Pass` at compile time never takes the
+  pass path at all (`sceneUsesPassStatic`), so a `Pass` added later is ignored.
+- Fix: make the pass set reactive (an `aset<number>` of ordinals collected
+  through the adaptive containers) and the per-pass trees an alist keyed by
+  ordinal, so a new ordinal adds a lowered sub-tree and an unused one drops
+  it. Needs a test: a scene whose `Sg.pass` ordinal flips at runtime must
+  keep rendering the leaf, in the new order.
+- Related missing feature: no depth clear between passes (compileScene emits
+  one Clear and one Render). PRo3D's surface priority clears depth before each
+  group; pro3d-web works around it with depth slices in its shaders.
+
 ### Transparency / OIT (designed, not built)
 - Order-independent transparency: `Sg.transparent`/`Sg.opaque` attribute + an
   extra pass group after the opaque pass. Default **WBOIT** (port of aardvark),
