@@ -204,18 +204,59 @@ describe("compileScene — Active gating", () => {
     expect(singleRender(compileScene(tree)).kind).toBe("Empty");
   });
 
-  it("dynamic active attaches as `active` aval on the RenderObject (no Adaptive wrap)", () => {
+  it("dynamic active: lowered once, its leaves gated in place by the `active` aval", () => {
     const a = cval(true);
     const tree = Sg.shader(fakeEffect, Sg.active(a, leaf()));
     const rt = singleRender(compileScene(tree));
-    expect(rt.kind).toBe("Leaf");
-    if (rt.kind === "Leaf") {
-      const active = rt.object.active;
-      expect(active).toBeDefined();
-      expect(AVal.force(active!)).toBe(true);
-      transact(() => { a.value = false; });
-      expect(AVal.force(active!)).toBe(false);
-    }
+    // One adaptive node that latches on the first active value; the
+    // subtree under it is a plain Leaf carrying the gate.
+    expect(rt.kind).toBe("Adaptive");
+    if (rt.kind !== "Adaptive") return;
+    const inner = AVal.force(rt.tree);
+    expect(inner.kind).toBe("Leaf");
+    if (inner.kind !== "Leaf") return;
+    const active = inner.object.active;
+    expect(active).toBe(a);
+    transact(() => { a.value = false; });
+    expect(AVal.force(active!)).toBe(false);
+    // Toggling does not lower again: the same tree, the same object.
+    expect(AVal.force(rt.tree)).toBe(inner);
+    transact(() => { a.value = true; });
+    expect(AVal.force(rt.tree)).toBe(inner);
+  });
+
+  it("a subtree inactive from the start is not lowered nor read until first shown", () => {
+    const a = cval(false);
+    let reads = 0;
+    const probe = AVal.custom(() => { reads++; return Trafo3d.identity; });
+    const tree = Sg.shader(fakeEffect, Sg.active(a, Sg.trafo(probe, leaf())));
+    const rt = singleRender(compileScene(tree));
+    expect(rt.kind).toBe("Adaptive");
+    if (rt.kind !== "Adaptive") return;
+    expect(AVal.force(rt.tree).kind).toBe("Empty");
+    expect(reads).toBe(0);
+    transact(() => { a.value = true; });
+    const shown = AVal.force(rt.tree);
+    expect(shown.kind).toBe("Leaf");
+    if (shown.kind === "Leaf") AVal.force(shown.object.uniforms.tryGet("ModelTrafo")!);
+    expect(reads).toBe(1);
+    // Hidden again: kept, gated.
+    transact(() => { a.value = false; });
+    expect(AVal.force(rt.tree)).toBe(shown);
+  });
+
+  it("nested Active under a constant true adds no cell; reactive scopes AND-compose", () => {
+    const a = cval(true);
+    const b = cval(true);
+    const once = TraversalState.empty.pushActive(AVal.constant(true)).pushActive(a);
+    expect(once.active).toBe(a);
+    const both = once.pushActive(b);
+    expect(AVal.force(both.active)).toBe(true);
+    transact(() => { b.value = false; });
+    expect(AVal.force(both.active)).toBe(false);
+    const off = TraversalState.empty.pushActive(AVal.constant(false)).pushActive(a);
+    expect(off.active.isConstant).toBe(true);
+    expect(AVal.force(off.active)).toBe(false);
   });
 });
 

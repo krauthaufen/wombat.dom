@@ -596,8 +596,19 @@ export class TraversalState implements IUniformProvider {
     return this.with({ pickTag: value });
   }
 
-  /** `<Sg.Active value={a}>`: AND-compose across nesting. */
+  /** `<Sg.Active value={a}>`: AND-compose across nesting. A constant side
+   *  composes without a cell: under a constant `true` the child's aval is
+   *  the scope's own (one Active per subtree adds no object), under a
+   *  constant `false` nothing below is ever active. */
   pushActive(active: aval<boolean>): TraversalState {
+    if (this.active.isConstant) {
+      // AVal.force OK: constant, no dependency to lose.
+      return this.active.force() ? this.with({ active }) : this;
+    }
+    if (active.isConstant) {
+      // AVal.force OK: constant, no dependency to lose.
+      return active.force() ? this : this.with({ active });
+    }
     return this.with({
       active: AVal.zip(this.active, active).map((p, c) => p && c),
     });

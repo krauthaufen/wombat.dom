@@ -4,7 +4,7 @@
 // behaviour for pickThrough / no-pixel-hit cases.
 
 import { describe, expect, it } from "vitest";
-import { AVal } from "@aardworx/wombat.adaptive";
+import { AVal, cval, transact } from "@aardworx/wombat.adaptive";
 import { Box3d, Intersectable, Trafo3d, V3d } from "@aardworx/wombat.base";
 
 import { PickDispatcher } from "../src/scene/picking/dispatcher.js";
@@ -61,6 +61,7 @@ function bubbleOf(rec: Record<string, (e: SceneEvent) => unknown>): EventHandler
 
 interface AcquireOpts {
   pickThrough?: boolean;
+  active?: import("@aardworx/wombat.adaptive").aval<boolean>;
   intersectable?: ReturnType<typeof Intersectable.box>;
 }
 
@@ -69,7 +70,7 @@ function acquire(reg: PickRegistry, handlers: ReadonlyArray<Record<string, (e: S
     handlers: handlers.map(h => ({ handlers: bubbleOf(h), local2World: () => AVal.constant(Trafo3d.identity) })),
     cursor: undefined,
     pickThrough: opts.pickThrough ?? false,
-    active: AVal.constant(true),
+    active: opts.active ?? AVal.constant(true),
     view: AVal.constant(Trafo3d.identity),
     proj: AVal.constant(Trafo3d.identity),
     model: () => (AVal.constant(Trafo3d.identity)),
@@ -84,6 +85,27 @@ const boxA = Intersectable.box(Box3d.fromMinMax(new V3d(-1, -1, -0.5), new V3d(1
 const boxB = Intersectable.box(Box3d.fromMinMax(new V3d(-1, -1,  0.3), new V3d(1, 1,  0.5)));
 
 describe("PickDispatcher BVH fall-through", () => {
+  it("an inactive scope is not hit; the ray reaches the one behind it", async () => {
+    const reg = new PickRegistry();
+    const calls: SceneEvent[] = [];
+    const on = cval(true);
+    const idA = acquire(reg, [{ OnPointerDown: (e) => calls.push(e) }], { intersectable: boxA, active: on });
+    const idB = acquire(reg, [{ OnPointerDown: (e) => calls.push(e) }], { intersectable: boxB });
+    const canvas = makeCanvas();
+    const d = makeDispatcher(reg, canvas);
+    const detach = d.attach(canvas, resolverOf(noPixel()));
+    pevent(canvas, "pointerdown", 50, 50);
+    await flush();
+    transact(() => { on.value = false; });
+    pevent(canvas, "pointerdown", 50, 50);
+    await flush();
+    transact(() => { on.value = true; });
+    pevent(canvas, "pointerdown", 50, 50);
+    await flush();
+    expect(calls.map((c) => c.pickId)).toEqual([idA, idB, idA]);
+    detach();
+  });
+
   it("BVH returns the next non-pickThrough scope when spiral hits a pickThrough", async () => {
     const reg = new PickRegistry();
     const calls: SceneEvent[] = [];

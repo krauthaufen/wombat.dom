@@ -294,7 +294,13 @@ export interface SgOn {
   readonly child: SgNode;
 }
 
-/** Toggle the entire sub-tree on/off. AND-composed across nesting. */
+/**
+ * Toggle the entire sub-tree on/off. AND-composed across nesting. A
+ * reactive subtree is built the first time it is active and kept: while
+ * off its draws are skipped and it is not pickable, and a toggle flips one
+ * flag per draw (no re-lowering, no re-registration). Until first shown
+ * nothing below is built or read.
+ */
 export interface SgActive {
   readonly kind: "Active";
   readonly active: aval<boolean>;

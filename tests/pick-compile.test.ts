@@ -8,7 +8,7 @@
 
 import { __basePassTree } from "../src/scene/compile.js";
 import { describe, expect, it } from "vitest";
-import { AVal, HashMap } from "@aardworx/wombat.adaptive";
+import { AVal, HashMap, cval, transact } from "@aardworx/wombat.adaptive";
 import { stage, type Effect } from "@aardworx/wombat.shader";
 import { parseShader, type EntryRequest } from "@aardworx/wombat.shader/frontend";
 import { Tf32, Vec, type Type } from "@aardworx/wombat.shader/ir";
@@ -89,6 +89,24 @@ function getLeaf(tree: RenderTree): RenderTree & { kind: "Leaf" } {
 }
 
 describe("compileScene — picking integration", () => {
+  it("a subtree inactive from the start registers no pick scope until shown; hidden, its scope is inactive", () => {
+    const registry = new PickRegistry();
+    const on = cval(false);
+    const tree = Sg.shader(buildUserEffect(), Sg.active(on, Sg.on({ bubble: { OnClick: () => {} } }, leaf())));
+    const rt = singleRender(compileScene(tree, { picking: { registry } }));
+    if (rt.kind !== "Adaptive") throw new Error(`expected Adaptive, got ${rt.kind}`);
+    expect(AVal.force(rt.tree).kind).toBe("Empty");
+    expect(registry.size()).toBe(0);
+    transact(() => { on.value = true; });
+    const lt = getLeaf(AVal.force(rt.tree));
+    expect(registry.size()).toBe(1);
+    const scope = registry.lookup(lt.object.pickId!)!;
+    expect(AVal.force(scope.active)).toBe(true);
+    transact(() => { on.value = false; });
+    expect(AVal.force(scope.active)).toBe(false);
+    expect(registry.size()).toBe(1);
+  });
+
   it("single leaf with On registers exactly one PickScope and wraps the effect", () => {
     const userEff = buildUserEffect();
     const registry = new PickRegistry();

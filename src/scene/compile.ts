@@ -532,8 +532,20 @@ function lower(
     case "On":
       return lower(node.child, state.pushHandlers(node.handlers), opts);
 
-    case "Active":
-      return lower(node.child, state.pushActive(node.active), opts);
+    case "Active": {
+      // An on/off subtree. Constant: decided now (pushActive; a constant
+      // false scope drops its leaves in lowerLeaf). Reactive: the subtree
+      // is lowered the first time it is active and kept from then on:
+      // its leaves carry the scope's aval, so the renderer skips their
+      // draws and picking ignores them while it is false (one flag per
+      // draw, no re-registration). Until then nothing below is built or
+      // read, so a subtree valid only while active (a branch reading
+      // what its guard checked) is never evaluated before it is shown.
+      const inner = state.pushActive(node.active);
+      if (inner.active.isConstant) return lower(node.child, inner, opts);
+      return RenderTree.adaptive(swapOwned(shownOnce(inner.active), (shown) =>
+        shown ? lowerWithCleanup(node.child, inner, opts) : { tree: RenderTree.empty, dispose: NOOP_DISPOSE }));
+    }
 
     case "View":
       return lower(node.child, state.withCamera(node.view, state.proj), opts);
@@ -1058,6 +1070,19 @@ class OwnedMapReader<A> extends AbstractReader<IndexListDelta<RenderTree>> {
       return ElementRemove;
     });
   }
+}
+
+/**
+ * False until `active` is first true, then true for good. Once latched it
+ * no longer reads `active`, so later toggles do not reach it (only the
+ * draws' own gates).
+ */
+function shownOnce(active: aval<boolean>): aval<boolean> {
+  let shown = false;
+  return AVal.custom((tok) => {
+    if (!shown && active.getValue(tok)) shown = true;
+    return shown;
+  });
 }
 
 /**
