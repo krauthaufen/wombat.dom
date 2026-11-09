@@ -52,11 +52,11 @@ const draw: aval<DrawCall> = AVal.constant({ kind: "non-indexed", vertexCount: 6
 
 // Item i: a small quad (two triangles) of its own at a grid position in
 // [-1, 1]²; item 0 covers the pixel the test reads.
-function item(i: number, on: aval<boolean>): SgNode {
+function item(i: number, on: aval<boolean>, eager = false): SgNode {
   const x = -1 + 2 * ((i % 100) / 100), y = -1 + 2 * (Math.floor(i / 100) / 100), d = 0.04;
   const data = new Float32Array([x, y, 0, x + d, y, 0, x, y + d, 0, x + d, y, 0, x + d, y + d, 0, x, y + d, 0]);
   const positions: BufferView = { buffer: AVal.constant({ kind: "host", data, sizeBytes: data.byteLength }), elementType: ElementType.V3f };
-  return Sg.active(on, Sg.leaf({ vertexAttributes: HashMap.empty<string, BufferView>().add("Positions", positions), drawCall: draw }));
+  return Sg.active(on, Sg.leaf({ vertexAttributes: HashMap.empty<string, BufferView>().add("Positions", positions), drawCall: draw }), { eager });
 }
 
 describe("Sg.active over 10k subtrees (real GPU)", () => {
@@ -96,6 +96,20 @@ describe("Sg.active over 10k subtrees (real GPU)", () => {
           report[`toggle on, shared cell #${k} (ms)`] = ms(() => transact(() => { all.value = true; })) + frame(task);
           expect(await pixel()).toEqual([255, 255, 255, 255]);
         }
+        task.dispose();
+      }
+
+      // (1b) eager: registered inactive at load, the first show flips flags
+      {
+        const all = cval(false);
+        const scene = Sg.shader(effect(), Sg.group(Array.from({ length: N }, (_, i) => item(i, all, true))));
+        const task = runtime.compile(signature, compileScene(scene, { clear }));
+        report["eager: load hidden, registers (ms)"] = frame(task);
+        expect(await pixel()).toEqual([0, 0, 0, 0]);
+        report["eager: first show (ms)"] = ms(() => transact(() => { all.value = true; })) + frame(task);
+        expect(await pixel()).toEqual([255, 255, 255, 255]);
+        report["eager: toggle off (ms)"] = ms(() => transact(() => { all.value = false; })) + frame(task);
+        expect(await pixel()).toEqual([0, 0, 0, 0]);
         task.dispose();
       }
 

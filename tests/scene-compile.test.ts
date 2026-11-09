@@ -17,7 +17,7 @@ import { Trafo3d, V2i, V3d } from "@aardworx/wombat.base";
 import type {
   BufferView, DrawCall, Effect, IFramebuffer, RenderTree,
 } from "@aardworx/wombat.rendering/core";
-import { ElementType } from "@aardworx/wombat.rendering/core";
+import { ElementType, RenderTree as RenderTreeNs } from "@aardworx/wombat.rendering/core";
 
 import {
   Sg, TraversalState, compileScene,
@@ -243,6 +243,45 @@ describe("compileScene — Active gating", () => {
     // Hidden again: kept, gated.
     transact(() => { a.value = false; });
     expect(AVal.force(rt.tree)).toBe(shown);
+  });
+
+  it("eager: a subtree inactive from the start is lowered at once, its leaves registered gated", () => {
+    const a = cval(false);
+    const tree = Sg.shader(fakeEffect, Sg.active(a, leaf(), { eager: true }));
+    const rt = singleRender(compileScene(tree));
+    // No latch: the leaf itself, handed to the renderer now, off.
+    expect(rt.kind).toBe("Leaf");
+    if (rt.kind !== "Leaf") return;
+    expect(rt.object.active).toBe(a);
+    expect(AVal.force(rt.object.active!)).toBe(false);
+    transact(() => { a.value = true; });
+    expect(AVal.force(rt.object.active!)).toBe(true);
+  });
+
+  it("eager guarded: handed to the renderer's guard at once, lowered when it reads it", () => {
+    const rtNs = RenderTreeNs as unknown as { guarded?: unknown };
+    const saved = rtNs.guarded;
+    rtNs.guarded = (active: unknown, child: unknown) => ({ kind: "Guarded", active, child });
+    try {
+      const a = cval(false);
+      let reads = 0;
+      const probe = AVal.custom(() => { reads++; return Trafo3d.identity; });
+      const tree = Sg.shader(fakeEffect, Sg.active(a, Sg.trafo(probe, leaf()), { eager: "guarded" }));
+      const rt = singleRender(compileScene(tree)) as unknown as { kind: string; active: unknown; child: RenderTree };
+      expect(rt.kind).toBe("Guarded");
+      expect(rt.active).toBe(a);
+      expect(rt.child.kind).toBe("Adaptive");
+      if (rt.child.kind !== "Adaptive") return;
+      // lowered once the renderer reads it (under its guard), not before
+      const inner = AVal.force(rt.child.tree);
+      expect(inner.kind).toBe("Leaf");
+      if (inner.kind !== "Leaf") return;
+      expect(inner.object.active).toBe(a);
+      expect(AVal.force(rt.child.tree)).toBe(inner);
+      expect(reads).toBe(0);
+    } finally {
+      rtNs.guarded = saved;
+    }
   });
 
   it("nested Active under a constant true adds no cell; reactive scopes AND-compose", () => {

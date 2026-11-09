@@ -50,7 +50,7 @@ export {
   countLeaves,
 } from "./visit.js";
 
-export { Sg, collectSgChildren, type SgScopeProps } from "./constructors.js";
+export { Sg, collectSgChildren, type SgScopeProps, type ActiveOptions } from "./constructors.js";
 
 export {
   compileScene,

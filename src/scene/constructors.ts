@@ -236,8 +236,22 @@ const onDragEnd = (fn: SceneEventHandler, capture?: boolean): ((child: SgChild) 
 const onDoubleClick = (fn: SceneEventHandler, capture?: boolean): ((child: SgChild) => SgNode) => onEvent("OnDoubleClick", fn, capture);
 const onKeyInput    = (fn: SceneEventHandler, capture?: boolean): ((child: SgChild) => SgNode) => onEvent("OnKeyInput", fn, capture);
 
-function active(value: aval<boolean>, child: SgChild): SgNode {
-  return { kind: "Active", active: value, child: coerceChild(child) };
+/** Options of `Sg.active`. */
+export interface ActiveOptions {
+  /**
+   * Built and registered (inactive) at once, so the first show is a flag
+   * flip. `true`: the subtree is valid while off. `"guarded"`: it may not
+   * be; read under the renderer's guard, and left until its first show if
+   * that raises. Default: built on first show.
+   */
+  readonly eager?: boolean | "guarded";
+}
+
+function active(value: aval<boolean>, child: SgChild, options?: ActiveOptions): SgNode {
+  const eager = options?.eager;
+  return eager === true || eager === "guarded"
+    ? { kind: "Active", active: value, child: coerceChild(child), eager }
+    : { kind: "Active", active: value, child: coerceChild(child) };
 }
 
 function viewScope(view: aval<Trafo3d>, child: SgChild): SgNode {

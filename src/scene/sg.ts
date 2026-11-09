@@ -300,11 +300,20 @@ export interface SgOn {
  * off its draws are skipped and it is not pickable, and a toggle flips one
  * flag per draw (no re-lowering, no re-registration). Until first shown
  * nothing below is built or read.
+ *
+ * `eager`: built at once and its draws handed to the renderer inactive,
+ * so its first show is a flag flip too, for the cost of reading it (and
+ * keeping it up to date) while hidden. `true`: the subtree is valid while
+ * off (nothing it reads fails when its guard does not hold). `"guarded"`:
+ * it may not be; the renderer reads it under a guard
+ * (`RenderTree.guarded`) and, if that raises, leaves it until its first
+ * show, which then builds it as without `eager`.
  */
 export interface SgActive {
   readonly kind: "Active";
   readonly active: aval<boolean>;
   readonly child: SgNode;
+  readonly eager?: boolean | "guarded";
 }
 
 /**

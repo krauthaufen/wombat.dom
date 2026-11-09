@@ -541,8 +541,25 @@ function lower(
       // draw, no re-registration). Until then nothing below is built or
       // read, so a subtree valid only while active (a branch reading
       // what its guard checked) is never evaluated before it is shown.
+      // Eager (valid while off): lowered now, its draws registered
+      // inactive, so the first show is a flag flip too. Guarded: lowered
+      // when the renderer first reads it, under its guard (a raise while
+      // off leaves it until shown, read again then).
       const inner = state.pushActive(node.active);
-      if (inner.active.isConstant) return lower(node.child, inner, opts);
+      if (inner.active.isConstant || node.eager === true) return lower(node.child, inner, opts);
+      // (a renderer without the guard, before wombat.rendering 0.25.6:
+      // lowered on first show as without `eager`)
+      const guarded = (RenderTree as { guarded?: (a: aval<boolean>, t: RenderTree) => RenderTree }).guarded;
+      if (node.eager === "guarded" && guarded !== undefined) {
+        let current: (() => void) | undefined;
+        own(() => { const c = current; current = undefined; c?.(); });
+        const lowered = AVal.custom((): RenderTree => {
+          const c = lowerWithCleanup(node.child, inner, opts);
+          current = c.dispose;
+          return c.tree;
+        });
+        return guarded(inner.active, RenderTree.adaptive(lowered));
+      }
       return RenderTree.adaptive(swapOwned(shownOnce(inner.active), (shown) =>
         shown ? lowerWithCleanup(node.child, inner, opts) : { tree: RenderTree.empty, dispose: NOOP_DISPOSE }));
     }
