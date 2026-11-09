@@ -51,6 +51,7 @@ export {
 } from "./visit.js";
 
 export { Sg, collectSgChildren, type SgScopeProps, type ActiveOptions } from "./constructors.js";
+export { idleRegistration } from "./idleRegistration.js";
 
 export {
   compileScene,

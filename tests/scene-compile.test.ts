@@ -20,9 +20,10 @@ import type {
 import { ElementType, RenderTree as RenderTreeNs } from "@aardworx/wombat.rendering/core";
 
 import {
-  Sg, TraversalState, compileScene,
+  Sg, TraversalState, compileScene, idleRegistration,
   type SgLeaf, type SgNode,
 } from "../src/scene/index.js";
+import { LoweringScope } from "../src/scene/lifetime.js";
 
 // ---------------------------------------------------------------------------
 // Fakes — leaf + framebuffer + effect placeholders. None of the
@@ -245,9 +246,88 @@ describe("compileScene — Active gating", () => {
     expect(AVal.force(rt.tree)).toBe(shown);
   });
 
-  it("eager: a subtree inactive from the start is lowered at once, its leaves registered gated", () => {
+  it("eager, idle: hidden subtrees are built after the load, in order, once each", () => {
+    idleRegistration.runNow(); // nothing of other tests waiting
+    const order: number[] = [];
+    const as = [0, 1, 2, 3].map(() => cval(false));
+    // lowering a subtree runs its delay
+    const lowered = as.map((_, i) => Sg.delay(() => { order.push(i); return leaf(); }));
+    // (scenes compiled in this order: their subtrees wait in it)
+    const kids = as.map((a, i) => singleRender(compileScene(Sg.shader(fakeEffect, Sg.active(a, lowered[i]!, { eager: true })))));
+    const built = () => kids.map((k) => k.kind === "Adaptive" ? AVal.force(k.tree).kind : k.kind);
+    expect(built()).toEqual(["Empty", "Empty", "Empty", "Empty"]);
+    expect(idleRegistration.pending).toBe(4);
+    // a show before its turn builds it at once
+    transact(() => { as[2]!.value = true; });
+    expect(built()).toEqual(["Empty", "Empty", "Leaf", "Empty"]);
+    const shown = AVal.force((kids[2] as Extract<RenderTree, { kind: "Adaptive" }>).tree);
+    // idle slices: the rest, in order; the shown one not again
+    idleRegistration.runNow(1);
+    expect(built()).toEqual(["Leaf", "Empty", "Leaf", "Empty"]);
+    idleRegistration.runNow();
+    expect(built()).toEqual(["Leaf", "Leaf", "Leaf", "Leaf"]);
+    expect(idleRegistration.pending).toBe(0);
+    expect(AVal.force((kids[2] as Extract<RenderTree, { kind: "Adaptive" }>).tree)).toBe(shown);
+    expect(order).toEqual([2, 0, 1, 3]);
+    // built hidden: its draws gated by its own flag
+    const first = AVal.force((kids[0] as Extract<RenderTree, { kind: "Adaptive" }>).tree);
+    expect(first.kind === "Leaf" && AVal.force(first.object.active!)).toBe(false);
+  });
+
+  it("eager guarded, idle: one that raises while off is left until shown", () => {
+    idleRegistration.runNow();
+    const rtNs = RenderTreeNs as unknown as { guarded?: unknown };
+    const saved = rtNs.guarded;
+    rtNs.guarded = (active: unknown, child: unknown) => ({ kind: "Guarded", active, child });
+    try {
+      const a = cval(false);
+      let valid = false;
+      let tries = 0;
+      const child = Sg.delay(() => { tries++; if (!valid) throw new Error("not valid while off"); return leaf(); });
+      const rt = singleRender(compileScene(Sg.shader(fakeEffect, Sg.active(a, child, { eager: "guarded" })))) as unknown as { kind: string; child: RenderTree };
+      expect(rt.kind).toBe("Guarded");
+      expect(() => idleRegistration.runNow()).not.toThrow();
+      expect(tries).toBe(1);
+      if (rt.child.kind !== "Adaptive") throw new Error("adaptive");
+      // the renderer's read (under its guard) raises: left out
+      expect(() => AVal.force((rt.child as Extract<RenderTree, { kind: "Adaptive" }>).tree)).toThrow();
+      // shown, now valid: built
+      valid = true;
+      transact(() => { a.value = true; });
+      expect(AVal.force(rt.child.tree).kind).toBe("Leaf");
+    } finally {
+      rtNs.guarded = saved;
+    }
+  });
+
+  it("eager, idle: a lowering disposed before its turn is never built", async () => {
+    idleRegistration.runNow();
+    let reads = 0;
+    const probe = AVal.custom(() => { reads++; return Trafo3d.identity; });
+    const lifetime = new LoweringScope();
+    const tree = Sg.shader(fakeEffect, Sg.active(cval(false), Sg.trafo(probe, leaf()), { eager: true }));
+    compileScene(tree, { lifetime });
+    expect(idleRegistration.pending).toBe(1);
+    lifetime.dispose();
+    expect(idleRegistration.pending).toBe(0);
+    idleRegistration.runNow();
+    expect(reads).toBe(0);
+    await idleRegistration.whenDone();
+  });
+
+  it("eager, idle: released in idle time by itself", async () => {
+    idleRegistration.runNow();
     const a = cval(false);
     const tree = Sg.shader(fakeEffect, Sg.active(a, leaf(), { eager: true }));
+    const rt = singleRender(compileScene(tree));
+    expect(rt.kind === "Adaptive" && AVal.force(rt.tree).kind).toBe("Empty");
+    await idleRegistration.whenDone();
+    expect(rt.kind === "Adaptive" && AVal.force(rt.tree).kind).toBe("Leaf");
+  });
+
+  it("eager: a subtree inactive from the start is lowered at once, its leaves registered gated", () => {
+    const a = cval(false);
+    const tree = Sg.shader(fakeEffect, Sg.active(a, leaf(), { eager: true, idle: false }));
     const rt = singleRender(compileScene(tree));
     // No latch: the leaf itself, handed to the renderer now, off.
     expect(rt.kind).toBe("Leaf");
@@ -266,7 +346,7 @@ describe("compileScene — Active gating", () => {
       const a = cval(false);
       let reads = 0;
       const probe = AVal.custom(() => { reads++; return Trafo3d.identity; });
-      const tree = Sg.shader(fakeEffect, Sg.active(a, Sg.trafo(probe, leaf()), { eager: "guarded" }));
+      const tree = Sg.shader(fakeEffect, Sg.active(a, Sg.trafo(probe, leaf()), { eager: "guarded", idle: false }));
       const rt = singleRender(compileScene(tree)) as unknown as { kind: string; active: unknown; child: RenderTree };
       expect(rt.kind).toBe("Guarded");
       expect(rt.active).toBe(a);

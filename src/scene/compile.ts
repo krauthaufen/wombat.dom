@@ -33,6 +33,7 @@
 // substring — adding a new force requires both an explanatory
 // comment and an allowlist entry.
 
+import { enqueueIdle, idleRegistration } from "./idleRegistration.js";
 import {
   AList, ASet, AVal, AdaptiveObject,
   HashMap, clist, transactIfNecessary,
@@ -546,7 +547,32 @@ function lower(
       // when the renderer first reads it, under its guard (a raise while
       // off leaves it until shown, read again then).
       const inner = state.pushActive(node.active);
-      if (inner.active.isConstant || node.eager === true) return lower(node.child, inner, opts);
+      if (inner.active.isConstant) return lower(node.child, inner, opts);
+      // Eager, in idle time (`idleRegistration`): released after the load in
+      // the order lowered, a few ms at a time; its first show before that
+      // builds it at once. Lowered once, by whichever comes first.
+      if ((node.eager === true || node.eager === "guarded") && node.idle !== false && idleRegistration.enabled) {
+        let tree: RenderTree | undefined;
+        let dispose: (() => void) | undefined;
+        own(() => { const d = dispose; dispose = undefined; tree = undefined; d?.(); ticket.cancelled = true; });
+        const active = inner.active;
+        const built = AVal.custom((tok): RenderTree => {
+          if (tree !== undefined) return tree;
+          // (`active` first: once shown, the ticket is no dependency)
+          if (!active.getValue(tok) && !ticket.ready.getValue(tok)) return RenderTree.empty;
+          const c = lowerWithCleanup(node.child, inner, opts);
+          tree = c.tree;
+          dispose = c.dispose;
+          return tree;
+        });
+        const ticket = enqueueIdle();
+        ticket.target = built;
+        const guarded = (RenderTree as { guarded?: (a: aval<boolean>, t: RenderTree) => RenderTree }).guarded;
+        return node.eager === "guarded" && guarded !== undefined
+          ? guarded(active, RenderTree.adaptive(built))
+          : RenderTree.adaptive(built);
+      }
+      if (node.eager === true) return lower(node.child, inner, opts);
       // (a renderer without the guard, before wombat.rendering 0.25.6:
       // lowered on first show as without `eager`)
       const guarded = (RenderTree as { guarded?: (a: aval<boolean>, t: RenderTree) => RenderTree }).guarded;

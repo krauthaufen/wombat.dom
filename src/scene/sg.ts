@@ -307,13 +307,18 @@ export interface SgOn {
  * off (nothing it reads fails when its guard does not hold). `"guarded"`:
  * it may not be; the renderer reads it under a guard
  * (`RenderTree.guarded`) and, if that raises, leaves it until its first
- * show, which then builds it as without `eager`.
+ * show, which then builds it as without `eager`. Eager subtrees are
+ * built after the load, in idle time and in their order, a few ms at a
+ * time (`idleRegistration`); one shown before its turn is built at once.
  */
 export interface SgActive {
   readonly kind: "Active";
   readonly active: aval<boolean>;
   readonly child: SgNode;
   readonly eager?: boolean | "guarded";
+  /** Eager subtrees are built in idle time after the load (see
+   *  `idleRegistration`); `false`: with the scene. */
+  readonly idle?: boolean;
 }
 
 /**

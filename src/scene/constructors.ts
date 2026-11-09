@@ -245,13 +245,19 @@ export interface ActiveOptions {
    * that raises. Default: built on first show.
    */
   readonly eager?: boolean | "guarded";
+  /**
+   * With `eager`: built after the load, in idle time, in order (default),
+   * or `false`: with the scene. Either way a show builds it at once.
+   */
+  readonly idle?: boolean;
 }
 
 function active(value: aval<boolean>, child: SgChild, options?: ActiveOptions): SgNode {
   const eager = options?.eager;
-  return eager === true || eager === "guarded"
-    ? { kind: "Active", active: value, child: coerceChild(child), eager }
-    : { kind: "Active", active: value, child: coerceChild(child) };
+  if (eager !== true && eager !== "guarded") return { kind: "Active", active: value, child: coerceChild(child) };
+  return options?.idle === false
+    ? { kind: "Active", active: value, child: coerceChild(child), eager, idle: false }
+    : { kind: "Active", active: value, child: coerceChild(child), eager };
 }
 
 function viewScope(view: aval<Trafo3d>, child: SgChild): SgNode {
