@@ -27,9 +27,10 @@ import { probeDelay } from "./lifetime.js";
 import { AVal, avalAddCallback, cval, transact, type aval } from "@aardworx/wombat.adaptive";
 import { Trafo3d, V2i } from "@aardworx/wombat.base";
 import {
-  Runtime, attachCanvas, runFrame,
+  Runtime, attachCanvas, runFrame, watchDeviceErrors,
   type AttachCanvasOptions,
 } from "@aardworx/wombat.rendering";
+import { deviceErrorNote } from "./deviceErrorNote.js";
 import type {
   ClearValues,
   Effect,
@@ -176,6 +177,13 @@ export interface RenderControlProps {
    * `DEFAULT_MAX_BUFFER_BYTES = 256 MB`).
    */
   readonly maxChunkBytes?: number;
+
+  /**
+   * Show a note over the canvas when the GPU device reports an error
+   * (out of memory, validation; each is also logged with `console.error`
+   * by wombat.rendering). Default true.
+   */
+  readonly deviceErrorNote?: boolean;
 
   /** Forwarded to `attachCanvas` — see wombat.rendering. */
   readonly attach?: Omit<AttachCanvasOptions, "format" | "depthFormat" | "sampleCount">;
@@ -454,6 +462,13 @@ async function initialise(
     // device one frame in.
     (device as unknown as { __adapter?: GPUAdapter }).__adapter = adapter;
     ownsDevice = true;
+  }
+
+  // Device errors: logged (wombat.rendering) and shown over the canvas.
+  watchDeviceErrors(device);
+  if (props.deviceErrorNote !== false) {
+    const note = deviceErrorNote(device, canvas);
+    scope.onDispose(() => note.dispose());
   }
 
   // Runtime — supplied or constructed. A supplied runtime is bound to the
