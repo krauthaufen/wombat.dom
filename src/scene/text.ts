@@ -325,6 +325,9 @@ export interface SgTextProps {
   /** Render every triangle as a wireframe outline (three lines per
    *  triangle). Debug aid only. Default: `false`. */
   wireframe?: boolean;
+  /** `aa === "alpha-blending"` only: the SDF shader's debug colouring
+   *  (the `DebugMode` uniform). Debug aid only. Default: `false`. */
+  debugSdf?: boolean | aval<boolean>;
 }
 
 /** Build a self-contained `<Sg.Text/>` JSX element. */
@@ -333,7 +336,7 @@ export function SgText(
 ): SgNode {
   const {
     font, text, align = "left", aa = "none", kerning = true, Color,
-    aaWidthPx, wireframe = false,
+    aaWidthPx, wireframe = false, debugSdf = false,
     ...scope
   } = props;
 
@@ -353,6 +356,7 @@ export function SgText(
     return buildSdfTextScene({
       font, text, align, kerning,
       cache, color: colorAvalSdf, aaWidth: aaWidthAvalSdf,
+      debug: typeof debugSdf === "boolean" ? AVal.constant(debugSdf ? 1 : 0) : debugSdf.map((b) => (b ? 1 : 0)),
       scope: scope as SgScopeProps,
     });
   }

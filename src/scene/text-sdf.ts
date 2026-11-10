@@ -370,6 +370,8 @@ export interface SdfTextArgs {
   cache: GlyphCache;
   color: aval<V4f>;
   aaWidth: aval<number>;
+  /** The shader's debug colouring (1) or the text (0). */
+  debug?: aval<number>;
   scope?: SgScopeProps;
 }
 
@@ -399,6 +401,7 @@ export function sdfTextDepth(scope: SgScopeProps | undefined): {
 
 export function buildSdfTextScene(args: SdfTextArgs): SgNode {
   const { font, text, align, kerning, cache, color, aaWidth } = args;
+  const debug = args.debug ?? AVal.constant(0);
   const { depthTest, depthMask, scope } = sdfTextDepth(args.scope);
   const layout = layoutText(font, text, { kerning });
   const emScale = 1 / (font.unitsPerEm || 1);
@@ -498,6 +501,9 @@ export function buildSdfTextScene(args: SdfTextArgs): SgNode {
       PathColor: colorAval,
       Viewport: viewportV2,
       AaWidthPx: aaWidth,
+      // the shader reads it: provided here (off by default), not left
+      // to an outer scope that has none (the "no provider" warning)
+      DebugMode: debug,
     },
     CullMode: "none",
     BlendMode: alphaOverBlendState(),
