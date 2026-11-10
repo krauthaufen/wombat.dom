@@ -30,7 +30,8 @@ describe("deviceErrorNote", () => {
       const ev = new Event("uncapturederror");
       (ev as unknown as { error: unknown }).error = { message: "Invalid BindGroup" };
       device.dispatchEvent(ev);
-      expect(el.textContent).toBe("GPU error (2): unknown: Invalid BindGroup");
+      // the first error stays the one shown (later ones are often its consequences); red now
+      expect(el.textContent).toBe("GPU error (2): out-of-memory, recovered: texture atlas rgba8unorm: could not allocate");
       expect(el.getAttribute("data-count")).toBe("2");
       expect(errors).toHaveBeenCalledTimes(2);
       expect(errors).toHaveBeenLastCalledWith("[wombat] GPU device error (unknown): Invalid BindGroup");

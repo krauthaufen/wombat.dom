@@ -4,8 +4,10 @@
 // observable (`onDeviceError`); a page whose console nobody sees (a phone, a
 // laptop of a user reporting "it renders nothing") shows nothing at all. The
 // render control therefore puts a small note in the canvas's corner on the
-// first error: its kind and first line, how many there were, whether the
-// renderer recovered. Click to dismiss (it comes back with the next error).
+// first error: the first one's kind and first line (later ones are often its
+// consequences: objects invalid "due to a previous error"), how many there
+// were, red if any was not recovered from. Click to dismiss (it comes back
+// with the next error).
 
 import { onDeviceError, type DeviceError } from "@aardworx/wombat.rendering";
 
@@ -37,7 +39,7 @@ export function deviceErrorNote(device: GPUDevice, canvas: HTMLCanvasElement): {
     note.style.left = `${canvas.offsetLeft + 8}px`;
     note.style.top = `${canvas.offsetTop + Math.max(0, canvas.offsetHeight - 8)}px`;
     note.style.transform = "translateY(-100%)";
-    const shown = lastFatal ?? first!;
+    const shown = first!;
     note.style.background = lastFatal !== undefined ? "rgba(160, 20, 20, 0.9)" : "rgba(150, 95, 0, 0.9)";
     note.textContent =
       `GPU ${lastFatal !== undefined ? "error" : "warning"}${count > 1 ? ` (${count})` : ""}: ` +
