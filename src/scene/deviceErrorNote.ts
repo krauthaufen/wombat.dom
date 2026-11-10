@@ -6,10 +6,11 @@
 // render control therefore puts a small note in the canvas's corner on the
 // first error: the first one's kind and first line (later ones are often its
 // consequences: objects invalid "due to a previous error"), how many there
-// were, red if any was not recovered from. Click to dismiss (it comes back
-// with the next error).
+// were, red if any was not recovered from; below it the adapter and its key
+// limits (what explains a scene that renders on one GPU and not another).
+// Click to dismiss (it comes back with the next error).
 
-import { onDeviceError, type DeviceError } from "@aardworx/wombat.rendering";
+import { describeDevice, onDeviceError, type DeviceError } from "@aardworx/wombat.rendering";
 
 export function deviceErrorNote(device: GPUDevice, canvas: HTMLCanvasElement): { dispose(): void } {
   let note: HTMLDivElement | undefined;
@@ -41,9 +42,19 @@ export function deviceErrorNote(device: GPUDevice, canvas: HTMLCanvasElement): {
     note.style.transform = "translateY(-100%)";
     const shown = first!;
     note.style.background = lastFatal !== undefined ? "rgba(160, 20, 20, 0.9)" : "rgba(150, 95, 0, 0.9)";
-    note.textContent =
+    const msg = document.createElement("div");
+    msg.setAttribute("data-msg", "");
+    msg.textContent =
       `GPU ${lastFatal !== undefined ? "error" : "warning"}${count > 1 ? ` (${count})` : ""}: ` +
       `${shown.kind}${shown.recovered ? ", recovered" : ""}: ${shown.message.split("\n")[0]!.slice(0, 240)}`;
+    const dev = document.createElement("div");
+    dev.setAttribute("data-device", "");
+    dev.style.opacity = "0.8";
+    dev.style.fontSize = "10px";
+    let described = "";
+    try { described = describeDevice(device); } catch { /* best effort */ }
+    dev.textContent = described;
+    note.replaceChildren(msg, dev);
     note.setAttribute("data-count", String(count));
   };
   const sub = onDeviceError(device, show);

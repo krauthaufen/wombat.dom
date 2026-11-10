@@ -25,15 +25,19 @@ describe("deviceErrorNote", () => {
 
       reportDeviceError(device, { kind: "out-of-memory", message: "texture atlas rgba8unorm: could not allocate\nmore", recovered: true });
       const el = host.querySelector("[data-wombat-device-error]") as HTMLElement;
-      expect(el.textContent).toBe("GPU warning: out-of-memory, recovered: texture atlas rgba8unorm: could not allocate");
+      const msg = () => el.querySelector("[data-msg]")!.textContent;
+      expect(el.querySelector("[data-device]")!.textContent).toMatch(/adapter info unavailable; no limits/);
+      expect(msg()).toBe("GPU warning: out-of-memory, recovered: texture atlas rgba8unorm: could not allocate");
 
       const ev = new Event("uncapturederror");
       (ev as unknown as { error: unknown }).error = { message: "Invalid BindGroup" };
       device.dispatchEvent(ev);
       // the first error stays the one shown (later ones are often its consequences); red now
-      expect(el.textContent).toBe("GPU error (2): out-of-memory, recovered: texture atlas rgba8unorm: could not allocate");
+      expect(msg()).toBe("GPU error (2): out-of-memory, recovered: texture atlas rgba8unorm: could not allocate");
       expect(el.getAttribute("data-count")).toBe("2");
-      expect(errors).toHaveBeenCalledTimes(2);
+      // the first error also logs the device
+      expect(errors).toHaveBeenCalledTimes(3);
+      expect(errors).toHaveBeenNthCalledWith(1, expect.stringMatching(/^\[wombat\] GPU device: /));
       expect(errors).toHaveBeenLastCalledWith("[wombat] GPU device error (unknown): Invalid BindGroup");
 
       note.dispose();
