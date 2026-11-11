@@ -5,7 +5,7 @@
 // counts.
 
 import { beforeEach, describe, expect, it } from "vitest";
-import { AVal, HashMap } from "@aardworx/wombat.adaptive";
+import { AVal, HashMap, cval } from "@aardworx/wombat.adaptive";
 import { stage, type Effect } from "@aardworx/wombat.shader";
 import { parseShader, type EntryRequest } from "@aardworx/wombat.shader/frontend";
 import { Tf32, Vec, type Type } from "@aardworx/wombat.shader/ir";
@@ -89,10 +89,11 @@ describe("withSgSource", () => {
   });
 
   it("flows into the efficiency report's per-site counts", () => {
-    // Each unordered child lowers to TWO leaves → multi-leaf-subtree
-    // bail; the stamped location must show up against that reason.
+    // Each unordered child is an adaptive subtree of TWO leaves (a
+    // swapped subtree is not split into rows) → multi-leaf-subtree bail;
+    // the stamped location must show up against that reason.
     const twoLeaves = (loc: string): unknown =>
-      withSgSource(Sg.group([leaf(), leaf()]), loc);
+      withSgSource(Sg.adaptive(cval(Sg.group([leaf(), leaf()]) as never)), loc);
     const scene = Sg.shader(eff(), Sg.unordered([
       twoLeaves("App.fs:947"), twoLeaves("App.fs:947"), twoLeaves("App.fs:12"),
     ] as never));

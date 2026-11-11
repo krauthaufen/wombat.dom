@@ -27,3 +27,14 @@ export function isMarkedHostBufferAVal(av: unknown): boolean {
   return av !== null && typeof av === "object" &&
     (av as { __sgHostBuffer?: true }).__sgHostBuffer === true;
 }
+
+/** Brand an `aval<DrawCall>` whose construction provably yields, for all
+ *  time, draw calls of `kind` with `firstInstance` 0 (and `firstVertex` 0
+ *  when non-indexed) — counts free. Call ONLY where the mapping function
+ *  itself builds the draw call that way (a mesh whose data changes, its
+ *  count with it). Row lowering then asserts heap eligibility and builds
+ *  fast rows without forcing the live aval. */
+export function markHeapSafeDrawAVal<T>(av: T, kind: "indexed" | "non-indexed"): T {
+  (av as { __sgHeapSafeDraw?: { kind: string } }).__sgHeapSafeDraw = { kind };
+  return av;
+}

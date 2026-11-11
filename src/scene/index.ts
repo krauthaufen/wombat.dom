@@ -59,7 +59,7 @@ export {
   __basePassTree,
   type CompileSceneOptions,
 } from "./compile.js";
-export { markHostBufferAVal, isMarkedHostBufferAVal } from "./hostBuffers.js";
+export { markHostBufferAVal, isMarkedHostBufferAVal, markHeapSafeDrawAVal } from "./hostBuffers.js";
 export {
   rowWrap, maybeRowNode, rowNodesConstructed, resetRowNodesConstructed,
 } from "./rowFactory.js";

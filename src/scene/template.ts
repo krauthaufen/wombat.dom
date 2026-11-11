@@ -92,6 +92,9 @@ export interface FastRowInfo {
   readonly indexHole: number | undefined;
   /** Leaf drawCall hole (object-valued avals never fold). */
   readonly drawCallHole: number | undefined;
+  /** `Active` flag holes on the spine, outer → inner (split rows: an
+   *  item's on/off switch is the row's own flag). */
+  readonly activeHoles: ReadonlyArray<number>;
 }
 
 export interface StagedNode {
@@ -291,6 +294,7 @@ interface WalkOut {
   frVertexAttrHoles: { name: string; hole: number }[];
   frIndexHole: number | undefined;
   frDrawCallHole: number | undefined;
+  frActiveHoles: number[];
 }
 
 function walk(node: SgNode, out: WalkOut): void {
@@ -409,6 +413,20 @@ function walk(node: SgNode, out: WalkOut): void {
       walk(node.child, out);
       return;
     }
+    case "Active": {
+      // The flag is a per-row value. Only a plain on/off scope (lowered
+      // as a state push: `eager: true`, not in idle time — what split rows
+      // build) is something the fast path reproduces; the other modes
+      // lower to an adaptive or guarded subtree, never a row.
+      const plain = node.eager === true && node.idle === false;
+      parts.push(plain ? "Act(" : `Act[${String(node.eager)}|${String(node.idle)}](`);
+      out.frActiveHoles.push(holes.length);
+      holes.push(node.active);
+      if (!plain) out.fastRowSafe = false;
+      parts.push(")");
+      walk(node.child, out);
+      return;
+    }
     case "PickTag":
       // ALWAYS a hole — tags are per-row keys (often small ints);
       // folding them into the key would explode one template per row.
@@ -491,7 +509,7 @@ export function stageNode(node: SgNode): StagedNode {
     hasInstancing: false, spineEffectId: undefined,
     fastRowSafe: true, frTagHole: undefined, frCountHole: undefined,
     frInstanceAttrHoles: [], frVertexAttrHoles: [],
-    frIndexHole: undefined, frDrawCallHole: undefined,
+    frIndexHole: undefined, frDrawCallHole: undefined, frActiveHoles: [],
   };
   walk(node, out);
   const key = out.parts.join("\u0000");
@@ -517,6 +535,7 @@ export function stageNode(node: SgNode): StagedNode {
               vertexAttrHoles: out.frVertexAttrHoles,
               indexHole: out.frIndexHole,
               drawCallHole: out.frDrawCallHole,
+              activeHoles: out.frActiveHoles,
             }
           : undefined,
       instances: 0,

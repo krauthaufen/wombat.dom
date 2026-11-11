@@ -1,6 +1,6 @@
 # Split rows: multi-leaf children of a collection become rows
 
-Status: design (2026-11-11), implementing.
+Status: implemented (2026-11-11), wombat.dom 0.25.16.
 
 ## Why (measured, pro3d-web on wombat.dom 0.25.15)
 
@@ -96,22 +96,57 @@ plan again). Instead the row carries `active` = AND of its gates (and of the
 state's own active), as a classic leaf under the same scopes would. A gate's
 eager mode becomes the row's **membership**, mirroring `Sg.active`'s lowering:
 
-- constant `active`, or `eager: true` with idle registration off: a member at once;
-- `eager: true` / `"guarded"` with idle registration: a member once shown or
-  once its idle ticket is released (one ticket per leaf, built in the slice,
-  `target` = its entry), cancelled when it leaves;
-- no `eager`: a member from its first show (`shownOnce`), kept;
-- `"guarded"`: while hidden, the row's heap values are read under the
-  renderer's guard (`heapValuesRaise`, exported by wombat.rendering): a row
-  whose values raise is left out and tried again when `active` changes; once
-  shown a raise is a real error (as `RenderTree.guarded` does for a subtree).
+- constant `active`, or `eager` with idle registration off: walked and
+  built at once (registered hidden);
+- `eager: true` / `"guarded"` with idle registration: nothing below is read
+  (not even the item's part collection) until the switch is shown or its
+  idle ticket — one per switch, as before — is released; the slice walks and
+  builds it;
+- no `eager`: nothing below is read until the first show;
+- `"guarded"`: each leaf's row is read under the renderer's guard
+  (`heapValuesRaise`, exported by wombat.rendering 0.25.12) when it is
+  lowered (in the slice): one whose values do not raise is taken in at once,
+  a constant member with no edge on its switch (so a show re-evaluates
+  nothing per leaf); one that raises (or whose lowering raises) waits for
+  its switches, is left out while hidden and tried again when one changes;
+  once shown it is an ordinary row (a raise is a real error, as
+  `RenderTree.guarded` treats a subtree).
 
 An entry, once built, is kept (as `Sg.active` keeps a lowered subtree).
 
 ## Tests (wombat.dom)
 
-Multi-leaf child → rows of the outer set; nested group; mixed plans in one
+(tests/split-rows.test.ts) Multi-leaf child → rows of the outer set; nested group; mixed plans in one
 collection (a set each); dynamic inner group membership (add, remove,
 release); `Active` in the spine (row flag, idle release, non-eager first
 show); a guarded branch that raises while hidden (left out, taken in when
-shown); a single-leaf child unchanged; picking through `PickThrough` rows.
+shown); nothing below an idle-time switch read before its release; a
+single-leaf child unchanged; picking through `PickThrough` rows. The build's
+memo transform rewrites adaptive combinator calls: keep type arguments out of
+them (`ASet.empty<T>()` inside an `ASet.bind` became a runtime reference to
+the type) — the unit tests run the sources, so check the built package in
+an app.
+
+## Fast rows for data that changes
+
+A row is admitted only when heap-safe, and built on the fast path only when
+its draw call and buffers are provably host / pinned. A mesh whose data
+changes has adaptive buffers and draw call; it carries construction proofs:
+`markHostBufferAVal` on each buffer and `markHeapSafeDrawAVal(drawCall,
+kind)` (kind pinned, first vertex/instance 0) — the producer's mapping
+builds them so. A per-row value on a pipeline scope (`Sg.mode` with an aval)
+makes a template unsafe for fast rows, rightly (a row set shares its
+pipeline): such a value belongs to the shape. (fablecube-toy's `meshA`
+does both.)
+
+## Result (pro3d-web, alternating runs, same server, machine loaded by
+other jobs: medians of 3)
+
+No classic-path warning on Shaler, Beaver Falls, DQ2_DQ3. Renders match
+(screenshots, Beaver Falls also after showing all). Within wombat.dom the
+Beaver Falls load lowering went from ~1.3 s to ~0.3 s inclusive (fast rows:
+`lowerLeaf` 0.9 → 0.12 s); end to end the load, settle, show and frame times
+stay within noise (settled CPU Beaver Falls 4.8 → 5.0 s, Shaler 4.8 → 5.9 s
+in the noisiest round, 4.0 → 3.9 s in a quieter one; orbit p95 equal) and
+the live heap drops 2–3 MB. As measured before the change, the rest of the
+cost is FableCube cells, heap registration and frames, not lowering.

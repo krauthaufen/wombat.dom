@@ -52,15 +52,21 @@ function eff(): Effect {
   return stage(parseShader({ source, entries }));
 }
 
-function parts(tree: RenderTree): { rows: unknown[]; classic: RenderTree[] } {
+function parts(tree: RenderTree): { rows: unknown[]; classic: RenderTree[]; sets: number } {
   expect(tree.kind).toBe("Unordered");
   const kids = (tree as RenderTree & { kind: "Unordered" }).children;
   const rowsNode = kids.find((k) => k.kind === "Rows") as RenderTree & { kind: "Rows" };
   const setNode = kids.find((k) => k.kind === "UnorderedFromSet") as RenderTree & { kind: "UnorderedFromSet" };
-  const rows = [...(AVal.force((rowsNode.set.rows as unknown as { content: never }).content) as Iterable<unknown>)];
-  const classic = [...(AVal.force((setNode as unknown as { children: { content: never } }).children.content) as Iterable<RenderTree>)]
+  const rowsOf = (n: RenderTree & { kind: "Rows" }): unknown[] =>
+    [...(AVal.force((n.set.rows as unknown as { content: never }).content) as Iterable<unknown>)];
+  const rows = rowsOf(rowsNode);
+  const inSet = [...(AVal.force((setNode as unknown as { children: { content: never } }).children.content) as Iterable<RenderTree>)]
     .filter((t) => t.kind !== "Empty");
-  return { rows, classic };
+  // a further plan's row set sits in the classic set
+  const more = inSet.filter((t) => t.kind === "Rows") as Array<RenderTree & { kind: "Rows" }>;
+  for (const m of more) rows.push(...rowsOf(m));
+  const classic = inSet.filter((t) => t.kind !== "Rows");
+  return { rows, classic, sets: (rows.length > 0 || more.length > 0 ? 1 : 0) + more.length };
 }
 
 beforeEach(() => { resetTemplates(); resetEfficiency(); __setRowLowering(true); });
@@ -98,19 +104,20 @@ describe("row-store admission", () => {
     expect(new Set(posViews.map((v) => v!.buffer)).size).toBe(3);
   });
 
-  it("a second shape lowers classically and is reported", () => {
+  it("a second shape gets a row set of its own (no classic fallback)", () => {
     const a = (i: number) => Sg.uniform({ LineColor: AVal.init(i) }, leaf());
     const b = (i: number) => Sg.uniform({ OtherName: AVal.init(i) }, leaf()); // different template
     const scene = Sg.shader(eff(), Sg.unordered([a(1), a(2), b(3)]));
     const cmds = compileScene(scene, {});
     const list = AVal.force(cmds.content);
     const render = list.toArray().find((c: { kind: string }) => c.kind === "Render") as { tree: RenderTree };
-    const { rows, classic } = parts(__basePassTree(render.tree));
-    expect(rows.length).toBe(2);
-    expect(classic.length).toBe(1);
-    const bail = sceneEfficiency().bails.find((x) => x.reason === "mixed-plan-group");
-    expect(bail?.count).toBe(1);
+    const { rows, classic, sets } = parts(__basePassTree(render.tree));
+    expect(rows.length).toBe(3);
+    expect(classic.length).toBe(0);
+    expect(sets).toBe(2);
+    expect(sceneEfficiency().bails.find((x) => x.reason === "mixed-plan-group")).toBeUndefined();
   });
+
   it("the SAME effect applied per child is free: all rows, nothing reported", () => {
     const e = eff();
     const child = (i: number) => Sg.shader(e, Sg.uniform({ LineColor: AVal.init(i) }, leaf()));
@@ -122,7 +129,7 @@ describe("row-store admission", () => {
     expect(sceneEfficiency().bails.find((x) => x.reason === "per-leaf-effect-scope")).toBeUndefined();
   });
 
-  it("children applying DIFFERENT effects are reported", () => {
+  it("children applying DIFFERENT effects: a row set each, nothing reported", () => {
     const e1 = eff();
     const e2 = stage(parseShader({
       source: `
@@ -140,7 +147,11 @@ describe("row-store admission", () => {
     const child = (e: Effect, i: number) => Sg.shader(e, Sg.uniform({ LineColor: AVal.init(i) }, leaf()));
     const cmds = compileScene(Sg.unordered([child(e1, 1), child(e1, 2), child(e2, 3)]), {});
     const render = AVal.force(cmds.content).toArray().find((c: { kind: string }) => c.kind === "Render") as { tree: RenderTree };
-    parts(__basePassTree(render.tree));
-    expect(sceneEfficiency().bails.find((x) => x.reason === "per-leaf-effect-scope")?.count).toBe(1);
+    const { rows, classic, sets } = parts(__basePassTree(render.tree));
+    expect(rows.length).toBe(3);
+    expect(classic.length).toBe(0);
+    expect(sets).toBe(2);
+    expect(sceneEfficiency().bails.length).toBe(0);
   });
+
 });

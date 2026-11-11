@@ -44,7 +44,9 @@ import {
 import { M44f, Trafo3d, V3d, V3f } from "@aardworx/wombat.base";
 import { RenderTree, UniformProvider, AttributeProvider } from "@aardworx/wombat.rendering/core";
 import type { RenderRow, RenderRowSet } from "@aardworx/wombat.rendering/core";
+import { materializeRow } from "@aardworx/wombat.rendering/core";
 import { isDerivedRule } from "@aardworx/wombat.rendering/runtime";
+import * as RenderingRuntime from "@aardworx/wombat.rendering/runtime";
 import type {
   BlendState, BufferView,
   Command, ClearValues, DepthBiasState, DepthState, DrawCall,
@@ -451,19 +453,23 @@ function lower(
       // `RenderRow`s in a `RenderRowSet` the hybrid renderer consumes
       // directly; everything else stays a classic subtree. Entries
       // carry their dispose so removals release pickIds either way.
-      const anchor: RowAnchor = {
+      const primary: RowAnchor = {
         plan: undefined,
         set: undefined as unknown as RenderRowSet,
         fast: undefined,
         dc0: undefined,
       };
+      const anchors: RowAnchors = { primary, byPlan: new Map() };
       // Releasing this group releases the children it still holds (a
       // constant set never removes, and a dropped reader never says so).
       const live = new LiveSet();
       own(() => live.releaseAll());
-      const entries: aset<GroupEntry> = ASet.mapUse(
+      const direct: aset<GroupEntry> = ASet.mapUse(
         (child: SgNode) => {
-          const { value, dispose } = collect(opts.picking?.registry, () => lowerGroupEntry(child, state, opts, anchor));
+          const { value, dispose } = collect(opts.picking?.registry, () =>
+            _rowLowering && needsSplit(child)
+              ? splitChild(child, state, opts, anchors)
+              : lowerGroupEntry(child, state, opts, anchors));
           const e: GroupEntry = { ...value, dispose: both(value.dispose, dispose) };
           live.add(e.dispose);
           return e;
@@ -471,12 +477,19 @@ function lower(
         (e) => { live.release(e.dispose); },
         node.children,
       );
-      const rows = entries.choose((e) => e.row);
-      anchor.set = { template: undefined, rows };
+      // A split child's leaves join the group's own entries (only split
+      // children pay for the flattening).
+      const entries: aset<GroupEntry> = ASet.union(
+        direct.filter((e) => e.sub === undefined),
+        direct.choose((e) => e.sub).collect((sub) => sub));
+      anchors.rowsOf = (a) => entries.choose((e) => (e.anchor === a ? e.row : undefined));
+      primary.set = { template: undefined, rows: entries.choose((e) => (e.anchor === primary ? e.row : undefined)) };
       const classicTrees = entries.choose((e) => e.tree);
+      // further plans' sets, each once
+      const moreSets = entries.choose((e) => (e.anchor !== undefined && e.anchor !== primary ? e.anchor.tree : undefined));
       return RenderTree.unordered(
-        RenderTree.rows(anchor.set),
-        RenderTree.unorderedFromSet(classicTrees));
+        RenderTree.rows(primary.set),
+        RenderTree.unorderedFromSet(ASet.union(classicTrees, moreSets)));
     }
 
     case "AdaptiveGroup":
@@ -783,6 +796,10 @@ function assertHeapIfSafe(ro: RenderObject): void {
 interface GroupEntry {
   readonly tree?: RenderTree;
   readonly row?: RenderRow;
+  /** The row set `row` belongs to (one per plan in a group). */
+  readonly anchor?: RowAnchor;
+  /** A split child (docs/split-rows.md): its leaves' entries. */
+  readonly sub?: aset<GroupEntry>;
   readonly dispose: () => void;
 }
 
@@ -810,8 +827,32 @@ interface RowAnchor {
   fast: FastPickCapture | null | undefined;
   /** Cached constant leaf drawCall shape for the instancing rebuild. */
   dc0: DrawCall | undefined;
-  /** The first row's per-child effect (an Sg.Shader inside the child), if any. */
-  spineEffect?: string;
+  /** This set as a tree (a further plan's set sits in the group's
+   *  classic set; the first one where the group's single set always was). */
+  tree?: RenderTree;
+}
+
+/** A group's row sets: one per plan (template × parent × effect). The
+ *  primary is the set the group's tree holds directly; it takes the
+ *  first plan. */
+interface RowAnchors {
+  readonly primary: RowAnchor;
+  readonly byPlan: Map<TemplatePlan, RowAnchor>;
+  /** The rows of a further plan's set (from the group's entries). */
+  rowsOf?: (a: RowAnchor) => aset<RenderRow>;
+}
+
+/** `pushActive`'s composition for a flag outside a TraversalState. */
+function andActive(outer: aval<boolean>, inner: aval<boolean>): aval<boolean> {
+  if (outer.isConstant) {
+    // Why force here: constant — immutable by definition (pushActive's fold).
+    return outer.force() ? inner : outer;
+  }
+  if (inner.isConstant) {
+    // Why force here: constant — immutable by definition (pushActive's fold).
+    return inner.force() ? outer : inner;
+  }
+  return AVal.zip(outer, inner).map((p, c) => p && c);
 }
 
 /**
@@ -879,11 +920,18 @@ function constructFastRow(
     for (const { name, hole } of fr.instanceAttrHoles) bag[name] = holes[hole] as BufferView;
     instanceAttributes = AttributeProvider.ofObject(bag);
   } else {
-    if (!dcAval.isConstant) return undefined;
-    // Why force here: constant — immutable by definition.
-    const dc = dcAval.force();
-    if (dc.firstInstance !== 0) return undefined;
-    if (dc.kind === "indexed" ? fr.indexHole === undefined : fr.indexHole !== undefined || dc.firstVertex !== 0) return undefined;
+    if (!dcAval.isConstant) {
+      // an adaptive draw call qualifies by its construction proof alone
+      // (markHeapSafeDrawAVal: kind pinned, firstInstance/firstVertex 0)
+      const proof = (dcAval as { __sgHeapSafeDraw?: { kind: DrawCall["kind"] } }).__sgHeapSafeDraw;
+      if (proof === undefined) return undefined;
+      if (proof.kind === "indexed" ? fr.indexHole === undefined : fr.indexHole !== undefined) return undefined;
+    } else {
+      // Why force here: constant — immutable by definition.
+      const dc = dcAval.force();
+      if (dc.firstInstance !== 0) return undefined;
+      if (dc.kind === "indexed" ? fr.indexHole === undefined : fr.indexHole !== undefined || dc.firstVertex !== 0) return undefined;
+    }
     drawCall = dcAval;
   }
 
@@ -907,12 +955,24 @@ function constructFastRow(
   for (const i of t.preTrafoHoles) prependTrafo(i);
   for (const i of t.postTrafoHoles) prependTrafo(i);
 
+  // The row's own on/off flag: the spine's Active holes over the group's
+  // (a split row's item switch). A constant false row draws nothing.
+  let active: aval<boolean> | undefined;
+  if (fr.activeHoles.length > 0) {
+    let a = state.active;
+    for (const h of fr.activeHoles) a = andActive(a, holes[h] as aval<boolean>);
+    // Why force here: constant — immutable by definition.
+    if (a.isConstant && !a.force()) return undefined;
+    active = a;
+  }
+
   // Pick registration — plan-shared prototype + per-row own fields.
   let pickId: number | undefined;
   let dispose: () => void = _NOOP_DISPOSE;
   if (!fast.noPick && opts.picking !== undefined) {
     const scope = Object.create(fast.proto as object) as Record<string, unknown>;
     scope["model"] = () => rp.model();
+    if (active !== undefined) scope["active"] = active;
     if (fr.tagHole !== undefined) scope["tag"] = holes[fr.tagHole];
     const registry = opts.picking.registry;
     const pid = registry.acquire(scope as never, fast.mode);
@@ -931,6 +991,7 @@ function constructFastRow(
     ...(instanceAttributes !== undefined ? { instanceAttributes } : {}),
     ...(pickId !== undefined ? { pickId } : {}),
     ...(chain.length > 0 ? { modelChain: chain } : {}),
+    ...(active !== undefined ? { active } : {}),
     vertexAttributes: AttributeProvider.ofObject(vbag),
     ...(fr.indexHole !== undefined ? { indices: holes[fr.indexHole] as BufferView } : {}),
   };
@@ -941,7 +1002,7 @@ function lowerGroupEntry(
   child: SgNode,
   state: TraversalState,
   opts: CompileSceneOptions,
-  anchor: RowAnchor,
+  anchors: RowAnchors,
 ): GroupEntry {
   // Pre-staged rows in a PASS-FILTERED compile: the leaf's render pass
   // is the state's (the template carries no Pass scope — key check),
@@ -957,22 +1018,27 @@ function lowerGroupEntry(
   ) {
     return { tree: RenderTree.empty, dispose: _NOOP_DISPOSE };
   }
-  // Fast path (the runtime half of M3): once the group's plan is
-  // established and the pick context captured, plan-matched children
-  // are constructed straight from (template, holes) — no classic
-  // walk, no per-row scope literals, no discarded RenderObject.
-  if (_rowLowering && anchor.plan !== undefined && anchor.fast !== null && anchor.fast !== undefined) {
+  // Fast path (the runtime half of M3): once a plan's set is established
+  // and its pick context captured, plan-matched children are
+  // constructed straight from (template, holes) — no classic walk, no
+  // per-row scope literals, no discarded RenderObject.
+  if (_rowLowering && anchors.primary.plan !== undefined) {
     try {
       // Pre-staged rows (rowWrap / the M3 construction bypass) carry
       // their (template, holes) — no tree exists and no restage runs.
       const staged = child.kind === "Row" ? child.staged : stageNode(child);
       if (staged.template.fastRow !== undefined && !staged.template.hasDynamicUniforms) {
-        const plan = getPlan(
-          staged.template, state, anchor.plan.effect,
-          opts.injectUniforms !== undefined ? getInjectedProvider(opts.injectUniforms) : undefined);
-        if (plan === anchor.plan) {
-          const fastEntry = constructFastRow(anchor, staged, state, opts);
-          if (fastEntry !== undefined) return fastEntry;
+        // The set whose plan this child shares: same template, and the
+        // plan recomputed over this group with that set's effect is it.
+        const inj = opts.injectUniforms !== undefined ? getInjectedProvider(opts.injectUniforms) : undefined;
+        let a: RowAnchor | undefined;
+        for (const b of anchors.byPlan.values()) {
+          if (b.plan!.template !== staged.template) continue;
+          if (getPlan(staged.template, state, b.plan!.effect, inj) === b.plan) { a = b; break; }
+        }
+        if (a !== undefined && a.fast !== null && a.fast !== undefined) {
+          const fastEntry = constructFastRow(a, staged, state, opts);
+          if (fastEntry !== undefined) return { ...fastEntry, anchor: a };
         }
       }
     } catch {
@@ -984,8 +1050,8 @@ function lowerGroupEntry(
   // come from the SAME tree (never mixed with the construction-time
   // staging, whose avals belong to the dropped first build).
   const real = child.kind === "Row" ? materializeRowSg(child) : child;
-  // Capture the pick context while lowering a potential FIRST row.
-  const capturing = _rowLowering && anchor.plan === undefined;
+  // Capture the pick context, for a row that starts a plan's set.
+  const capturing = _rowLowering;
   const savedCapture = _fastCapture;
   if (capturing) _fastCapture = { noPick: true };
   const wc = lowerWithCleanup(real, state, opts);
@@ -1016,45 +1082,45 @@ function lowerGroupEntry(
     (obj as { uniforms: IUniformProvider }).uniforms = new RowProvider(plan, staged.holes);
     assertHeapIfSafe(obj);
     recordRowLowered();
-    const spineEffect = staged.template.spineEffectId;
-    if (spineEffect !== undefined) {
-      // An effect applied per child is free when every child applies the
-      // SAME one (same id → same plan → one row set); only a collection
-      // whose children differ in it splits — advisory, quantified.
-      if (anchor.spineEffect === undefined) anchor.spineEffect = spineEffect;
-      else if (anchor.spineEffect !== spineEffect) recordRowBail("per-leaf-effect-scope", spineEffect, src);
-    }
     // ─── Row-store admission ────────────────────────────────────────
-    // The RowSet carries THIN rows only for children that (a) the
-    // producer can assert heap-safe and (b) share the group's first
-    // established plan (v1: ONE row set per group; a second shape
-    // lowers classically and the efficiency report says so). The
+    // THIN rows only for children the producer can assert heap-safe;
+    // a row set per plan (the first plan takes the primary set). The
     // classic result stays authoritative for everything else —
     // correctness never depends on admission.
     if (obj.heapAsserted !== true) return classic();
-    if (anchor.plan === undefined) {
-      anchor.plan = plan;
-      // The first row's RO IS the prototype template: shared fields
-      // (effect, pipeline, vertex attrs, textures, injectedStorage,
-      // heapAsserted) are identical across the plan by construction;
-      // its per-row fields are defaults that every row (including
-      // this one) overrides via Object.create.
-      anchor.set.template = obj;
-      // Fast construction usable only when the capture is clean
-      // (portal scopes carry per-leaf sub-context → classic).
-      anchor.fast =
-        captured !== undefined && captured.portal !== true ? captured : null;
-    } else if (anchor.plan !== plan) {
-      recordRowBail("mixed-plan-group", undefined, src);
-      return classic();
+    let anchor = anchors.byPlan.get(plan);
+    if (anchor === undefined) {
+      const fast = captured !== undefined && captured.portal !== true ? captured : null;
+      if (anchors.primary.plan === undefined) {
+        anchor = anchors.primary;
+        anchor.plan = plan;
+        // The first row's RO IS the prototype template: shared fields
+        // (effect, pipeline, vertex attrs, textures, injectedStorage,
+        // heapAsserted) are identical across the plan by construction;
+        // its per-row fields are defaults that every row (including
+        // this one) overrides via Object.create.
+        anchor.set.template = obj;
+        anchor.fast = fast;
+      } else {
+        const rowsOf = anchors.rowsOf!;
+        const a: RowAnchor = { plan, set: undefined as unknown as RenderRowSet, fast, dc0: undefined };
+        a.set = { template: obj, rows: rowsOf(a) };
+        a.tree = RenderTree.rows(a.set);
+        anchor = a;
+      }
+      anchors.byPlan.set(plan, anchor);
     }
+    const template = anchor.set.template;
+    // A row's flag always overrides the prototype's (a first row with a
+    // flag must not lend it to rows without one).
+    const active = obj.active ?? (template !== undefined && template.active !== undefined ? _ALWAYS : undefined);
     const row: RenderRow = {
       uniforms: obj.uniforms,
       drawCall: obj.drawCall,
       ...(obj.instanceAttributes !== undefined ? { instanceAttributes: obj.instanceAttributes } : {}),
       ...(obj.pickId !== undefined ? { pickId: obj.pickId } : {}),
       ...(obj.modelChain !== undefined ? { modelChain: obj.modelChain } : {}),
-      ...(obj.active !== undefined ? { active: obj.active } : {}),
+      ...(active !== undefined ? { active } : {}),
       // Per-row geometry: rows that intern into one template (same call
       // site/shape) can still hold DISTINCT buffers (LOD leaves). The
       // template's vertex attrs are only a default — carry the row's own
@@ -1062,12 +1128,214 @@ function lowerGroupEntry(
       vertexAttributes: obj.vertexAttributes,
       ...(obj.indices !== undefined ? { indices: obj.indices } : {}),
     };
-    return { row, dispose: wc.dispose };
+    return { row, anchor, dispose: wc.dispose };
   } catch {
     recordRowBail("staging-failed", undefined, src);
     // staging must never break lowering — keep the classic result
     return classic();
   }
+}
+
+const _ALWAYS: aval<boolean> = AVal.constant(true);
+
+// ─── Split rows (docs/split-rows.md) ─────────────────────────────────
+// A child of a collection that is row-safe scopes over groups of leaves
+// contributes each leaf as a row of the collection (a row set per plan);
+// an on/off switch on the way becomes the row's flag, its eager / idle /
+// guarded behaviour the row's membership. Decided once per child, at
+// lowering.
+
+const _NO_ENTRIES: aset<GroupEntry> = ASet.empty();
+
+/** Nodes that end the split walk: what is below is one classic part. */
+function endsSplit(kind: SgNode["kind"]): boolean {
+  return kind === "AdaptiveGroup" || kind === "Delay" || kind === "Instanced" || kind === "Pass" || kind === "Row";
+}
+
+/** Whether the child's spine reaches a group or a reactive switch before
+ *  a leaf (otherwise it is lowered as it always was). */
+function needsSplit(node: SgNode): boolean {
+  let n: SgNode | undefined = node;
+  while (n !== undefined) {
+    switch (n.kind) {
+      case "Leaf": case "Empty": return false;
+      case "Group": case "UnorderedGroup": return true;
+      case "Active":
+        if (!n.active.isConstant) return true;
+        n = n.child;
+        continue;
+      default:
+        if (endsSplit(n.kind)) return false;
+        n = (n as { child?: SgNode }).child;
+    }
+  }
+  return false;
+}
+
+type SgActiveNode = Extract<SgNode, { kind: "Active" }>;
+
+/** The renderer's guard read (wombat.rendering ≥ 0.25.12): without it a
+ *  guarded switch is not split. */
+const _valuesRaise: ((ro: RenderObject) => boolean) | undefined =
+  (RenderingRuntime as { heapValuesRaise?: (ro: RenderObject) => boolean }).heapValuesRaise;
+
+interface SplitCtx {
+  readonly state: TraversalState;
+  readonly opts: CompileSceneOptions;
+  readonly anchors: RowAnchors;
+  readonly live: LiveSet;
+}
+
+/** The scopes on the way down (outer → inner) over `end`; a switch is
+ *  kept as it is (`keep`) or as a plain on/off scope (a row's flag). */
+function rebuildChain(prefix: readonly SgNode[], end: SgNode, keep: boolean): SgNode {
+  let n = end;
+  for (let i = prefix.length - 1; i >= 0; i--) {
+    const p = prefix[i]!;
+    n = p.kind === "Active" && !keep && !p.active.isConstant
+      ? ({ kind: "Active", active: p.active, eager: true, idle: false, child: n } as SgNode)
+      : ({ ...p, child: n } as SgNode);
+  }
+  return n;
+}
+
+function splitChild(child: SgNode, state: TraversalState, opts: CompileSceneOptions, anchors: RowAnchors): GroupEntry {
+  const live = new LiveSet();
+  const sub = splitNode(child, [], [], { state, opts, anchors, live });
+  return { sub, dispose: () => live.releaseAll() };
+}
+
+function splitNode(node: SgNode, prefix: readonly SgNode[], gates: readonly SgActiveNode[], ctx: SplitCtx): aset<GroupEntry> {
+  switch (node.kind) {
+    case "Empty":
+      return ASet.empty<GroupEntry>();
+    case "Leaf":
+      return gatedLeaf(node, prefix, gates, ctx);
+    case "Group":
+    case "UnorderedGroup": {
+      const children = node.children as unknown as { isConstant: boolean; content: aval<Iterable<SgNode>> };
+      if (children.isConstant) {
+        // Why force here: constant — immutable by definition.
+        const arr = [...children.content.force()];
+        if (arr.length === 1) return splitNode(arr[0]!, prefix, gates, ctx);
+        return ASet.unionMany(ASet.ofArray(arr.map((c) => splitNode(c, prefix, gates, ctx))));
+      }
+      if (node.kind === "Group") return remainder(node, prefix, ctx);
+      // A dynamic group: its elements come and go; one leaving releases
+      // what its leaves acquired (rows, pick ids, idle tickets).
+      return ASet.mapUse(
+        (c: SgNode) => {
+          const live = new LiveSet();
+          const set = splitNode(c, prefix, gates, { ...ctx, live });
+          const dispose = (): void => live.releaseAll();
+          ctx.live.add(dispose);
+          return { set, dispose };
+        },
+        (h) => { ctx.live.release(h.dispose); },
+        node.children as aset<SgNode>,
+      ).collect((h) => h.set);
+    }
+    case "Active": {
+      if (node.active.isConstant) return splitNode(node.child, [...prefix, node], gates, ctx);
+      if (node.eager === "guarded" && _valuesRaise === undefined) return remainder(node, prefix, ctx);
+      const below = (): aset<GroupEntry> => splitNode(node.child, [...prefix, node], [...gates, node], ctx);
+      const eager = node.eager === true || node.eager === "guarded";
+      // Eager without idle time: below now, registered hidden.
+      if (eager && (node.idle === false || !idleRegistration.enabled)) return below();
+      // Otherwise nothing below is read before it may be built: in idle
+      // time (eager), once released or shown; at its first show (no
+      // eager). Then kept.
+      const active = node.active;
+      const ticket = eager ? enqueueIdle() : undefined;
+      let open = false;
+      const ready = AVal.custom((tok): boolean => {
+        if (open) return true;
+        // (`active` first: once shown, the ticket is no dependency)
+        open = active.getValue(tok) || (ticket !== undefined && ticket.ready.getValue(tok));
+        return open;
+      });
+      let sub: aset<GroupEntry> | undefined;
+      const open_ = (r: boolean): aset<GroupEntry> => (r ? (sub ??= below()) : _NO_ENTRIES);
+      const set = ASet.bind(open_, ready);
+      if (ticket !== undefined) {
+        // built in the slice: the walk and its leaves' lowering (no reader
+        // of its own: the group's reads the rows when the frame comes)
+        ticket.target = AVal.custom((): boolean => { sub ??= below(); return true; });
+        ctx.live.add(() => { ticket.cancelled = true; });
+      }
+      return set;
+    }
+    default: {
+      if (endsSplit(node.kind)) return remainder(node, prefix, ctx);
+      const c = (node as { child?: SgNode }).child;
+      if (c === undefined) return remainder(node, prefix, ctx);
+      return splitNode(c, [...prefix, node], gates, ctx);
+    }
+  }
+}
+
+/** A part that is not split: its chain with the switches as they are,
+ *  lowered as a child of the collection (classic, or a row if it is one). */
+function remainder(node: SgNode, prefix: readonly SgNode[], ctx: SplitCtx): aset<GroupEntry> {
+  const e = lowerPart(rebuildChain(prefix, node, true), ctx);
+  return ASet.single(e);
+}
+
+function lowerPart(chain: SgNode, ctx: SplitCtx): GroupEntry {
+  const { value, dispose } = collect(ctx.opts.picking?.registry, () => lowerGroupEntry(chain, ctx.state, ctx.opts, ctx.anchors));
+  const e: GroupEntry = { ...value, dispose: both(value.dispose, dispose) };
+  ctx.live.add(e.dispose);
+  return e;
+}
+
+/** Whether the heap values an entry's draw is built from raise. */
+function entryRaises(e: GroupEntry): boolean {
+  if (_valuesRaise === undefined) return false;
+  let ro: RenderObject | undefined;
+  if (e.row !== undefined && e.anchor !== undefined && e.anchor.set.template !== undefined) ro = materializeRow(e.anchor.set, e.row);
+  else if (e.tree !== undefined && e.tree.kind === "Leaf") ro = e.tree.object;
+  return ro !== undefined && _valuesRaise(ro);
+}
+
+/** A leaf below switches: a row whose flag is theirs and whose
+ *  membership follows their modes — at once (eager, no idle time), once
+ *  shown or released in idle time (eager), from the first show (no
+ *  eager); guarded: while hidden, left out if its values raise, tried
+ *  again when shown. Built once and kept. */
+function gatedLeaf(leaf: SgNode, prefix: readonly SgNode[], gates: readonly SgActiveNode[], ctx: SplitCtx): aset<GroupEntry> {
+  let chain: SgNode | undefined = rebuildChain(prefix, leaf, false);
+  const guarded = gates.some((g) => g.eager === "guarded");
+  if (!guarded) return ASet.single(lowerPart(chain, ctx));
+  // Guarded: while any switch above is off, the row is read under the
+  // renderer's guard — left out if its values (or its lowering) raise,
+  // tried again when a switch changes; once taken in, an ordinary row.
+  const shown = (tok: AdaptiveToken): boolean => gates.every((g) => g.active.getValue(tok));
+  // lowered with the walk (in the idle slice when the switch waits for one)
+  // and read under the guard there: one whose values do not raise is taken
+  // in at once — a constant member, nothing to re-evaluate when shown.
+  let entry: GroupEntry | undefined;
+  try { entry = lowerPart(chain, ctx); chain = undefined; } catch { /* tried again when a switch changes */ }
+  if (entry !== undefined && !entryRaises(entry)) return ASet.single(entry);
+  // A raising one waits for its switches: left out while hidden, tried
+  // again when one changes; taken in when shown (a raise then is real).
+  let takenIn = false;
+  const member = AVal.custom((tok): GroupEntry[] => {
+    if (takenIn) return [entry!];
+    const on = shown(tok);
+    if (entry === undefined) {
+      try {
+        entry = lowerPart(chain!, ctx);
+        chain = undefined;
+      } catch (err) {
+        if (!on) return [];
+        throw err;
+      }
+    }
+    if (!on && entryRaises(entry)) return [];
+    takenIn = true;
+    return [entry];
+  });
+  return ASet.ofAVal(member);
 }
 
 function lowerWithCleanup(

@@ -57,6 +57,13 @@ const ALLOWLIST: readonly string[] = [
   "anchor.dc0 = dcAval.force();",
   "const dc = dcAval.force();",
   "chain = [AVal.constant(composed.force().mul(head.force())), ...chain.slice(1)];",
+  // andActive / constructFastRow — a row's on/off flag folded as
+  // pushActive folds it: constant-only.
+  "return outer.force() ? inner : outer;",
+  "return inner.force() ? outer : inner;",
+  "if (a.isConstant && !a.force()) return undefined;",
+  // splitNode — a constant group's children, at lowering (split rows).
+  "const arr = [...children.content.force()];",
 ];
 
 describe("compile.ts — zero force on the live render path", () => {
