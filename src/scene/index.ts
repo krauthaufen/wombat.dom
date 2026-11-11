@@ -66,7 +66,7 @@ export {
 export { materializeRowSg, type SgRow } from "./sg.js";
 export {
   stageNode, templateStats, resetTemplates,
-  effectUniformNames, validateTemplateEffect, warnUnresolvedUniforms,
+  effectUniformNames, effectUniformNamesMemo, validateTemplateEffect, warnUnresolvedUniforms,
   sceneEfficiency, resetEfficiency,
   withSgSource, sgSourceOf,
   type EfficiencyReport, type RowBailReason,

@@ -582,7 +582,10 @@ const validated = new Set<string>();
 
 const effectNamesMemo = new Map<string, ReadonlySet<string>>();
 
-function effectUniformNamesMemo(effect: Effect): ReadonlySet<string> {
+/** `effectUniformNames` once per effect id: a plan is computed per parent
+ *  scope, so a collection whose children each hold their own scopes would
+ *  otherwise walk the effect's whole IR once per child. */
+export function effectUniformNamesMemo(effect: Effect): ReadonlySet<string> {
   let names = effectNamesMemo.get(effect.id);
   if (names === undefined) {
     names = effectUniformNames(effect);
@@ -652,7 +655,7 @@ export function validateTemplateEffect(
   validated.add(memoKey);
   const extra = extraProvided !== undefined ? new Set(extraProvided) : undefined;
   const missing: string[] = [];
-  for (const name of effectUniformNames(effect)) {
+  for (const name of effectUniformNamesMemo(effect)) {
     if (staged.template.providedUniforms.has(name)) continue;
     if (AUTO_UNIFORMS.has(name)) continue;
     if (extra !== undefined && extra.has(name)) continue;

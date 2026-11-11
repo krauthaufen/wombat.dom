@@ -22,7 +22,7 @@ import {
   type TraversalState,
 } from "./traversalState.js";
 import type { TrafoValue } from "./sg.js";
-import { effectUniformNames, type SceneTemplate, type StagedNode } from "./template.js";
+import { effectUniformNamesMemo, type SceneTemplate, type StagedNode } from "./template.js";
 
 export type UniformSlot =
   | { readonly kind: "hole"; readonly index: number }
@@ -52,7 +52,7 @@ function computePlan(
   injected: IUniformProvider | undefined,
 ): TemplatePlan {
   const slots = new Map<string, UniformSlot>();
-  for (const name of effectUniformNames(effect)) {
+  for (const name of effectUniformNamesMemo(effect)) {
     const hole = template.uniformHoles.get(name);
     slots.set(name, hole !== undefined ? HOLE(hole) : PARENT);
   }

@@ -95,4 +95,18 @@ describe("template plans — resolution parity with pushUniforms", () => {
     const plan = getPlan(staged.template, TraversalState.empty, eff);
     expect(rowProvider(plan, staged).tryGet("A")).toBe(innerA);
   });
+  it("an effect's uniform names are scanned once, not once per parent scope", () => {
+    // a collection whose children carry their own scopes gets a plan per
+    // child; each plan used to walk the effect's whole IR again
+    const base = effectReading(["Color", "Size"]);
+    let scans = 0;
+    const counted = new Proxy(base, { get: (t, k) => { if (k === "stages") scans++; return Reflect.get(t, k); } });
+    const staged = stageNode(Sg.leaf({ vertexAttributes: HashMap.empty(), drawCall: AVal.constant({ kind: "non-indexed", vertexCount: 3, instanceCount: 1, firstVertex: 0, firstInstance: 0 }) }));
+    for (let i = 0; i < 50; i++) {
+      const parent = TraversalState.empty.pushUniforms(HashMap.empty<string, aval<unknown>>().add("Color", AVal.constant(i)));
+      const plan = getPlan(staged.template, parent, counted);
+      expect([...plan.slots.keys()].sort()).toEqual(["Color", "Size"]);
+    }
+    expect(scans).toBeLessThan(10); // one scan reads `stages` 3 times; per plan it was 150
+  });
 });

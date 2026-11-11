@@ -111,4 +111,36 @@ describe("row-store admission", () => {
     const bail = sceneEfficiency().bails.find((x) => x.reason === "mixed-plan-group");
     expect(bail?.count).toBe(1);
   });
+  it("the SAME effect applied per child is free: all rows, nothing reported", () => {
+    const e = eff();
+    const child = (i: number) => Sg.shader(e, Sg.uniform({ LineColor: AVal.init(i) }, leaf()));
+    const cmds = compileScene(Sg.unordered([child(1), child(2), child(3)]), {});
+    const render = AVal.force(cmds.content).toArray().find((c: { kind: string }) => c.kind === "Render") as { tree: RenderTree };
+    const { rows, classic } = parts(__basePassTree(render.tree));
+    expect(rows.length).toBe(3);
+    expect(classic.length).toBe(0);
+    expect(sceneEfficiency().bails.find((x) => x.reason === "per-leaf-effect-scope")).toBeUndefined();
+  });
+
+  it("children applying DIFFERENT effects are reported", () => {
+    const e1 = eff();
+    const e2 = stage(parseShader({
+      source: `
+        function vsMain(input: { Positions: V4f }): { gl_Position: V4f } { return { gl_Position: input.Positions }; }
+        function fsMain(input: {}): { Color: V4f } { return { Color: new V4f(0.0, 1.0, 0.0, 1.0) }; }
+      `,
+      entries: [
+        { name: "vsMain", stage: "vertex",
+          inputs: [{ name: "Positions", type: Tvec4f, semantic: "Position", decorations: [{ kind: "Location", value: 0 }] }],
+          outputs: [{ name: "gl_Position", type: Tvec4f, semantic: "Position", decorations: [{ kind: "Builtin", value: "position" }] }] },
+        { name: "fsMain", stage: "fragment", inputs: [], outputs: [{ name: "Color", type: Tvec4f, semantic: "Color", decorations: [{ kind: "Location", value: 0 }] }] },
+      ],
+    }));
+    expect(e2.id).not.toBe(e1.id);
+    const child = (e: Effect, i: number) => Sg.shader(e, Sg.uniform({ LineColor: AVal.init(i) }, leaf()));
+    const cmds = compileScene(Sg.unordered([child(e1, 1), child(e1, 2), child(e2, 3)]), {});
+    const render = AVal.force(cmds.content).toArray().find((c: { kind: string }) => c.kind === "Render") as { tree: RenderTree };
+    parts(__basePassTree(render.tree));
+    expect(sceneEfficiency().bails.find((x) => x.reason === "per-leaf-effect-scope")?.count).toBe(1);
+  });
 });

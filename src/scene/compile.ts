@@ -810,6 +810,8 @@ interface RowAnchor {
   fast: FastPickCapture | null | undefined;
   /** Cached constant leaf drawCall shape for the instancing rebuild. */
   dc0: DrawCall | undefined;
+  /** The first row's per-child effect (an Sg.Shader inside the child), if any. */
+  spineEffect?: string;
 }
 
 /**
@@ -1014,10 +1016,13 @@ function lowerGroupEntry(
     (obj as { uniforms: IUniformProvider }).uniforms = new RowProvider(plan, staged.holes);
     assertHeapIfSafe(obj);
     recordRowLowered();
-    if (staged.template.spineEffectId !== undefined) {
-      // rows still work, but per-item effect application defeats the
-      // row-store bucketing — advisory, quantified.
-      recordRowBail("per-leaf-effect-scope", staged.template.spineEffectId, src);
+    const spineEffect = staged.template.spineEffectId;
+    if (spineEffect !== undefined) {
+      // An effect applied per child is free when every child applies the
+      // SAME one (same id → same plan → one row set); only a collection
+      // whose children differ in it splits — advisory, quantified.
+      if (anchor.spineEffect === undefined) anchor.spineEffect = spineEffect;
+      else if (anchor.spineEffect !== spineEffect) recordRowBail("per-leaf-effect-scope", spineEffect, src);
     }
     // ─── Row-store admission ────────────────────────────────────────
     // The RowSet carries THIN rows only for children that (a) the
