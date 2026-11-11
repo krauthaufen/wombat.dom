@@ -13,10 +13,11 @@ import { IBuffer, ElementType } from "@aardworx/wombat.rendering/core";
 import type { BufferView, DrawCall, RenderRow, RenderTree } from "@aardworx/wombat.rendering/core";
 import {
   Sg, compileScene, sceneEfficiency, resetEfficiency, __setRowLowering, PickRegistry, idleRegistration,
-  markHostBufferAVal, markHeapSafeDrawAVal,
+  markHostBufferAVal, markHeapSafeDrawAVal, rowWrap,
   type SgNode,
 } from "../src/scene/index.js";
 import { resetTemplates } from "../src/scene/template.js";
+import { Trafo3d, V3d } from "@aardworx/wombat.base";
 
 const dummyDraw: DrawCall = { kind: "non-indexed", vertexCount: 3, instanceCount: 1, firstVertex: 0, firstInstance: 0 };
 const view = (): BufferView => ({
@@ -205,6 +206,21 @@ describe("split rows", () => {
     const unproven = lowered(Sg.shader(eff(), Sg.unordered([child(1, false), child(2, false)])))();
     expect(unproven.rows.length).toBe(0);
     expect(unproven.classic.length).toBe(4);
+  });
+
+  it("an item's parts that arrive pre-staged (rowWrap) are split too", () => {
+    // the app's mapping of an item's parts goes through rowWrap: each part
+    // a thin Row; the split walk takes its real subtree under the prefix
+    const part = rowWrap("Parts.fs:1", 1, (i) => Sg.uniform({ LineColor: AVal.init(i as number) }, leaf()));
+    // (below the item's switch, as an app's prebuilt item is)
+    const child = (i: number) => Sg.active(cval(true), Sg.trafo(AVal.init(Trafo3d.translation(new V3d(i, 0, 0))),
+      Sg.unordered([part(i) as SgNode, part(i + 10) as SgNode])), { eager: "guarded" });
+    const read = lowered(Sg.shader(eff(), Sg.unordered([child(1), child(2)])));
+    idleRegistration.runNow();
+    const { rows, classic } = read();
+    expect(rows.length).toBe(4);
+    expect(classic.length).toBe(0);
+    expect(multiLeafBails()).toBe(0);
   });
 
   it("a single-leaf child takes the unchanged path", () => {

@@ -39,7 +39,7 @@ import {
   HashMap, clist, transactIfNecessary,
   AbstractReader, IndexListDelta, ElementSet, ElementRemove,
   type alist, type aset, type aval,
-  type AdaptiveToken, type Index, type IOpReader,
+  AdaptiveToken, type Index, type IOpReader,
 } from "@aardworx/wombat.adaptive";
 import { M44f, Trafo3d, V3d, V3f } from "@aardworx/wombat.base";
 import { RenderTree, UniformProvider, AttributeProvider } from "@aardworx/wombat.rendering/core";
@@ -1149,7 +1149,7 @@ const _NO_ENTRIES: aset<GroupEntry> = ASet.empty();
 
 /** Nodes that end the split walk: what is below is one classic part. */
 function endsSplit(kind: SgNode["kind"]): boolean {
-  return kind === "AdaptiveGroup" || kind === "Delay" || kind === "Instanced" || kind === "Pass" || kind === "Row";
+  return kind === "AdaptiveGroup" || kind === "Delay" || kind === "Instanced" || kind === "Pass";
 }
 
 /** Whether the child's spine reaches a group or a reactive switch before
@@ -1160,6 +1160,7 @@ function needsSplit(node: SgNode): boolean {
     switch (n.kind) {
       case "Leaf": case "Empty": return false;
       case "Group": case "UnorderedGroup": return true;
+      case "Row": return false; // pre-staged: a single fast row already
       case "Active":
         if (!n.active.isConstant) return true;
         n = n.child;
@@ -1211,6 +1212,10 @@ function splitNode(node: SgNode, prefix: readonly SgNode[], gates: readonly SgAc
       return ASet.empty<GroupEntry>();
     case "Leaf":
       return gatedLeaf(node, prefix, gates, ctx);
+    case "Row":
+      // a pre-staged part (a collection's mapping inside the child): its
+      // real subtree under the prefix (its staging held no prefix)
+      return splitNode(materializeRowSg(node), prefix, gates, ctx);
     case "Group":
     case "UnorderedGroup": {
       const children = node.children as unknown as { isConstant: boolean; content: aval<Iterable<SgNode>> };
@@ -1315,7 +1320,10 @@ function gatedLeaf(leaf: SgNode, prefix: readonly SgNode[], gates: readonly SgAc
   // in at once — a constant member, nothing to re-evaluate when shown.
   let entry: GroupEntry | undefined;
   try { entry = lowerPart(chain, ctx); chain = undefined; } catch { /* tried again when a switch changes */ }
-  if (entry !== undefined && !entryRaises(entry)) return ASet.single(entry);
+  // (shown now: an ordinary row, as the renderer's guard takes a shown
+  // subtree in — read untracked, no edge on the switch; hidden: read
+  // under the guard)
+  if (entry !== undefined && (gates.every((g) => g.active.getValue(AdaptiveToken.top)) || !entryRaises(entry))) return ASet.single(entry);
   // A raising one waits for its switches: left out while hidden, tried
   // again when one changes; taken in when shown (a raise then is real).
   let takenIn = false;

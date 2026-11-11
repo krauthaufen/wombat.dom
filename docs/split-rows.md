@@ -56,8 +56,11 @@ Walking from the child's root:
   load-bearing (`flattenTree`'s contract; the hybrid renderer draws unordered).
 - **`Active`** (non-constant) is taken out of the chain and becomes a **gate**
   of every leaf below it (see "Active as the row's flag").
-- Anything else — `AdaptiveGroup`, `Delay`, `Instanced`, `Pass`, `View`/`Proj`,
-  a `Row` — ends the walk: the prefix chain plus that node is one classic
+- A pre-staged `Row` (a collection mapping wrapped by `rowWrap` inside the
+  child) is walked through: its materialized subtree under the prefix (its
+  staging held no prefix). A `Row` child itself is a single fast row already
+  and is never split.
+- Anything else — `AdaptiveGroup`, `Delay`, `Instanced`, `Pass` — ends the walk: the prefix chain plus that node is one classic
   part, lowered as today (with its original `Active` nodes).
 
 A child is split only when its spine reaches a group or a non-constant
@@ -139,14 +142,14 @@ makes a template unsafe for fast rows, rightly (a row set shares its
 pipeline): such a value belongs to the shape. (fablecube-toy's `meshA`
 does both.)
 
-## Result (pro3d-web, alternating runs, same server, machine loaded by
-other jobs: medians of 3)
+## Result (pro3d-web, alternating runs, same server, cache off; the machine
+was loaded by other jobs, load average 10–23)
 
-No classic-path warning on Shaler, Beaver Falls, DQ2_DQ3. Renders match
-(screenshots, Beaver Falls also after showing all). Within wombat.dom the
-Beaver Falls load lowering went from ~1.3 s to ~0.3 s inclusive (fast rows:
-`lowerLeaf` 0.9 → 0.12 s); end to end the load, settle, show and frame times
-stay within noise (settled CPU Beaver Falls 4.8 → 5.0 s, Shaler 4.8 → 5.9 s
-in the noisiest round, 4.0 → 3.9 s in a quieter one; orbit p95 equal) and
-the live heap drops 2–3 MB. As measured before the change, the rest of the
-cost is FableCube cells, heap registration and frames, not lowering.
+No classic-path warning on Shaler, Beaver Falls, DQ2_DQ3; renders match
+(screenshots, Beaver Falls also after showing all). Shaler over 16 rounds
+(min / median): ready 2.94 / 4.02 → 2.84 / 3.32 s, CPU to ready 2.69 / 3.78 →
+2.62 / 3.08 s, settled CPU 3.89 / 4.77 → 3.84 / 4.49 s. Beaver Falls over 8:
+ready 2.08 / 2.24 → 1.84 / 2.07 s, CPU to ready 1.78 / 1.90 → 1.62 / 1.78 s,
+settled CPU 4.88 / 5.72 → 4.55 / 4.94 s. Live heap Shaler 216 → 205 MB,
+Beaver Falls 422 → 407 MB (every run). Within wombat.dom, Shaler's lowering
+before ready ~350 → ~190 ms. Show, clicks and orbit within noise.
