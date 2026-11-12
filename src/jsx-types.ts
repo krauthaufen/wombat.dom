@@ -52,6 +52,10 @@ interface CommonAttrs {
   "aria-label"?: AdaptiveOr<string>;
   /** Called once the element is created; `scope` ends with the element. */
   ref?: (el: Element, scope: Scope) => void;
+  /** While true the children's updates wait and catch up once when it turns
+   *  false (a hidden tab pane); the element's own attributes stay live.
+   *  docs/deferred-updates.md */
+  deferUpdates?: AdaptiveOr<boolean>;
   /** Spread of attributes via amap<string, value>. */
   attrs?: amap<string, AdaptivePrimitive | EventListenerOrEventListenerObject>;
   children?: ChildLike | ChildLike[];

@@ -5,7 +5,7 @@
 import { installTapEvents } from "./tap.js";
 import { Scope, pushScope, popScope } from "./scope.js";
 import { RegionRouter } from "./eventRouter.js";
-import { UIScheduler, defaultScheduler } from "./scheduler.js";
+import { UIScheduler, DeferringScheduler, defaultScheduler } from "./scheduler.js";
 import {
   isVNode,
   type VNode,
@@ -17,6 +17,7 @@ import {
 import { bindAttr } from "./bindings/attr.js";
 import { bindChildren } from "./bindings/children.js";
 import type { JsxResult } from "./jsx-runtime.js";
+import type { aval } from "@aardworx/wombat.adaptive";
 
 export interface MountResult {
   scope: Scope;
@@ -106,8 +107,14 @@ function mountElement(
   scope.onDispose(() => {
     if (el.parentNode === parent) parent.removeChild(el);
   });
-  // children mount as direct children of the new element
-  bindChildren(el, null, vnode.props.children, scope, scheduler);
+  // children mount as direct children of the new element; with
+  // `deferUpdates` their bindings wait while it is true (the element's own
+  // attributes stay live) — docs/deferred-updates.md
+  const defer = (vnode.props as { deferUpdates?: unknown }).deferUpdates;
+  const childScheduler = defer === undefined
+    ? scheduler
+    : new DeferringScheduler(scheduler, defer as boolean | aval<boolean>, scope);
+  bindChildren(el, null, vnode.props.children, scope, childScheduler);
 }
 
 function mountFragment(
@@ -155,7 +162,7 @@ function bindElementProps(
   scheduler: UIScheduler,
 ): void {
   for (const [name, value] of Object.entries(props)) {
-    if (name === "children") continue;
+    if (name === "children" || name === "deferUpdates") continue;
     if (name === "ref" && typeof value === "function") {
       (value as (e: Element, s: Scope) => void)(el, scope);
       continue;

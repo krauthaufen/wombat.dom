@@ -10,6 +10,7 @@ export {
 } from "./tap.js";
 export {
   UIScheduler,
+  DeferringScheduler,
   defaultScheduler,
   type Binding,
 } from "./scheduler.js";
