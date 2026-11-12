@@ -126,3 +126,32 @@ describe("withSgSource", () => {
     ]);
   });
 });
+
+describe("RenderObject.debugName", () => {
+  // wombat.rendering names it when a leaf cannot be drawn (a shader reading
+  // an attribute the leaf does not have): the stamped site and the effect.
+  const leafRO = (scene: unknown): { debugName?: string } => {
+    const cmds = compileScene(scene as never, {});
+    const render = AVal.force(cmds.content).toArray().find((c: { kind: string }) => c.kind === "Render") as { tree: unknown };
+    const find = (t: unknown): { debugName?: string } | undefined => {
+      const a = t as { kind: string; children?: unknown; tree?: unknown; object?: unknown };
+      if (a.kind === "Leaf") return a.object as { debugName?: string };
+      if (Array.isArray(a.children)) { for (const c of a.children) { const r = find(c); if (r) return r; } }
+      if (a.children !== undefined && !Array.isArray(a.children)) {
+        for (const c of AVal.force((a.children as { content: never }).content) as Iterable<unknown>) { const r = find(c); if (r) return r; }
+      }
+      if (a.tree !== undefined) return find(a.kind === "Adaptive" ? AVal.force(a.tree as never) : a.tree);
+      return undefined;
+    };
+    return find(render.tree)!;
+  };
+
+  it("names the leaf's call site and its effect's entry points", () => {
+    expect(leafRO(Sg.shader(eff(), withSgSource(leaf(), "App.fs:42") as never)).debugName)
+      .toBe("leaf at App.fs:42 (effect vsMain+fsMain)");
+  });
+
+  it("an unstamped leaf is named by its effect", () => {
+    expect(leafRO(Sg.shader(eff(), leaf())).debugName).toBe("a leaf (effect vsMain+fsMain)");
+  });
+});

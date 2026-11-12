@@ -70,7 +70,7 @@ import { ISampler as ISamplerImpl } from "@aardworx/wombat.rendering/core";
 import { composePickChainWithChoiceCached } from "./picking/pickChain.js";
 import type { PickRegistry } from "./picking/registry.js";
 import {
-  recordRowBail, recordRowLowered, sgSourceOf, stageNode, warnUnresolvedUniforms,
+  recordRowBail, recordRowLowered, sgSourceOf, stageNode, warnUnresolvedUniforms, leafDebugName,
   type StagedNode,
 } from "./template.js";
 import { getPlan, RowProvider, type TemplatePlan } from "./templatePlan.js";
@@ -1602,7 +1602,7 @@ function lowerLeaf(
   if (state.active.isConstant) {
     // AVal.force OK: isConstant guard — value is by definition immutable.
     if (!state.active.force()) return RenderTree.empty;
-    const obj: RenderObject = buildRenderObject(leafForBuild, stateForBuild, effect, opts, pickId);
+    const obj: RenderObject = buildRenderObject(leafForBuild, stateForBuild, effect, opts, pickId, sgSourceOf(leaf));
     return RenderTree.leaf(obj);
   }
 
@@ -1612,7 +1612,7 @@ function lowerLeaf(
   // the pool-churn cycle the old `RenderTree.adaptive(empty/baseTree)`
   // approach caused when a tile's visibility flipped many times per
   // camera move.
-  const baseObj: RenderObject = buildRenderObject(leafForBuild, stateForBuild, effect, opts, pickId);
+  const baseObj: RenderObject = buildRenderObject(leafForBuild, stateForBuild, effect, opts, pickId, sgSourceOf(leaf));
   const obj: RenderObject = { ...baseObj, active: state.active };
   return RenderTree.leaf(obj);
 }
@@ -1705,11 +1705,13 @@ function buildRenderObject(
   effect: Effect,
   opts: CompileSceneOptions,
   pickId: number | undefined,
+  /** The leaf's stamped call site (the merged leaf above has none). */
+  srcLoc: string | undefined,
 ): RenderObject {
   // M1 (docs/scene-templates.md): name effect uniforms nothing in scope
   // resolves — today they silently read zero at draw time. Deduped per
   // (effect, missing-set); per-leaf cost is a few Set probes.
-  warnUnresolvedUniforms(effect, state.uniforms, injectedNames(opts), leaf.instanceAttributes, sgSourceOf(leaf), leaf.storageBuffers);
+  warnUnresolvedUniforms(effect, state.uniforms, injectedNames(opts), leaf.instanceAttributes, srcLoc, leaf.storageBuffers);
   // `<Sg Uniform={…}>` scope entries, split into scalars vs textures/
   // samplers — memoised PER CHAIN NODE, extending the parent's cached
   // split (scene-templates M2): leaves reuse ancestor texture/sampler
@@ -1761,8 +1763,13 @@ function buildRenderObject(
   // is not yet supported by RenderObject — the runtime would have to
   // re-prepare for index format changes; we narrow by mapping the
   // undefined case to a "draw nothing"-style sentinel only if needed).
-  const obj: RenderObject = {
+  // (`debugName` is RenderObject's from the wombat.rendering after 0.25.18;
+  // an older one, still in this package's range, ignores it)
+  const obj: RenderObject & { readonly debugName?: string } = {
     effect,
+    // named by wombat.rendering when the leaf cannot be drawn (e.g. its
+    // shader reads an attribute it does not have)
+    debugName: leafDebugName(srcLoc, effect),
     ...(pickId !== undefined ? { pickId } : {}),
     pipelineState,
     vertexAttributes: attrProviderOf(leaf.vertexAttributes),

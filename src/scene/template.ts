@@ -613,6 +613,34 @@ export function effectUniformNamesMemo(effect: Effect): ReadonlySet<string> {
   return names;
 }
 
+/** The entry points of `effect`'s stages (`["vsMain", "fsMain"]`). */
+export function effectEntryNames(effect: Effect): string[] {
+  return Array.isArray(effect.stages)
+    ? effect.stages.flatMap((st) => {
+        const vs = (st as { template?: { values?: readonly { kind: string; entry?: { name?: string } }[] } }).template?.values;
+        return Array.isArray(vs) ? vs.filter((v) => v.kind === "Entry").map((v) => v.entry?.name ?? "?") : [];
+      })
+    : [];
+}
+
+const leafNames = new Map<string, string>();
+/**
+ * A leaf's `RenderObject.debugName`: its stamped call site (when there
+ * is one) and its effect's entry points — what a message about a draw
+ * that cannot be drawn names. One string per (site, effect), shared by
+ * all its leaves.
+ */
+export function leafDebugName(srcLoc: string | undefined, effect: Effect): string {
+  const key = `${srcLoc ?? ""}|${effect.id}`;
+  let n = leafNames.get(key);
+  if (n === undefined) {
+    const entries = effectEntryNames(effect);
+    n = `${srcLoc !== undefined ? `leaf at ${srcLoc}` : "a leaf"} (effect ${entries.length > 0 ? entries.join("+") : effect.id})`;
+    leafNames.set(key, n);
+  }
+  return n;
+}
+
 /**
  * Leaf-lowering hook (M1 wiring): warn about effect uniforms that
  * neither the accumulated uniform scopes, the auto-injected set, nor
@@ -645,12 +673,7 @@ export function warnUnresolvedUniforms(
   const key = `${effect.id}|${missing.join(",")}`;
   if (validated.has(key)) return;
   validated.add(key);
-  const entries = Array.isArray(effect.stages)
-    ? effect.stages.flatMap((st) => {
-        const vs = (st as { template?: { values?: readonly { kind: string; entry?: { name?: string } }[] } }).template?.values;
-        return Array.isArray(vs) ? vs.filter((v) => v.kind === "Entry").map((v) => v.entry?.name ?? "?") : [];
-      })
-    : [];
+  const entries = effectEntryNames(effect);
   const at = srcLoc !== undefined ? ` at ${srcLoc}` : "";
   console.warn(
     `[wombat.dom] effect ${effect.id} [${entries.join("+")}]${at}: uniforms with no provider in scope: ` +
