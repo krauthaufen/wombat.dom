@@ -1,6 +1,6 @@
 # Deferred updates: a hidden subtree catches up when shown
 
-Status: design (2026-11-12).
+Status: implemented (2026-11-12), wombat.dom 0.25.17; the toy's Tabs uses it for inactive panes.
 
 ## Why (measured, pro3d-web state-ref, 714 annotations)
 
@@ -66,3 +66,11 @@ Rows inserted/removed while hidden are applied on show (net change); a text
 and an attribute catch up; the element's own attributes stay live; a visible
 subtree flushes as before; a binding disposed while parked never flushes;
 nested deferral; the subtree's nodes are the same objects after show.
+
+## Result (pro3d-web state-ref, 5 alternating rounds, min / median)
+
+Bookmark_0 swap applied 826 / 878 → 195 / 272 ms (CPU 975 / 1210 → 312 /
+579 ms); the hidden Annotations tab no longer changes during the swap (0 DOM
+nodes, was 47,094). Opening that tab after the swap pays the catch-up: 263 /
+391 → 964 / 1074 ms CPU, with exactly the same rows. Opening it with nothing
+changed: 240 / 336 → 242 / 300 ms. Group toggles unchanged.
