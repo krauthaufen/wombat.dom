@@ -62,3 +62,35 @@ describe("planMetadataUploads", () => {
     ]);
   });
 });
+
+describe("PickMetadata — dynamic scopes are re-read only when they change", () => {
+  it("a flush re-reads only the scopes whose inputs were marked", async () => {
+    const { PickMetadata } = await import("../src/scene/picking/pickMetadata.js");
+    const { AVal, cval, transact } = await import("@aardworx/wombat.adaptive");
+    const { vi } = await import("vitest");
+    let writes = 0;
+    (globalThis as { GPUBufferUsage?: unknown }).GPUBufferUsage ??= { STORAGE: 128, COPY_DST: 8 };
+    const device = {
+      createBuffer: () => ({ destroy() {} }),
+      queue: { writeBuffer: () => { writes++; } },
+    } as unknown as GPUDevice;
+    const pm = new PickMetadata(device);
+    const flags = Array.from({ length: 1000 }, () => cval(false));
+    flags.forEach((a, i) => pm.register({
+      pickId: i + 1, active: a, pixelSnapRadius: AVal.constant(4),
+    } as never, "A"));
+    pm.flush();
+    const reads = vi.spyOn(PickMetadata.prototype as never as { computeEffR: () => number }, "computeEffR");
+    writes = 0;
+    pm.flush(); // nothing changed: nothing re-read, nothing written
+    expect(reads).toHaveBeenCalledTimes(0);
+    expect(writes).toBe(0);
+    transact(() => { flags[41]!.value = true; });
+    pm.flush(); // one switch flipped: that scope only
+    expect(reads).toHaveBeenCalledTimes(1);
+    expect(writes).toBe(1);
+    pm.flush();
+    expect(reads).toHaveBeenCalledTimes(1);
+    reads.mockRestore();
+  });
+});

@@ -83,6 +83,11 @@ export class PickMetadata {
   private gpu: GPUBuffer;
   private readonly entries = new Map<number, Entry>();
   private readonly dynamicIds = new Set<number>();
+  /** Dynamic ids whose inputs were marked since their last read: the only
+   *  ones a flush re-reads (a hidden prebuilt subtree's scopes cost nothing
+   *  per pick until their switch flips). */
+  private readonly stale = new Set<number>();
+  private readonly watches = new Map<number, Array<{ dispose(): void }>>();
   private readonly dirty = new Set<number>();
   private maxId = 0; // highest id ever registered; the kernel reads [0, maxId]
 
@@ -162,7 +167,18 @@ export class PickMetadata {
       !this.isConst(scope.pixelSnapRadius) ||
       !this.isConst(scope.pickPriority);
     this.entries.set(id, { scope, modeSign, dynamic });
-    if (dynamic) this.dynamicIds.add(id); else this.dynamicIds.delete(id);
+    this.unwatch(id);
+    if (dynamic) {
+      this.dynamicIds.add(id);
+      // re-read only when an input is marked (reading it re-arms the watch)
+      const subs: Array<{ dispose(): void }> = [];
+      for (const a of [scope.active, scope.noEvents, scope.pixelSnapRadius, scope.pickPriority]) {
+        if (a === undefined || a.isConstant) continue;
+        subs.push((a as unknown as { addMarkingCallback(f: () => void): { dispose(): void } })
+          .addMarkingCallback(() => { this.stale.add(id); }));
+      }
+      this.watches.set(id, subs);
+    } else this.dynamicIds.delete(id);
     this.writeEntry(id, this.computeEffR(scope), modeSign, this.computePrio(scope));
   }
 
@@ -171,10 +187,20 @@ export class PickMetadata {
     if (!this.entries.has(id)) return;
     this.entries.delete(id);
     this.dynamicIds.delete(id);
+    this.unwatch(id);
     this.writeEntry(id, -1, this.data[id * METADATA_FLOATS_PER_ID + 1] ?? 1, 0);
   }
 
+  private unwatch(id: number): void {
+    const subs = this.watches.get(id);
+    if (subs === undefined) return;
+    for (const s of subs) s.dispose();
+    this.watches.delete(id);
+    this.stale.delete(id);
+  }
+
   clear(): void {
+    for (const id of [...this.watches.keys()]) this.unwatch(id);
     this.entries.clear();
     this.dynamicIds.clear();
     this.data.fill(-1);
@@ -183,9 +209,13 @@ export class PickMetadata {
     this.maxId = 0;
   }
 
-  /** Re-check the non-constant ids; mark any whose effective radius moved. */
+  /** Re-check the non-constant ids whose inputs changed; mark any whose
+   *  effective radius moved. */
   private refreshDynamic(): void {
-    for (const id of this.dynamicIds) {
+    if (this.stale.size === 0) return;
+    const ids = [...this.stale];
+    this.stale.clear();
+    for (const id of ids) {
       const e = this.entries.get(id);
       if (e === undefined) continue;
       const effR = this.computeEffR(e.scope);
