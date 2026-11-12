@@ -40,7 +40,7 @@ import { AVal, avalAddCallback, cval } from "@aardworx/wombat.adaptive";
 import { Box2d, Trafo3d, V2d, V2i, V3d, V4d } from "@aardworx/wombat.base";
 
 import { arbitratePick, resolveThroughPortals } from "./pickArbitrate.js";
-import type { PickArgminResult } from "./pickArgminCompute.js";
+import type { PickArgminResult, PickCamera } from "./pickArgminCompute.js";
 import type { LeafPickEntry, LeafPickScope, PickRegistry } from "./registry.js";
 import {
   SceneEvent,
@@ -786,6 +786,7 @@ export class PickDispatcher implements SceneEventDispatch {
       viewPos,
       viewNormal,
       partIndex,
+      hit.camera,
     );
     const sceneEv = new SceneEvent({
       kind: "OnWheel",
@@ -830,8 +831,9 @@ export class PickDispatcher implements SceneEventDispatch {
     modeB: boolean,
     viewPos: V3d | undefined,
     extras?: { deltaTime?: number; movementX?: number; movementY?: number },
+    camera?: PickCamera,
   ): SceneEvent {
-    const sceneEv = this.makeEvent(kind, raw, cssX, cssY, scope, scope.pickId, modeB, viewPos, undefined, 0, extras);
+    const sceneEv = this.makeEvent(kind, raw, cssX, cssY, scope, scope.pickId, modeB, viewPos, undefined, 0, extras, undefined, camera);
     this.runCaptureBubble(scope.handlers, sceneEv);
     return sceneEv;
   }
@@ -986,7 +988,7 @@ export class PickDispatcher implements SceneEventDispatch {
       const viewPos: V3d | undefined = hit?.viewPos;
       const viewNormal: V3d | undefined = hit?.viewNormal;
       const modeB = this.registry.modeOf(captured.pickId) === "B";
-      const sceneEv = this.makeEvent(kind, ev, cssX, cssY, captured, captured.pickId, modeB, viewPos, viewNormal, 0, undefined, prop);
+      const sceneEv = this.makeEvent(kind, ev, cssX, cssY, captured, captured.pickId, modeB, viewPos, viewNormal, 0, undefined, prop, hit?.camera);
       this.runCaptureBubble(captured.handlers, sceneEv);
       if (kind === "OnPointerMove") {
         this.applyCursor(captured);
@@ -1043,7 +1045,7 @@ export class PickDispatcher implements SceneEventDispatch {
         const lpScope = this.registry.lookup(cur.hitPickId);
         if (lpScope === undefined || !AVal.force(lpScope.active) || lpScope.pickThrough) return;
         const lpModeB = this.registry.modeOf(lpScope.pickId) === "B";
-        this.dispatchSynthetic("OnLongPress", ev, cssX, cssY, lpScope, lpModeB, hit?.viewPos);
+        this.dispatchSynthetic("OnLongPress", ev, cssX, cssY, lpScope, lpModeB, hit?.viewPos, undefined, hit?.camera);
       }, this.tLongPress);
       this.presses.set(pointerId, press);
     } else if (kind === "OnPointerMove") {
@@ -1089,7 +1091,7 @@ export class PickDispatcher implements SceneEventDispatch {
     const modeB = hit !== undefined && hit.isPixel
       ? this.regOf(hit).modeOf(hitScope.pickId) === "B"
       : false;
-    const sceneEv = this.makeEvent(kind, ev, cssX, cssY, hitScope, hitScope.pickId, modeB, viewPos, viewNormal, partIndex, undefined, prop);
+    const sceneEv = this.makeEvent(kind, ev, cssX, cssY, hitScope, hitScope.pickId, modeB, viewPos, viewNormal, partIndex, undefined, prop, hit?.camera);
     this.runCaptureBubble(hitScope.handlers, sceneEv);
 
     if (kind === "OnPointerMove") {
@@ -1132,7 +1134,7 @@ export class PickDispatcher implements SceneEventDispatch {
       // Tap fires against the scope under the cursor at pointerup; it
       // carries the press duration + net movement (Aardvark's tap event).
       this.dispatchSynthetic("OnTap", ev, cssX, cssY, hitScope, modeB, viewPos,
-        { deltaTime: dt, movementX: mdx, movementY: mdy });
+        { deltaTime: dt, movementX: mdx, movementY: mdy }, hit?.camera);
 
       // Double-tap (Aardvark parity): tap-to-tap gap <= DOUBLE_TAP_GAP_MS,
       // down positions within DOUBLE_TAP_MOVE_PX. No pickId requirement.
@@ -1143,7 +1145,7 @@ export class PickDispatcher implements SceneEventDispatch {
         const dy = press.downY - prev.y;
         if (dx * dx + dy * dy <= this.tDoubleTapMove * this.tDoubleTapMove) {
           this.dispatchSynthetic("OnDoubleTap", ev, cssX, cssY, hitScope, modeB, viewPos,
-            { deltaTime: now - prev.at, movementX: dx, movementY: dy });
+            { deltaTime: now - prev.at, movementX: dx, movementY: dy }, hit?.camera);
           // Consume — a third quick tap should not pair with this
           // tap as the "previous" one.
           this.lastTap = undefined;
@@ -1251,7 +1253,7 @@ export class PickDispatcher implements SceneEventDispatch {
 
     if (hitScope !== undefined && hit !== undefined) {
       const modeB = !hit.isPixel ? false : (this.regOf(hit).modeOf(hitScope.pickId) === "B");
-      const enterEv = this.makeEvent("OnPointerEnter", ev, cssX, cssY, hitScope, hitScope.pickId, modeB, hit.viewPos, hit.viewNormal, hit.partIndex);
+      const enterEv = this.makeEvent("OnPointerEnter", ev, cssX, cssY, hitScope, hitScope.pickId, modeB, hit.viewPos, hit.viewNormal, hit.partIndex, undefined, undefined, hit.camera);
       this.runDownAll(newPath, newPath.slice(0, prefix), enterEv);
     }
 
@@ -1377,9 +1379,17 @@ export class PickDispatcher implements SceneEventDispatch {
     viewPos: V3d,
     viewNormal: V3d,
     partIndex: number,
+    /** The camera `viewPos` is relative to (a pixel hit's pick frame). */
+    camera?: PickCamera,
   ): SceneEventLocation {
-    const view = scope !== undefined ? AVal.force(scope.view) : Trafo3d.identity;
-    const proj = scope !== undefined ? AVal.force(scope.proj) : Trafo3d.identity;
+    // A pixel hit's position belongs to the frame its pick buffer was drawn
+    // in: view, projection, and so Eye and Depth, come from that frame too.
+    // A scope under its own Sg.View / Sg.Proj (other avals) and every other
+    // event use the scope's current camera.
+    const ofFrame = camera !== undefined && scope !== undefined
+      && scope.view === camera.viewAval && scope.proj === camera.projAval;
+    const view = ofFrame ? camera.view : scope !== undefined ? AVal.force(scope.view) : Trafo3d.identity;
+    const proj = ofFrame ? camera.proj : scope !== undefined ? AVal.force(scope.proj) : Trafo3d.identity;
     const model = scope !== undefined ? scope.model() : AVal.constant(Trafo3d.identity);
     // Convert CSS-px cursor coords to device pixels using the live
     // canvas rect — keeps `pixel/viewportSize` in the same unit space
@@ -1428,10 +1438,12 @@ export class PickDispatcher implements SceneEventDispatch {
     extras?: { deltaTime?: number; movementX?: number; movementY?: number },
     /** Shared stop/prevent flag from the unified walk (see `dispatch`). */
     sharedProp?: WalkProp,
+    /** The camera `viewPos` is relative to (`ResolvedHit.camera`). */
+    camera?: PickCamera,
   ): SceneEvent {
     const vp = viewPos ?? V3d.zero;
     const vn = viewNormal ?? V3d.zero;
-    const location = this.buildLocation(scope, devX, devY, vp, vn, partIndex);
+    const location = this.buildLocation(scope, devX, devY, vp, vn, partIndex, camera);
     const rect = this.getCanvasRect();
     return new SceneEvent({
       kind,

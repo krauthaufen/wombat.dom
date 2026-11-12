@@ -41,6 +41,12 @@ export interface ResolvedHit {
   readonly partIndex: number;
   /** True for a pixel-pick winner; false for a BVH-pick winner. */
   readonly isPixel: boolean;
+  /**
+   * The camera `viewPos` / `viewNormal` are relative to, when it is not the
+   * scope's current one: a pixel winner's pick frame (`PickArgminResult.camera`).
+   * Absent: the current camera (a BVH winner is a ray cast at dispatch).
+   */
+  readonly camera?: import("./pickArgminCompute.js").PickCamera;
   /** Decoded `abs(slot0)` at the centre offset, even if mapping/validation failed. */
   readonly hoverPickId: number;
   /**

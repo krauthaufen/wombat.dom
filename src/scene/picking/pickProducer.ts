@@ -29,7 +29,7 @@ import { compileScene } from "../compile.js";
 import type { SgNode } from "../sg.js";
 import { TraversalState } from "../traversalState.js";
 import { transparencyTask, type OitMode } from "../transparency.js";
-import { createPickArgminCompute, type PickArgminResult } from "./pickArgminCompute.js";
+import { createPickArgminCompute, type PickArgminResult, type PickCamera } from "./pickArgminCompute.js";
 import { createPickFramebuffer, PICK_NAME, type CanvasLikeAttachment } from "./pickFramebuffer.js";
 import { PickMetadata } from "./pickMetadata.js";
 import { PickRegistry } from "./registry.js";
@@ -164,6 +164,12 @@ export function createPickProducer(
   // Non-coalescable requests (down/up/click, portal recursion) queue
   // FIFO so rapid event bursts (double-click!) never lose their
   // resolution.
+  // The camera of the last frame rendered into the pick buffer. A readback
+  // submitted after it reads that frame (one queue, and at most one
+  // readback in flight), so each request takes the camera current at its
+  // submit, and the result carries it: the pick's view position and depth
+  // belong to that camera, whatever the camera is by the time it resolves.
+  let frameCamera: PickCamera | undefined;
   interface PickReq { x: number; y: number; coalesce: boolean; resolve: (r: PickArgminResult | undefined) => void }
   let pickInFlight = false;
   const pickQueue: PickReq[] = [];
@@ -177,8 +183,10 @@ export function createPickProducer(
       const enc = device.createCommandEncoder({ label: "pick.argmin.frame" });
       argmin.compute(enc, view, pickMetadata.buffer, req.x, req.y, tex.width, tex.height);
       argmin.copyResult(enc);
+      const camera = frameCamera;
       device.queue.submit([enc.finish()]);
-      req.resolve(await argmin.read());
+      const r = await argmin.read();
+      req.resolve(r !== undefined && camera !== undefined ? { ...r, camera } : r);
     } catch {
       req.resolve(undefined);
     } finally {
@@ -224,6 +232,8 @@ export function createPickProducer(
     run(token: AdaptiveToken): void {
       if (disposed) return;
       task.run(pickFb.pickFramebuffer.getValue(token), token);
+      // (the values this frame was drawn with: the task read them with this token)
+      frameCamera = { view: opts.view.getValue(token), proj: opts.proj.getValue(token), viewAval: opts.view, projAval: opts.proj };
       if (runResolve !== undefined) {
         const enc = device.createCommandEncoder({ label: "pick.resolve.frame" });
         runResolve(enc);

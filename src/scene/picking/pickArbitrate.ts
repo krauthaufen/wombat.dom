@@ -35,7 +35,7 @@ import { Ray3d, Trafo3d, V2i, V3d, V4d } from "@aardworx/wombat.base";
 import type { IIntersectHit, M44d } from "@aardworx/wombat.base";
 
 import { n24DecodeF32 } from "./normal24.js";
-import type { PickArgminResult } from "./pickArgminCompute.js";
+import type { PickArgminResult, PickCamera } from "./pickArgminCompute.js";
 import type { LeafPickScope, PickRegistry } from "./registry.js";
 import { isReversedZ } from "./spiralHitTest.js";
 import type { ResolvedHit } from "./spiralHitTest.js";
@@ -80,6 +80,17 @@ export function arbitratePick(
   const pBwd = proj.backward;
   const pFwd = proj.forward;
 
+  // The pixel candidate belongs to the frame the pick buffer was drawn in:
+  // decode, refine and place it with THAT camera (`result.camera`), not the
+  // current one, or a camera that moved since gives a wrong world point.
+  // The BVH candidate is a ray from the pointer NOW and uses the current
+  // camera. (Without a recorded camera both are the current one.)
+  const frame = result?.camera;
+  const fvFwd = frame !== undefined ? frame.view.forward : vFwd;
+  const fvBwd = frame !== undefined ? frame.view.backward : vBwd;
+  const fpBwd = frame !== undefined ? frame.proj.backward : pBwd;
+  const fpFwd = frame !== undefined ? frame.proj.forward : pFwd;
+
   // Hover id: the raw centre pixel, even when it's not a valid winner
   // (mirrors the spiral path's centre-offset hover latch).
   const hoverPickId = result !== undefined ? Math.abs(result.centerSlot0) | 0 : 0;
@@ -105,7 +116,7 @@ export function arbitratePick(
         pixDepth = ndcZ;
         const ndcX = 2 * ((result.px + 0.5) / sX) - 1;
         const ndcY = 1 - 2 * ((result.py + 0.5) / sY);
-        pixVp = transformPosProj(pBwd, ndcX, ndcY, ndcZ);
+        pixVp = transformPosProj(fpBwd, ndcX, ndcY, ndcZ);
         pixN = V3d.zero;
         pixPi = 0;
         portalUv = { x: result.slot1, y: result.slot2 };
@@ -115,13 +126,13 @@ export function arbitratePick(
         pixDepth = ndcZ;
         const ndcX = 2 * ((result.px + 0.5) / sX) - 1;
         const ndcY = 1 - 2 * ((result.py + 0.5) / sY);
-        pixVp = transformPosProj(pBwd, ndcX, ndcY, ndcZ);
+        pixVp = transformPosProj(fpBwd, ndcX, ndcY, ndcZ);
         pixN = (result.slot1 | 0) === 0 ? V3d.zero : n24ToV3d(result.slot1);
         pixPi = result.slot3 | 0;
       } else {
         // Mode B: viewPos in slots 1..3 directly.
         pixVp = new V3d(result.slot1, result.slot2, result.slot3);
-        pixDepth = transformPosProjZ(pFwd, pixVp);
+        pixDepth = transformPosProjZ(fpFwd, pixVp);
         pixN = V3d.zero;
       }
       pixScope = scope;
@@ -134,6 +145,12 @@ export function arbitratePick(
   let bvhDepth = 0;
   if (bvh !== undefined) {
     bvhDepth = transformPosProjZ(pFwd, vFwd.transformPos(bvh.worldPoint));
+  }
+
+  // Pixel against BVH compares depths in ONE camera, the current one: the
+  // pixel's point taken to world with its frame's camera, then into this one.
+  if (pixScope !== undefined && frame !== undefined) {
+    pixDepth = transformPosProjZ(pFwd, vFwd.transformPos(fvBwd.transformPos(pixVp)));
   }
 
   // ---- arbitration ----
@@ -172,20 +189,23 @@ export function arbitratePick(
     // OWN geometry, near the pixel's point only. Falls back to the pixel
     // result when that misses.
     const refined = portalUv === undefined && result !== undefined
-      ? refinePixel(pixScope, result.px, result.py, sX, sY, pBwd, vBwd, vBwd.transformPos(pixVp))
+      ? refinePixel(pixScope, result.px, result.py, sX, sY, fpBwd, fvBwd, fvBwd.transformPos(pixVp))
       : undefined;
+    const camera: { camera?: PickCamera } = frame !== undefined ? { camera: frame } : {};
     if (refined !== undefined) {
       return {
         scope: pixScope,
-        viewPos: vFwd.transformPos(refined.worldPoint),
-        viewNormal: normalize(transposedTransformDir(vBwd, refined.worldNormal)),
+        viewPos: fvFwd.transformPos(refined.worldPoint),
+        viewNormal: normalize(transposedTransformDir(fvBwd, refined.worldNormal)),
         partIndex: pixPi,
         isPixel: true, hoverPickId,
+        ...camera,
       };
     }
     return {
       scope: pixScope, viewPos: pixVp, viewNormal: pixN, partIndex: pixPi,
       isPixel: true, hoverPickId,
+      ...camera,
       ...(portalUv !== undefined ? { portalUv } : {}),
     };
   }

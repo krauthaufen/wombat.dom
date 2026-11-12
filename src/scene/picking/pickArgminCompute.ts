@@ -39,6 +39,9 @@
 // via the metadata buffer; this is just the window ceiling.
 
 /** Largest radius the packed-key budget supports at runtime. */
+import type { aval } from "@aardworx/wombat.adaptive";
+import type { Trafo3d } from "@aardworx/wombat.base";
+
 export const PICK_ARGMIN_MAX_RADIUS = 127;
 
 /**
@@ -67,7 +70,25 @@ const R_CENTER_SLOT0 = 8; // f32: raw slot0 exactly under the cursor (hover, eve
 const SHIFT = 17;
 
 /** Decoded host-side view of the kernel's result buffer. */
+/**
+ * The camera a pick render was drawn with, as values and as the avals
+ * they came from (a scope under its own `Sg.View`/`Sg.Proj` has other
+ * avals, and keeps resolving with its current camera).
+ */
+export interface PickCamera {
+  readonly view: Trafo3d;
+  readonly proj: Trafo3d;
+  readonly viewAval: aval<Trafo3d>;
+  readonly projAval: aval<Trafo3d>;
+}
+
 export interface PickArgminResult {
+  /**
+   * The camera of the frame whose pick buffer this was read from (set by
+   * the pick producer). A pixel hit's position is relative to THIS camera:
+   * taken through a later one it is a different, wrong world point.
+   */
+  readonly camera?: PickCamera;
   readonly found: boolean;
   readonly px: number;
   readonly py: number;
