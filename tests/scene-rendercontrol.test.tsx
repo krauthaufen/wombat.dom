@@ -13,7 +13,8 @@
 
 import { describe, expect, it } from "vitest";
 import { effect } from "@aardworx/wombat.shader";
-import { mount, useScope } from "../src/index.js";
+import { cval, transact } from "@aardworx/wombat.adaptive";
+import { mount, useScope, UIScheduler } from "../src/index.js";
 import {
   collectSgChildren, DefaultSurfaces, RenderControl, Sg,
 } from "../src/scene/index.js";
@@ -43,6 +44,35 @@ describe("RenderControl — DOM", () => {
 
     handle.dispose();
     expect(root.querySelector("canvas")).toBeNull();
+  });
+
+  it("a style text keeps the canvas defaults and adds its own declarations", () => {
+    const root = document.createElement("div");
+    document.body.appendChild(root);
+    const handle = mount(root, <RenderControl scene={Sg.empty} style="position:absolute;width:100%"/>);
+    const c = root.querySelector("canvas")!;
+    expect(c.style.position).toBe("absolute");
+    expect(c.style.width).toBe("100%");
+    expect(c.style.touchAction).toBe("none");
+    handle.dispose();
+  });
+
+  it("a style that changes (an aval) reaches the canvas, and follows", () => {
+    const root = document.createElement("div");
+    document.body.appendChild(root);
+    const style = cval("position:absolute;height:50%");
+    const scheduler = new UIScheduler({ schedule: () => 0, cancel: () => {} });
+    const handle = mount(root, <RenderControl scene={Sg.empty} style={style}/>, { scheduler });
+    scheduler.flushNow();
+    const c = root.querySelector("canvas")!;
+    expect(c.style.position).toBe("absolute");
+    expect(c.style.height).toBe("50%");
+    expect(c.style.touchAction).toBe("none");
+    transact(() => { style.value = "position:absolute;height:75%"; });
+    scheduler.flushNow();
+    expect(c.style.height).toBe("75%");
+    expect(c.style.touchAction).toBe("none");
+    handle.dispose();
   });
 
   it("dispose is safe when GPU init never starts (no navigator.gpu)", () => {

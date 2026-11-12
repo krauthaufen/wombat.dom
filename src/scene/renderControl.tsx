@@ -223,7 +223,9 @@ export interface RenderControlProps {
   // HTML pass-through props (canvas attributes). Kept loose so
   // callers can pass anything the canvas DOM element accepts; the
   // wombat.dom attribute binder routes by attribute kind.
-  readonly style?: string | Record<string, string | number | boolean | null | undefined>;
+  readonly style?:
+    | string | Record<string, string | number | boolean | null | undefined>
+    | aval<string | Record<string, string | number | boolean | null | undefined> | undefined>;
   readonly class?: string | aval<string>;
   readonly id?: string;
   readonly tabIndex?: number;
@@ -385,15 +387,27 @@ export function RenderControl(props: RenderControlProps): import("../jsx-runtime
     "-webkit-touch-callout": "none",
     overscrollBehavior: "contain",
   };
-  const mergedStyle =
-    typeof userStyle === "string"
-      ? userStyle
-      : { ...defaultStyle, ...(userStyle ?? {}) };
+  // A style TEXT keeps the defaults in front of it (later declarations
+  // win), and a style that CHANGES (an aval, as FableCube hands over a
+  // computed `Dom.Style`) is merged whenever it does. Until 0.25.19 a
+  // text replaced the defaults and an aval was spread like a record:
+  // its styles never reached the canvas, which stayed 300 x 150.
+  type StyleValue = string | Record<string, string | number | boolean | null | undefined> | undefined;
+  const merge = (u: StyleValue): Exclude<StyleValue, undefined> =>
+    typeof u === "string" ? DEFAULT_STYLE_TEXT + u : { ...defaultStyle, ...(u ?? {}) };
+  const isAval = (v: unknown): v is aval<StyleValue> =>
+    typeof v === "object" && v !== null && typeof (v as { getValue?: unknown }).getValue === "function";
+  const mergedStyle = isAval(userStyle) ? userStyle.map(merge) : merge(userStyle as StyleValue);
 
   // Use the JSX runtime indirectly via the global jsx factory —
   // this file is `.tsx` so the build emits a jsx call.
   return <canvas ref={onCanvasMount} style={mergedStyle} {...htmlProps}/>;
 }
+
+/** The canvas's default styles as CSS text (see `defaultStyle` above). */
+const DEFAULT_STYLE_TEXT =
+  "touch-action:none;user-select:none;-webkit-user-select:none;" +
+  "-webkit-touch-callout:none;overscroll-behavior:contain;";
 
 // ---------------------------------------------------------------------------
 // Initialisation — runs on canvas mount.
