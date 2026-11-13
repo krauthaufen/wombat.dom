@@ -72,13 +72,13 @@
   },
   "dependencies": {
     "@aardworx/wombat.base": "^0.6.2",
-    "@aardworx/wombat.shader": "^0.6.10",
+    "@aardworx/wombat.shader": "^0.6.12",
     "@aardworx/wombat.shader-vite": "^0.3.7"
   },
   "peerDependencies": {
     "@aardworx/wombat.base": "^0.6.2",
-    "@aardworx/wombat.rendering": ">=0.25.19",
-    "@aardworx/wombat.shader": "^0.6.10"
+    "@aardworx/wombat.rendering": ">=0.25.20",
+    "@aardworx/wombat.shader": "^0.6.12"
   },
   "peerDependenciesMeta": {
     "@aardworx/wombat.base": {
@@ -94,8 +94,8 @@
   "devDependencies": {
     "@aardworx/wombat.adaptive": "^0.3.1",
     "@aardworx/wombat.base": "^0.6.2",
-    "@aardworx/wombat.rendering": "^0.25.19",
-    "@aardworx/wombat.shader": "^0.6.10",
+    "@aardworx/wombat.rendering": "^0.25.20",
+    "@aardworx/wombat.shader": "^0.6.12",
     "@aardworx/wombat.shader-vite": "^0.3.7",
     "@types/node": "^20.11.0",
     "@vitest/browser": "^1.6.1",
