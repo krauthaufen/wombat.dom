@@ -7,6 +7,7 @@
 import type { aval, alist, amap } from "@aardworx/wombat.adaptive";
 import type { VNode } from "./vnode.js";
 import type { Scope } from "./scope.js";
+import type { UIScheduler } from "./scheduler.js";
 import type { SgNode } from "./scene/sg.js";
 
 // `aval`/`alist` here are `any`-parameterized intentionally: the JSX
@@ -51,7 +52,7 @@ interface CommonAttrs {
   role?: AdaptiveOr<string>;
   "aria-label"?: AdaptiveOr<string>;
   /** Called once the element is created; `scope` ends with the element. */
-  ref?: (el: Element, scope: Scope) => void;
+  ref?: (el: Element, scope: Scope, scheduler: UIScheduler) => void;
   /** While true the children's updates wait and catch up once when it turns
    *  false (a hidden tab pane); the element's own attributes stay live.
    *  docs/deferred-updates.md */
