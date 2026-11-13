@@ -12,6 +12,7 @@ export class Scope implements Disposable {
   private _disposables: Disposable[] = [];
   private _disposed = false;
   private _parent: Scope | undefined;
+  private _depth = 0;
 
   /**
    * The unified event region (RegionRouter) this scope belongs to, set on
@@ -41,10 +42,18 @@ export class Scope implements Disposable {
    *  subtrees (alist rows, aval child swaps) still join the walk. */
   child(): Scope {
     const c = new Scope();
+    c._depth = this._depth + 1;
     if (this.region !== undefined) c.region = this.region;
     this.add(c);
     if (!this._disposed) c._parent = this;
     return c;
+  }
+
+  /** How many scopes enclose this one (a mount root: 0). A subtree that
+   *  appears and goes (a list row, a conditional's branch) is a child
+   *  scope of the binding that adds and removes it: deeper than it. */
+  get depth(): number {
+    return this._depth;
   }
 
   get isDisposed(): boolean {

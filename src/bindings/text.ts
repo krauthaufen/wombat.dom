@@ -89,6 +89,7 @@ export function bindAValChild(
   apply(adaptive.getValue(AdaptiveToken.top));
 
   const binding: Binding = {
+    depth: scope.depth,
     flush(t) {
       apply(adaptive.getValue(t));
     },

@@ -14,6 +14,7 @@ export {
   defaultScheduler,
   type Binding,
 } from "./scheduler.js";
+export { bindEffect } from "./bindings/effect.js";
 export { Fragment, jsx, jsxs, jsxDEV } from "./jsx-runtime.js";
 export type {
   VNode,

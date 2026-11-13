@@ -156,6 +156,7 @@ function bindAValAttr(
   scheduler: UIScheduler,
 ): void {
   const binding: Binding = {
+    depth: scope.depth,
     flush(token: AdaptiveToken) {
       const cur = (v as unknown as { getValue(t: AdaptiveToken): unknown }).getValue(token);
       setOne(el, name, cur);

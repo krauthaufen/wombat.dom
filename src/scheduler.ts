@@ -12,6 +12,30 @@ import { AdaptiveToken, type aval } from "@aardworx/wombat.adaptive";
 export interface Binding {
   /** Pull the latest from this binding's input and apply to the DOM. */
   flush(token: AdaptiveToken): void;
+  /** The depth of the scope it binds in (`Scope.depth`; absent: 0). A
+   *  flush runs outer bindings before inner ones: the binding that removes
+   *  a subtree (a conditional turned false, a row removed) runs before the
+   *  bindings inside it, which it disposes, so they never pull a value
+   *  that only held while the subtree was shown. */
+  readonly depth?: number;
+}
+
+/** `bindings` outer before inner (by `depth`), in their order otherwise;
+ *  the same array when it already is. */
+export function outerFirst(bindings: Binding[]): Binding[] {
+  let prev = -Infinity;
+  let ordered = true;
+  for (const b of bindings) {
+    const d = b.depth ?? 0;
+    if (d < prev) { ordered = false; break; }
+    prev = d;
+  }
+  if (ordered) return bindings;
+  // a stable sort: same depth, same order
+  return bindings
+    .map((b, i) => ({ b, i, d: b.depth ?? 0 }))
+    .sort((x, y) => x.d - y.d || x.i - y.i)
+    .map((x) => x.b);
 }
 
 /**
@@ -105,7 +129,11 @@ export class UIScheduler {
     this._flushing = work;
     const tok = AdaptiveToken.top;
     try {
-      for (const b of work) {
+      // outer before inner (`Binding.depth`); a binding forgotten meanwhile
+      // (its subtree disposed by one flushed earlier) is left out
+      const order = work.size > 1 ? outerFirst([...work]) : [...work];
+      for (const b of order) {
+        if (!work.has(b)) continue;
         try {
           b.flush(tok);
         } catch (err) {
@@ -139,6 +167,8 @@ export const defaultScheduler = new UIScheduler();
  */
 export class DeferringScheduler extends UIScheduler {
   private _parked = new Set<Binding>();
+  /** The parked bindings being flushed by `_set` (see `UIScheduler._flushing`). */
+  private _releasing: Set<Binding> | null = null;
   private _hidden: boolean;
 
   constructor(
@@ -171,6 +201,7 @@ export class DeferringScheduler extends UIScheduler {
 
   override forget(b: Binding): void {
     this._parked.delete(b);
+    this._releasing?.delete(b);
     this._parent.forget(b);
   }
 
@@ -185,15 +216,23 @@ export class DeferringScheduler extends UIScheduler {
   private _set(hidden: boolean): void {
     this._hidden = hidden;
     if (hidden || this._parked.size === 0) return;
-    const parked = [...this._parked];
-    this._parked.clear();
+    const releasing = this._parked;
+    this._parked = new Set();
+    this._releasing = releasing;
     const tok = AdaptiveToken.top;
-    for (const b of parked) {
-      try {
-        b.flush(tok);
-      } catch (err) {
-        console.error("[wombat.dom] binding flush threw", err);
+    try {
+      // as `UIScheduler.flush`: outer before inner, the forgotten left out
+      const order = releasing.size > 1 ? outerFirst([...releasing]) : [...releasing];
+      for (const b of order) {
+        if (!releasing.has(b)) continue;
+        try {
+          b.flush(tok);
+        } catch (err) {
+          console.error("[wombat.dom] binding flush threw", err);
+        }
       }
+    } finally {
+      this._releasing = null;
     }
   }
 }

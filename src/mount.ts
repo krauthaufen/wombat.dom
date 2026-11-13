@@ -181,7 +181,8 @@ function bindElementProps(
   for (const [name, value] of Object.entries(props)) {
     if (name === "children" || name === "deferUpdates") continue;
     if (name === "ref" && typeof value === "function") {
-      (value as (e: Element, s: Scope) => void)(el, scope);
+      // the scheduler too, for effects bound in it (`bindEffect`)
+      (value as (e: Element, s: Scope, sch: UIScheduler) => void)(el, scope, scheduler);
       continue;
     }
     bindAttr(el, name, value, scope, scheduler);

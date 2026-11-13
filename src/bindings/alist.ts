@@ -109,7 +109,7 @@ export function bindAlistChildren(
     if (waiting.count > 0) scheduler.notify(binding);
   };
 
-  const binding: Binding = { flush: (t) => apply(t, scheduler.synchronous) };
+  const binding: Binding = { depth: scope.depth, flush: (t) => apply(t, scheduler.synchronous) };
 
   // initial pull: the whole list, synchronously (a mount is complete when it returns)
   apply(AdaptiveToken.top, true);
