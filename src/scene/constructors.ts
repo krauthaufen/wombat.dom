@@ -41,6 +41,7 @@ import type {
   CullValue,
   DepthBiasValue,
   DepthCompare,
+  DepthCompareByProjection,
   EventHandlers,
   FillModeValue,
   FrontFaceValue,
@@ -298,14 +299,32 @@ function isDerivedModeRuleAny(v: unknown): boolean {
   return typeof v === "object" && v !== null
       && (v as { __derivedModeRule?: unknown }).__derivedModeRule === true;
 }
+const _byProjection = new Map<DepthCompare, DepthCompareByProjection>();
+/**
+ * `standard` as a depth test that follows the projection: as given under a
+ * standard projection (nearer = smaller depth), flipped under a reversed-Z
+ * one. For `DepthTest`. One shared value per test, so scopes using it
+ * share their pipeline state.
+ */
+export function depthByProjection(standard: DepthCompare): DepthCompareByProjection {
+  let m = _byProjection.get(standard);
+  if (m === undefined) { m = Object.freeze({ depthByProjection: standard }); _byProjection.set(standard, m); }
+  return m;
+}
+function isDepthByProjection(v: unknown): v is DepthCompareByProjection {
+  return typeof v === "object" && v !== null
+      && typeof (v as { depthByProjection?: unknown }).depthByProjection === "string";
+}
 function depthTest(
   mode:
     | DepthCompare
     | aval<DepthCompare>
+    | DepthCompareByProjection
     | import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"depthCompare">,
 ): (child: SgNode) => SgNode {
   const m = isDerivedModeRuleAny(mode)
     ? mode as import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"depthCompare">
+    : isDepthByProjection(mode) ? depthByProjection(mode.depthByProjection)
     : liftAval(mode as DepthCompare | aval<DepthCompare>);
   return (child: SgNode): SgNode => ({ kind: "DepthTest", mode: m, child });
 }
@@ -557,6 +576,7 @@ export interface SgScopeProps {
   DepthTest?:
     | DepthCompare
     | aval<DepthCompare>
+    | DepthCompareByProjection
     | import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"depthCompare">;
   DepthMask?:
     | boolean

@@ -60,10 +60,9 @@ import { clamp, discard, fract, max, min, sqrt } from "@aardworx/wombat.shader/t
 import type { f32, u32, Storage } from "@aardworx/wombat.shader/types";
 
 import type { VNode } from "../vnode.js";
-import { Sg } from "./constructors.js";
+import { Sg, depthByProjection } from "./constructors.js";
 import type { SgNode } from "./sg.js";
 import type { SgScopeProps } from "./constructors.js";
-import { viewport as ambViewport, proj as ambProj } from "./ambient.js";
 
 // `DebugMode` lives only in this file; PathColor/Viewport/AaWidthPx
 // are augmented in text.ts and shared.
@@ -121,10 +120,10 @@ function processCand(
   // moves. ProjTrafo stays separate (small view-space numbers are safe).
   const cC0 = uniform.ProjTrafo.mul(uniform.ModelViewTrafo.mul(cT0));
   const cC2 = uniform.ProjTrafo.mul(uniform.ModelViewTrafo.mul(cT2));
-  const e0px = (cC0.x / cC0.w + 1.0) * 0.5 * uniform.Viewport.x;
-  const e0py = (cC0.y / cC0.w + 1.0) * 0.5 * uniform.Viewport.y;
-  const e2px = (cC2.x / cC2.w + 1.0) * 0.5 * uniform.Viewport.x;
-  const e2py = (cC2.y / cC2.w + 1.0) * 0.5 * uniform.Viewport.y;
+  const e0px = (cC0.x / cC0.w + 1.0) * 0.5 * uniform.ViewportSize.x;
+  const e0py = (cC0.y / cC0.w + 1.0) * 0.5 * uniform.ViewportSize.y;
+  const e2px = (cC2.x / cC2.w + 1.0) * 0.5 * uniform.ViewportSize.x;
+  const e2py = (cC2.y / cC2.w + 1.0) * 0.5 * uniform.ViewportSize.y;
   let bestPx2: f32 = 1.0e20;
   const isLine = (a.x == b.x) && (a.y == b.y);
   if (isLine) {
@@ -160,12 +159,12 @@ function processCand(
         const dNy = daw * cC0.y + dbw * cC1.y + dcw * cC2.y;
         const dWv = daw * cC0.w + dbw * cC1.w + dcw * cC2.w;
         const invW = 1.0 / max(Wv, 1.0e-9);
-        const Px = (Nx * invW + 1.0) * 0.5 * uniform.Viewport.x;
-        const Py = (Ny * invW + 1.0) * 0.5 * uniform.Viewport.y;
+        const Px = (Nx * invW + 1.0) * 0.5 * uniform.ViewportSize.x;
+        const Py = (Ny * invW + 1.0) * 0.5 * uniform.ViewportSize.y;
         const dBx = (dNx * Wv - Nx * dWv) * invW * invW;
         const dBy = (dNy * Wv - Ny * dWv) * invW * invW;
-        const dPx = dBx * 0.5 * uniform.Viewport.x;
-        const dPy = dBy * 0.5 * uniform.Viewport.y;
+        const dPx = dBx * 0.5 * uniform.ViewportSize.x;
+        const dPy = dBy * 0.5 * uniform.ViewportSize.y;
         const rdx = Px - fragPxX;
         const rdy = Py - fragPxY;
         const Fv = rdx * dPx + rdy * dPy;
@@ -181,8 +180,8 @@ function processCand(
       const Nyf = awf * cC0.y + bwf * cC1.y + cwf * cC2.y;
       const Wvf = awf * cC0.w + bwf * cC1.w + cwf * cC2.w;
       const invWf = 1.0 / max(Wvf, 1.0e-9);
-      const Pxf = (Nxf * invWf + 1.0) * 0.5 * uniform.Viewport.x;
-      const Pyf = (Nyf * invWf + 1.0) * 0.5 * uniform.Viewport.y;
+      const Pxf = (Nxf * invWf + 1.0) * 0.5 * uniform.ViewportSize.x;
+      const Pyf = (Nyf * invWf + 1.0) * 0.5 * uniform.ViewportSize.y;
       const rdxf = Pxf - fragPxX;
       const rdyf = Pyf - fragPxY;
       bestPx2 = min(bestPx2, rdxf * rdxf + rdyf * rdyf);
@@ -278,8 +277,8 @@ function buildSdfTextEffect(): Effect {
         0.0, 1.0,
       );
       const fragClip = uniform.ProjTrafo.mul(uniform.ModelViewTrafo.mul(fragText));
-      const fragPxX = (fragClip.x / fragClip.w + 1.0) * 0.5 * uniform.Viewport.x;
-      const fragPxY = (fragClip.y / fragClip.w + 1.0) * 0.5 * uniform.Viewport.y;
+      const fragPxX = (fragClip.x / fragClip.w + 1.0) * 0.5 * uniform.ViewportSize.x;
+      const fragPxY = (fragClip.y / fragClip.w + 1.0) * 0.5 * uniform.ViewportSize.y;
 
       let minDistPx2: f32 = 1.0e20;
       if (isBand || isFill) {
@@ -392,8 +391,10 @@ export function sdfTextDepth(scope: SgScopeProps | undefined): {
     // reversed-Z (M22 >= 0, e.g. the infinite-far reversed perspective)
     // needs greater-equal — a hardcoded less-equal silently inverts the
     // test there and text only shows THROUGH nearer geometry.
-    depthTest: DepthTest ?? ambProj.map((p) =>
-      (p.forward.M22 >= 0 ? "greater-equal" : "less-equal") as GPUCompareFunction),
+    // The projection is the one the text is drawn under (the traversal
+    // state's), not the ambient render control's: an offscreen scene has
+    // its own.
+    depthTest: DepthTest ?? depthByProjection("less-equal"),
     depthMask: DepthMask ?? true,
     scope: scope === undefined ? undefined : (rest as SgScopeProps),
   };
@@ -451,9 +452,6 @@ export function buildSdfTextScene(args: SdfTextArgs): SgNode {
     .add("bandCandIndices", AVal.constant<IBuffer>(candIdxBuf));
 
   const effect = buildSdfTextEffect();
-  const viewportV2: aval<V2f> = ambViewport.map(
-    (vp) => new V2f(vp.width, vp.height),
-  );
 
   const colorAval: aval<V4f> = color;
 
@@ -499,7 +497,6 @@ export function buildSdfTextScene(args: SdfTextArgs): SgNode {
     Shader: effect,
     Uniform: {
       PathColor: colorAval,
-      Viewport: viewportV2,
       AaWidthPx: aaWidth,
       // the shader reads it: provided here (off by default), not left
       // to an outer scope that has none (the "no provider" warning)
@@ -517,7 +514,7 @@ export function buildSdfTextScene(args: SdfTextArgs): SgNode {
     // outward-bulging beziers (band overlaps lens; lens already
     // paints α=1 so the band's SDF result there is harmlessly
     // covered by the lens fragment).
-    // Direction follows the ambient projection: reversed-Z (M22 >= 0,
+    // Direction follows the projection: reversed-Z (M22 >= 0,
     // e.g. the infinite-far reversed perspective) needs greater-equal —
     // a hardcoded less-equal silently inverts the test there and text
     // only shows THROUGH nearer geometry.

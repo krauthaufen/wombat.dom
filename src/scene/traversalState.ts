@@ -641,8 +641,19 @@ export class TraversalState implements IUniformProvider {
   // intact so a whole subtree without a render-state scope shares one.
 
   pushDepthTest(
-    mode: aval<DepthCompare> | import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"depthCompare">,
+    mode:
+      | aval<DepthCompare>
+      | import("./sg.js").DepthCompareByProjection
+      | import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"depthCompare">,
   ): TraversalState {
+    const std = (mode as { depthByProjection?: DepthCompare }).depthByProjection;
+    if (typeof std === "string") {
+      return this.with({
+        depthTest: depthTestByProjection(this.proj, std),
+        depthTestRule: undefined,
+        pipelineState: undefined,
+      });
+    }
     const isRule = typeof mode === "object" && mode !== null
                 && (mode as { __derivedModeRule?: unknown }).__derivedModeRule === true;
     if (isRule) {
@@ -901,6 +912,41 @@ export class TraversalState implements IUniformProvider {
   private tryGetAutoUniform(name: string): aval<unknown> | undefined {
     return deriveAutoUniform(name, this.model, this.view, this.proj, this.viewport);
   }
+}
+
+const _depthByProj = new WeakMap<aval<Trafo3d>, Map<DepthCompare, aval<DepthCompare>>>();
+const _flipped: { readonly [K in DepthCompare]?: DepthCompare } = {
+  "less": "greater", "less-equal": "greater-equal",
+  "greater": "less", "greater-equal": "less-equal",
+};
+/**
+ * Whether `proj` is a reversed-Z projection (nearer = greater depth): its
+ * depth grows with view-space z (M22 >= 0; the infinite-far reversed
+ * perspective has M22 = 0). The identity (no projection set) is standard.
+ */
+export function isReversedZ(proj: Trafo3d): boolean {
+  const m = proj.forward;
+  if (m.M22 === 1 && m.M23 === 0 && m.M32 === 0 && m.M33 === 1) return false;
+  return m.M22 >= 0;
+}
+/**
+ * `standard` (a test for nearer = smaller depth) under `proj`: flipped
+ * while `proj` is reversed-Z. One aval per projection and test: every
+ * scope under one projection shares it (and so its pipeline state).
+ */
+export function depthTestByProjection(proj: aval<Trafo3d>, standard: DepthCompare): aval<DepthCompare> {
+  let byTest = _depthByProj.get(proj);
+  if (byTest === undefined) { byTest = new Map(); _depthByProj.set(proj, byTest); }
+  let t = byTest.get(standard);
+  if (t === undefined) {
+    const flipped = _flipped[standard] ?? standard;
+    t = flipped === standard || proj.isConstant
+      // AVal.force OK: isConstant
+      ? AVal.constant<DepthCompare>(flipped !== standard && isReversedZ(AVal.force(proj)) ? flipped : standard)
+      : AVal.map(proj, (p: Trafo3d) => (isReversedZ(p) ? flipped : standard));
+    byTest.set(standard, t);
+  }
+  return t;
 }
 
 /**

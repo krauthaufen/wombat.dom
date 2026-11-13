@@ -26,10 +26,9 @@ import {
 import { effect, vertex, type Effect } from "@aardworx/wombat.shader";
 import { uniform } from "@aardworx/wombat.shader/uniforms";
 import { max } from "@aardworx/wombat.shader/types";
-import { Sg } from "./constructors.js";
+import { Sg, depthByProjection } from "./constructors.js";
 import type { SgNode } from "./sg.js";
 import type { SgScopeProps } from "./constructors.js";
-import type { TraversalState } from "./traversalState.js";
 import { markHeapSafeDrawAVal, markHostBufferAVal } from "./hostBuffers.js";
 import { pathFsAaAlpha, pathFsAaNone } from "./text.js";
 
@@ -106,12 +105,12 @@ const vsPathRibbon = vertex((input: { a_localPos: V2f; a_klmKind: V4f }) => {
   if (input.a_klmKind.w > 2.5) {
     const outClip = uniform.ProjTrafo.mul(uniform.ModelViewTrafo.mul(new V4f(input.a_klmKind.x, input.a_klmKind.y, 0.0, 0.0)));
     const outNdc = new V2f(outClip.x, outClip.y).div(max(clip.w, 1e-8));
-    const outPx = new V2f(outNdc.x * uniform.Viewport.x, outNdc.y * uniform.Viewport.y);
+    const outPx = new V2f(outNdc.x * uniform.ViewportSize.x, outNdc.y * uniform.ViewportSize.y);
     const len = max(outPx.length(), 1e-8);
     const signedHalf = input.a_klmKind.z - 0.5;
     const stepNdc = new V2f(
-      outPx.x / len / uniform.Viewport.x * 2.0 * uniform.AaWidthPx,
-      outPx.y / len / uniform.Viewport.y * 2.0 * uniform.AaWidthPx,
+      outPx.x / len / uniform.ViewportSize.x * 2.0 * uniform.AaWidthPx,
+      outPx.y / len / uniform.ViewportSize.y * 2.0 * uniform.AaWidthPx,
     );
     clip = new V4f(clip.x + stepNdc.x * clip.w * signedHalf, clip.y + stepNdc.y * clip.w * signedHalf, clip.z, clip.w);
   }
@@ -166,14 +165,13 @@ export function SgPath(props: SgPathProps & SgScopeProps): SgNode {
   const aaWidth: aval<number> = aaWidthPx === undefined
     ? AVal.constant(1)
     : (typeof aaWidthPx === "number" ? AVal.constant(aaWidthPx) : aaWidthPx);
-  // The viewport (for the AA ramp's width in pixels) and the depth
-  // convention come from the traversal state this path is drawn in —
-  // not the ambient render control, which an offscreen scene has not.
-  const tree = Sg.delay((state: TraversalState) => Sg({
+  // The viewport (the auto uniform `ViewportSize`) and the depth convention
+  // are those of the traversal state this path is drawn in — not the
+  // ambient render control's, which an offscreen scene has not.
+  const tree = Sg({
     Shader: fillEffect(aa),
     Uniform: {
       PathColor: color,
-      Viewport: state.viewport.map((vp) => new V2f(vp.width, vp.height)),
       AaWidthPx: aaWidth,
     },
     // the fill's triangles come in either orientation
@@ -182,9 +180,9 @@ export function SgPath(props: SgPathProps & SgScopeProps): SgNode {
       BlendMode: alphaOverBlend(),
       // curve and interior triangles of one path meet at equal depth (text.ts);
       // reversed-Z flips the test
-      DepthTest: state.proj.map((p) => (p.forward.M22 >= 0 ? "greater-equal" : "less-equal") as GPUCompareFunction),
+      DepthTest: depthByProjection("less-equal"),
     } : {}),
     children: [leaf],
-  } as never));
+  } as never);
   return Object.keys(scope).length === 0 ? tree : Sg({ ...(scope as object), children: [tree] } as never);
 }

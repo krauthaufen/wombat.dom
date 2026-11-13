@@ -373,12 +373,26 @@ export type DepthCompare =
   | "never" | "less" | "equal" | "less-equal"
   | "greater" | "not-equal" | "greater-equal" | "always";
 
+/**
+ * A depth test given for the standard convention (nearer = smaller depth)
+ * that follows the projection it is drawn under: under a reversed-Z
+ * projection `less` / `less-equal` become `greater` / `greater-equal` (and
+ * the other way round). Made by `depthByProjection`; resolved against the
+ * traversal state's projection where the scope is lowered, so a scene drawn
+ * offscreen follows its own projection, not a render control's.
+ */
+export interface DepthCompareByProjection {
+  readonly depthByProjection: DepthCompare;
+}
+
 export interface SgDepthTest {
   readonly kind: "DepthTest";
-  /** Either an aval of a fixed `DepthCompare`, or a derived-mode rule
-   *  evaluating depthCompare as a function of per-RO uniforms. */
+  /** Either an aval of a fixed `DepthCompare`, a test that follows the
+   *  projection, or a derived-mode rule evaluating depthCompare as a
+   *  function of per-RO uniforms. */
   readonly mode:
     | aval<DepthCompare>
+    | DepthCompareByProjection
     | import("@aardworx/wombat.rendering/runtime").DerivedModeRule<"depthCompare">;
   readonly child: SgNode;
 }

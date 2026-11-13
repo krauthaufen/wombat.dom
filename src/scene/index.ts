@@ -50,7 +50,9 @@ export {
   countLeaves,
 } from "./visit.js";
 
-export { Sg, collectSgChildren, type SgScopeProps, type ActiveOptions } from "./constructors.js";
+export { Sg, collectSgChildren, depthByProjection, type SgScopeProps, type ActiveOptions } from "./constructors.js";
+export type { DepthCompareByProjection } from "./sg.js";
+export { isReversedZ } from "./traversalState.js";
 export { idleRegistration } from "./idleRegistration.js";
 
 export {

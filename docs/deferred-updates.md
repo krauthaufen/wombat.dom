@@ -53,12 +53,14 @@ pane holding a render control defers its DOM bindings only.
 (the first pull is synchronous). Showing it later with nothing changed costs
 nothing — no parked bindings.
 
-**Slicing the catch-up.** On show, the parked bindings flush in one frame. For
-the 714-row case that is the same work the swap did before, moved to the
-moment the user opens the tab. A per-row sliced catch-up would need the alist
-binding to apply a delta partially across frames; not done unless the
-measured show stalls (it is one frame of ~the old swap cost, only after a swap
-that changed the hidden list, and only when the tab is opened).
+**Slicing the catch-up.** A list binding (`bindAlistChildren`) builds rows for
+`SLICE_BUDGET_MS` (10 ms) per flush and leaves the rest to the following
+frames, first in the list first: opening a tab whose list changed a lot while
+hidden shows its first rows at once and the page stays responsive while the
+others follow (the 714-row catch-up was one frame of ~1 s). The same holds
+for any large insertion into a visible list. Removals never wait, a later
+change to a waiting row replaces it, and an update that fits the budget is
+applied whole, as before. The first mount and `flushNow` are whole.
 
 ## Tests (tests/deferred-updates.test.ts)
 

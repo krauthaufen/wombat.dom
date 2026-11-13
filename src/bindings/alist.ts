@@ -20,7 +20,7 @@ import {
   type alist,
 } from "@aardworx/wombat.adaptive";
 import { Scope } from "../scope.js";
-import type { UIScheduler, Binding } from "../scheduler.js";
+import { SLICE_BUDGET_MS, type UIScheduler, type Binding } from "../scheduler.js";
 import { mountChildValue } from "./text.js";
 
 interface Row {
@@ -73,26 +73,50 @@ export function bindAlistChildren(
     rows = rows.add(idx, { marker, scope: rowScope });
   };
 
-  const apply = (token: AdaptiveToken): void => {
+  // Rows waiting to be built, by index (docs/deferred-updates.md, "Slicing").
+  // Removals are never kept waiting; only the building of rows is spread
+  // over frames, and only once a flush has used up its budget
+  // (`SLICE_BUDGET_MS`): an update that fits is applied whole, in the
+  // delta's order, exactly as before.
+  let waiting = MapExt.empty<Index, unknown>(indexCmp);
+
+  const apply = (token: AdaptiveToken, whole: boolean): void => {
     const delta = reader.getChanges(token);
+    const start = whole ? 0 : scheduler.now();
+    let built = 0;
+    let late = waiting.count > 0;   // rows already wait: new ones queue behind them
     for (const [idx, op] of delta) {
       if (op.tag === "Set") {
         // Replace if present, else insert.
         if (rows.tryFind(idx) !== undefined) removeRowAt(idx);
-        insertRowAt(idx, op.value);
+        if (!late && !whole && (++built & 7) === 0 && scheduler.now() - start > SLICE_BUDGET_MS) late = true;
+        if (late) waiting = waiting.add(idx, op.value);
+        else insertRowAt(idx, op.value);
       } else {
+        if (waiting.count > 0) waiting = waiting.remove(idx);
         removeRowAt(idx);
       }
     }
+    if (waiting.count === 0) return;
+    // the waiting rows, first in the list first, while the budget lasts
+    built = 0;
+    while (waiting.count > 0) {
+      if (!whole && (++built & 7) === 0 && scheduler.now() - start > SLICE_BUDGET_MS) break;
+      const [idx, value] = waiting.tryMin()!;
+      waiting = waiting.remove(idx);
+      insertRowAt(idx, value);
+    }
+    if (waiting.count > 0) scheduler.notify(binding);
   };
 
-  // initial pull
-  apply(AdaptiveToken.top);
+  const binding: Binding = { flush: (t) => apply(t, scheduler.synchronous) };
+
+  // initial pull: the whole list, synchronously (a mount is complete when it returns)
+  apply(AdaptiveToken.top, true);
 
   const adaptive = reader as unknown as {
     addMarkingCallback(cb: () => void): IDisposable;
   };
-  const binding: Binding = { flush: (t) => apply(t) };
   const disp = adaptive.addMarkingCallback(() => scheduler.notify(binding));
   scope.add({
     dispose: () => {
@@ -102,6 +126,7 @@ export function bindAlistChildren(
       // but the parent endAnchor cleanup handled the boundary)
       for (const [, r] of rows) r.scope.dispose();
       rows = MapExt.empty(indexCmp);
+      waiting = MapExt.empty(indexCmp);
     },
   });
 }

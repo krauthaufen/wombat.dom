@@ -14,6 +14,15 @@ export interface Binding {
   flush(token: AdaptiveToken): void;
 }
 
+/**
+ * How long one binding may keep building rows in a frame before it leaves
+ * the rest to the next one (`bindAlistChildren`): a large insertion then
+ * shows its first rows at once and the page stays responsive while the
+ * others follow. Below this nothing changes: an update that fits is applied
+ * whole, as always.
+ */
+export const SLICE_BUDGET_MS = 10;
+
 export class UIScheduler {
   private _dirty = new Set<Binding>();
   /** The batch currently being flushed (null outside flush). `forget`
@@ -25,6 +34,7 @@ export class UIScheduler {
   private _flushing: Set<Binding> | null = null;
   private _frame: number | null = null;
   private _disposed = false;
+  private _synchronous = false;
   private readonly _scheduleFrame: (cb: () => void) => number;
   private readonly _cancelFrame: (handle: number) => void;
 
@@ -66,13 +76,25 @@ export class UIScheduler {
     this._flushing?.delete(b);
   }
 
-  /** Run any pending flush immediately and synchronously. */
+  /** Run any pending flush immediately and synchronously. Bindings apply
+   *  everything they have (`synchronous`): nothing is left to a later
+   *  frame. */
   flushNow(): void {
     if (this._frame !== null) {
       this._cancelFrame(this._frame);
       this._frame = null;
     }
-    this.flush();
+    this._synchronous = true;
+    try { this.flush(); } finally { this._synchronous = false; }
+  }
+
+  /** True during `flushNow`: a binding that spreads large work over
+   *  frames must finish it in this flush. */
+  get synchronous(): boolean { return this._synchronous; }
+
+  /** The clock bindings measure their frame budget with (ms). */
+  now(): number {
+    return typeof performance !== "undefined" ? performance.now() : Date.now();
   }
 
   private flush(): void {
@@ -155,6 +177,10 @@ export class DeferringScheduler extends UIScheduler {
   override flushNow(): void {
     this._parent.flushNow();
   }
+
+  override get synchronous(): boolean { return this._parent.synchronous; }
+
+  override now(): number { return this._parent.now(); }
 
   private _set(hidden: boolean): void {
     this._hidden = hidden;

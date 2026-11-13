@@ -35,7 +35,6 @@
 //                        to opt into MSAA, TODO).
 
 import { AVal, HashMap, type aval } from "@aardworx/wombat.adaptive";
-import { proj as ambProj } from "./ambient.js";
 import { V2d, V2f, V3d, V4f, Trafo3d } from "@aardworx/wombat.base";
 import {
   Font, GlyphCache, GLYPH_FLOATS_PER_VERTEX, layoutText,
@@ -49,23 +48,24 @@ import { effect, vertex, fragment } from "@aardworx/wombat.shader";
 import { uniform } from "@aardworx/wombat.shader/uniforms";
 import { clamp, dFdx, dFdy, discard, max, sqrt, step } from "@aardworx/wombat.shader/types";
 
-// Custom uniforms used by the path-text effects. Augmenting
+// Custom uniforms used by the path-text effects. The viewport's size in
+// pixels (the AA ramp's width) is the standard `ViewportSize`: derived
+// from the traversal state the text or path is drawn in, so an offscreen
+// scene gets its own, not a render control's. Augmenting
 // `UniformScope` so `uniform.PathColor` etc. type-check inside the
 // inline-marker bodies; the inline plugin lowers each access to a
 // `ReadInput("Uniform", ...)` and the runtime matches by name.
 declare module "@aardworx/wombat.shader/uniforms" {
   interface UniformScope {
     readonly PathColor: V4f;
-    readonly Viewport: V2f;
     readonly AaWidthPx: number;
   }
 }
 
 import type { VNode } from "../vnode.js";
-import { Sg } from "./constructors.js";
+import { Sg, depthByProjection } from "./constructors.js";
 import type { SgNode } from "./sg.js";
 import type { SgScopeProps, SgNamespace } from "./constructors.js";
-import { viewport as ambViewport } from "./ambient.js";
 import { buildSdfTextScene } from "./text-sdf.js";
 
 // Module augmentation so callers can write `<Sg.Text .../>` and the
@@ -144,13 +144,13 @@ const vsRibbon = vertex((input: {
     const isOut = input.a_klmKind.z;
     const outClip = uniform.ProjTrafo.mul(uniform.ModelViewTrafo.mul(new V4f(outX, outY, 0.0, 0.0)));
     const outNdc = new V2f(outClip.x, outClip.y).div(max(clip.w, 1e-8));
-    const outPx  = new V2f(outNdc.x * uniform.Viewport.x, outNdc.y * uniform.Viewport.y);
+    const outPx  = new V2f(outNdc.x * uniform.ViewportSize.x, outNdc.y * uniform.ViewportSize.y);
     const len    = max(outPx.length(), 1e-8);
     const stepPx = new V2f(outPx.x / len, outPx.y / len);
     const signedHalf = isOut - 0.5;
     const stepNdc = new V2f(
-      stepPx.x / uniform.Viewport.x * 2.0 * uniform.AaWidthPx,
-      stepPx.y / uniform.Viewport.y * 2.0 * uniform.AaWidthPx,
+      stepPx.x / uniform.ViewportSize.x * 2.0 * uniform.AaWidthPx,
+      stepPx.y / uniform.ViewportSize.y * 2.0 * uniform.AaWidthPx,
     );
     clip = new V4f(
       clip.x + stepNdc.x * clip.w * signedHalf,
@@ -481,9 +481,6 @@ export function SgText(
   // CullMode none (path triangles are math-CCW = framebuffer-CW),
   // alpha-blend BlendMode for the alpha-blending AA mode, user
   // scope props on top.
-  const viewportV2: aval<V2f> = ambViewport.map(
-    (vp) => new V2f(vp.width, vp.height),
-  );
   const aaWidthAval: aval<number> = aaWidthPx === undefined
     ? AVal.constant(1)
     : (typeof aaWidthPx === "number"
@@ -494,7 +491,6 @@ export function SgText(
     Shader: effect,
     Uniform: {
       PathColor:     colorAval,
-      Viewport:      viewportV2,
       AaWidthPx: aaWidthAval,
     },
     CullMode: "none",
@@ -515,8 +511,7 @@ export function SgText(
       BlendMode: alphaOverBlendState(),
       // reversed-Z aware (see text-sdf.ts): hardcoded less-equal inverts
       // the test under a reversed projection and text disappears.
-      DepthTest: ambProj.map((p) =>
-        (p.forward.M22 >= 0 ? "greater-equal" : "less-equal") as GPUCompareFunction),
+      DepthTest: depthByProjection("less-equal"),
     } : {}),
     ...(alignTrafo !== undefined ? { Trafo: alignTrafo } : {}),
     children: leafChildren,

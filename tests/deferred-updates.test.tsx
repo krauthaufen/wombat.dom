@@ -106,3 +106,95 @@ describe("deferUpdates", () => {
     expect(root.querySelector("span")!.textContent).toBe("two");
   });
 });
+
+// A large insertion is built over several frames once a flush has used its
+// budget; removals never wait; `flushNow` and the first mount finish at once.
+describe("alist rows: a large insertion is spread over frames", () => {
+  let root: HTMLDivElement;
+  const frames: (() => void)[] = [];
+  let clock = 0;
+  class Sched extends UIScheduler {
+    constructor() { super({ schedule: (cb) => frames.push(cb), cancel: () => { frames.length = 0; } }); }
+    // every look at the clock costs a millisecond: 8 rows per look
+    override now(): number { return clock++; }
+  }
+  const frame = (): void => { const f = frames.splice(0); for (const cb of f) cb(); };
+  const items = (): string[] => Array.from(root.querySelectorAll("li")).map((e) => e.textContent ?? "");
+  const names = (n: number, from = 0): string[] => Array.from({ length: n }, (_, i) => `r${from + i}`);
+
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    root = document.createElement("div");
+    document.body.appendChild(root);
+    frames.length = 0; clock = 0;
+  });
+
+  it("the first mount is whole; a small update is applied whole", () => {
+    const scheduler = new Sched();
+    const list = clist(names(1000));
+    mount(root, <ul>{AList.map((x: string) => <li>{x}</li>, list)}</ul>, { scheduler });
+    expect(items().length).toBe(1000);
+    transact(() => { list.add("x"); list.removeAt(0); });
+    frame();
+    expect(items().length).toBe(1000);
+    expect(items()[999]).toBe("x");
+    expect(frames.length).toBe(0);
+  });
+
+  it("many new rows come in list order over several frames, the first at once", () => {
+    const scheduler = new Sched();
+    const list = clist<string>(["first"]);
+    mount(root, <ul>{AList.map((x: string) => <li>{x}</li>, list)}</ul>, { scheduler });
+    transact(() => { for (const n of names(1000)) list.add(n); });
+    frame();
+    const after1 = items();
+    expect(after1.length).toBeGreaterThan(8);
+    expect(after1.length).toBeLessThan(1001);
+    expect(after1).toEqual(["first", ...names(after1.length - 1)]);   // a prefix, in order
+    let n = 0;
+    while (frames.length > 0 && n++ < 100) frame();
+    expect(n).toBeGreaterThan(1);
+    expect(items()).toEqual(["first", ...names(1000)]);
+  });
+
+  it("removals and later changes while rows wait give the list's final state", () => {
+    const scheduler = new Sched();
+    const list = clist<string>([]);
+    mount(root, <ul>{AList.map((x: string) => <li>{x}</li>, list)}</ul>, { scheduler });
+    transact(() => { for (const n of names(1000)) list.add(n); });
+    frame();
+    expect(items().length).toBeLessThan(1000);
+    // a built row and a waiting one go, one is added in front, one at the end
+    transact(() => { list.removeAt(999); list.removeAt(0); list.insertAt(0, "front"); list.add("end"); });
+    frame();
+    expect(items()[0]).not.toBe("r0");       // the removal did not wait
+    while (frames.length > 0) frame();
+    expect(items()).toEqual(["front", ...names(998, 1), "end"]);
+  });
+
+  it("flushNow leaves nothing waiting", () => {
+    const scheduler = new Sched();
+    const list = clist<string>([]);
+    mount(root, <ul>{AList.map((x: string) => <li>{x}</li>, list)}</ul>, { scheduler });
+    transact(() => { for (const n of names(1000)) list.add(n); });
+    scheduler.flushNow();
+    expect(items()).toEqual(names(1000));
+    expect(frames.length).toBe(0);
+  });
+
+  it("a hidden list catches up over frames when shown", () => {
+    const scheduler = new Sched();
+    const hidden = cval(true);
+    const list = clist<string>([]);
+    mount(root, <ul deferUpdates={hidden}>{AList.map((x: string) => <li>{x}</li>, list)}</ul>, { scheduler });
+    transact(() => { for (const n of names(1000)) list.add(n); });
+    frame();
+    expect(items().length).toBe(0);
+    transact(() => { hidden.value = false; });
+    frame();
+    expect(items().length).toBeGreaterThan(8);
+    expect(items().length).toBeLessThan(1000);
+    while (frames.length > 0) frame();
+    expect(items()).toEqual(names(1000));
+  });
+});
