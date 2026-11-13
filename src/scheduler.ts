@@ -45,7 +45,7 @@ export function outerFirst(bindings: Binding[]): Binding[] {
  * others follow. Below this nothing changes: an update that fits is applied
  * whole, as always.
  */
-export const SLICE_BUDGET_MS = 10;
+export const SLICE_BUDGET_MS = 50;
 
 export class UIScheduler {
   private _dirty = new Set<Binding>();

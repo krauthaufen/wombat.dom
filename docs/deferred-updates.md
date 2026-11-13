@@ -54,13 +54,20 @@ pane holding a render control defers its DOM bindings only.
 nothing — no parked bindings.
 
 **Slicing the catch-up.** A list binding (`bindAlistChildren`) builds rows for
-`SLICE_BUDGET_MS` (10 ms) per flush and leaves the rest to the following
+`SLICE_BUDGET_MS` (50 ms, the long-task threshold) per flush and leaves the rest to the following
 frames, first in the list first: opening a tab whose list changed a lot while
 hidden shows its first rows at once and the page stays responsive while the
 others follow (the 714-row catch-up was one frame of ~1 s). The same holds
 for any large insertion into a visible list. Removals never wait, a later
 change to a waiting row replaces it, and an update that fits the budget is
 applied whole, as before. The first mount and `flushNow` are whole.
+
+Measured (pro3d-web dq, expanding a group of 323 rows, machine under load):
+unsliced, all rows after 470 to 650 ms in one step; with 50 ms slices the
+first rows after 210 to 370 ms and all after 660 to 970 ms (10 ms slices:
+125 ms and 1170 ms). Each frame costs about as much again outside the
+binding (the new rows' own bindings, layout), so smaller slices mean a later
+end.
 
 ## Tests (tests/deferred-updates.test.ts)
 
