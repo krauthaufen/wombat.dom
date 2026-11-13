@@ -112,6 +112,14 @@ interface AnchorAttrs extends CommonAttrs {
   download?: AdaptiveOr<string>;
 }
 
+/**
+ * SVG elements take many presentation attributes (`d`, `cx`, `viewBox`,
+ * `stroke-width`, …), each a string or a number, adaptive or not.
+ */
+interface SvgAttrs extends CommonAttrs {
+  [attr: string]: unknown;
+}
+
 interface LabelAttrs extends CommonAttrs {
   for?: AdaptiveOr<string>;
   htmlFor?: AdaptiveOr<string>;
@@ -197,5 +205,19 @@ export namespace JSX {
     caption: CommonAttrs;
     colgroup: CommonAttrs;
     col: CommonAttrs;
+    // SVG (mounted in the SVG namespace, as is everything inside an <svg>)
+    svg: SvgAttrs;
+    g: SvgAttrs;
+    defs: SvgAttrs;
+    path: SvgAttrs;
+    circle: SvgAttrs;
+    ellipse: SvgAttrs;
+    rect: SvgAttrs;
+    line: SvgAttrs;
+    polyline: SvgAttrs;
+    polygon: SvgAttrs;
+    text: SvgAttrs;
+    tspan: SvgAttrs;
+    foreignObject: SvgAttrs;
   }
 }

@@ -100,7 +100,7 @@ function mountElement(
   scope: Scope,
   scheduler: UIScheduler,
 ): void {
-  const el = document.createElement(vnode.tag);
+  const el = createElementIn(parent, vnode.tag);
   bindElementProps(el, vnode.props, scope, scheduler);
   if (before === null) parent.appendChild(el);
   else parent.insertBefore(el, before);
@@ -115,6 +115,23 @@ function mountElement(
     ? scheduler
     : new DeferringScheduler(scheduler, defer as boolean | aval<boolean>, scope);
   bindChildren(el, null, vnode.props.children, scope, childScheduler);
+}
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/**
+ * `tag` as an element for `parent`: an `<svg>`, and anything inside one
+ * (except the HTML content of a `<foreignObject>`), is an SVG element —
+ * `document.createElement("path")` would make an unknown HTML element that
+ * draws nothing. Everything else is HTML.
+ */
+function createElementIn(parent: Node, tag: string): Element {
+  const inSvg = parent instanceof Element
+    && parent.namespaceURI === SVG_NS
+    && parent.localName !== "foreignObject";
+  return tag === "svg" || inSvg
+    ? document.createElementNS(SVG_NS, tag)
+    : document.createElement(tag);
 }
 
 function mountFragment(
