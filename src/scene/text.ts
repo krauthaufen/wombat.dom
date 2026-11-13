@@ -161,22 +161,65 @@ const vsRibbon = vertex((input: {
   return { gl_Position: clip, v_klmKind: input.a_klmKind };
 });
 
+// Loop-Blinn fill fragment shaders, shared with `Sg.Path` (path.ts): the
+// implicit test (k² − l)·m / (k² + l² − 1)·m discards outside the curve.
+export const pathFsAaNone = fragment((input: { v_klmKind: V4f }) => {
+  if (input.v_klmKind.w > 1.7 && input.v_klmKind.w < 2.5) {
+    if ((input.v_klmKind.x * input.v_klmKind.x + input.v_klmKind.y * input.v_klmKind.y - 1.0) * input.v_klmKind.z > 0.0) discard();
+  } else if (input.v_klmKind.w > 0.7 && input.v_klmKind.w < 1.5) {
+    if ((input.v_klmKind.x * input.v_klmKind.x - input.v_klmKind.y) * input.v_klmKind.z > 0.0) discard();
+  }
+  return { Colors: uniform.PathColor };
+});
+
 function buildPathTextEffectAaNone(): Effect {
   if (pathTextEffectAaNone) return pathTextEffectAaNone;
   // Loop-Blinn implicit test, m carries the inside/outside sign for
   // inward-bulging curves. kind=3 (line ribbons) collapse to zero-
   // area triangles when expansion is off — the FS won't run for them.
-  const fs = fragment((input: { v_klmKind: V4f }) => {
-    if (input.v_klmKind.w > 1.7 && input.v_klmKind.w < 2.5) {
-      if ((input.v_klmKind.x * input.v_klmKind.x + input.v_klmKind.y * input.v_klmKind.y - 1.0) * input.v_klmKind.z > 0.0) discard();
-    } else if (input.v_klmKind.w > 0.7 && input.v_klmKind.w < 1.5) {
-      if ((input.v_klmKind.x * input.v_klmKind.x - input.v_klmKind.y) * input.v_klmKind.z > 0.0) discard();
-    }
-    return { Colors: uniform.PathColor };
-  });
-  pathTextEffectAaNone = effect(vsBare, fs);
+  pathTextEffectAaNone = effect(vsBare, pathFsAaNone);
   return pathTextEffectAaNone;
 }
+
+export const pathFsAaAlpha = fragment((input: { v_klmKind: V4f }) => {
+  const k = input.v_klmKind.x;
+  const l = input.v_klmKind.y;
+  const m = input.v_klmKind.z;
+  const kind = input.v_klmKind.w;
+  const dkx = dFdx(k); const dky = dFdy(k);
+  const dlx = dFdx(l); const dly = dFdy(l);
+  const dmx = dFdx(m); const dmy = dFdy(m);
+  const fBez = (k * k - l) * m;
+  const fArc = (k * k + l * l - 1.0) * m;
+  const dfBezX = (2.0 * k * dkx - dlx) * m + (k * k - l) * dmx;
+  const dfBezY = (2.0 * k * dky - dly) * m + (k * k - l) * dmy;
+  const dfArcX = (2.0 * k * dkx + 2.0 * l * dlx) * m + (k * k + l * l - 1.0) * dmx;
+  const dfArcY = (2.0 * k * dky + 2.0 * l * dly) * m + (k * k + l * l - 1.0) * dmy;
+  const mBez    = step(0.7, kind) - step(1.5, kind);
+  const mArc    = step(1.7, kind) - step(2.5, kind);
+  const mRibbon = step(2.5, kind) - step(3.5, kind);
+  const mDist   = step(3.5, kind);   // kind=4: signed-distance halo
+  // For kind=4 the linear distance field is klm.x directly, and
+  // its screen-space gradient is fwidth(klm.x). Mixing that into
+  // the bezier f so the same 0.5-f/w AA recipe gives the right
+  // ramp without a separate code path.
+  const f   = fBez * mBez + fArc * mArc + k * mDist + (-1.0) * (1.0 - mBez - mArc - mRibbon - mDist);
+  const dfX = dfBezX * mBez + dfArcX * mArc + dkx * mDist;
+  const dfY = dfBezY * mBez + dfArcY * mArc + dky * mDist;
+  const w   = sqrt(dfX * dfX + dfY * dfY) + 1e-6;
+  // 1-pixel ramp scaled by AaWidthPx, centred on the curve
+  // (α=0.5 exactly on f=0).
+  const curveAlpha = clamp(0.5 - f / (w * uniform.AaWidthPx), 0.0, 1.0);
+  const ribbonAlpha = clamp(1.0 - m, 0.0, 1.0);
+  const alpha = curveAlpha * (1.0 - mRibbon) + ribbonAlpha * mRibbon;
+  if (alpha <= 0.0) discard();
+  // Premultiplied-alpha output. iOS Safari WebGPU dropped curve
+  // fragments with the non-premultiplied form; referencing alpha
+  // in every channel keeps WebKit's optimiser honest and matches
+  // the premultiplied blend factors (src=ONE, dst=ONE_MINUS_SRC_ALPHA).
+  const aa_ = alpha * uniform.PathColor.w;
+  return { Colors: new V4f(uniform.PathColor.x * aa_, uniform.PathColor.y * aa_, uniform.PathColor.z * aa_, aa_) };
+});
 
 /**
  * Analytic anti-aliasing via the screen-space gradient of the
@@ -201,46 +244,7 @@ function buildPathTextEffectAaAlphaBlending(): Effect {
   //         ∂f = (2k·∂k - ∂l)·m + (k²-l)·∂m
   //   arc:  f = (k²+l²-1)·m
   //         ∂f = (2k·∂k + 2l·∂l)·m + (k²+l²-1)·∂m
-  const fs = fragment((input: { v_klmKind: V4f }) => {
-    const k = input.v_klmKind.x;
-    const l = input.v_klmKind.y;
-    const m = input.v_klmKind.z;
-    const kind = input.v_klmKind.w;
-    const dkx = dFdx(k); const dky = dFdy(k);
-    const dlx = dFdx(l); const dly = dFdy(l);
-    const dmx = dFdx(m); const dmy = dFdy(m);
-    const fBez = (k * k - l) * m;
-    const fArc = (k * k + l * l - 1.0) * m;
-    const dfBezX = (2.0 * k * dkx - dlx) * m + (k * k - l) * dmx;
-    const dfBezY = (2.0 * k * dky - dly) * m + (k * k - l) * dmy;
-    const dfArcX = (2.0 * k * dkx + 2.0 * l * dlx) * m + (k * k + l * l - 1.0) * dmx;
-    const dfArcY = (2.0 * k * dky + 2.0 * l * dly) * m + (k * k + l * l - 1.0) * dmy;
-    const mBez    = step(0.7, kind) - step(1.5, kind);
-    const mArc    = step(1.7, kind) - step(2.5, kind);
-    const mRibbon = step(2.5, kind) - step(3.5, kind);
-    const mDist   = step(3.5, kind);   // kind=4: signed-distance halo
-    // For kind=4 the linear distance field is klm.x directly, and
-    // its screen-space gradient is fwidth(klm.x). Mixing that into
-    // the bezier f so the same 0.5-f/w AA recipe gives the right
-    // ramp without a separate code path.
-    const f   = fBez * mBez + fArc * mArc + k * mDist + (-1.0) * (1.0 - mBez - mArc - mRibbon - mDist);
-    const dfX = dfBezX * mBez + dfArcX * mArc + dkx * mDist;
-    const dfY = dfBezY * mBez + dfArcY * mArc + dky * mDist;
-    const w   = sqrt(dfX * dfX + dfY * dfY) + 1e-6;
-    // 1-pixel ramp scaled by AaWidthPx, centred on the curve
-    // (α=0.5 exactly on f=0).
-    const curveAlpha = clamp(0.5 - f / (w * uniform.AaWidthPx), 0.0, 1.0);
-    const ribbonAlpha = clamp(1.0 - m, 0.0, 1.0);
-    const alpha = curveAlpha * (1.0 - mRibbon) + ribbonAlpha * mRibbon;
-    if (alpha <= 0.0) discard();
-    // Premultiplied-alpha output. iOS Safari WebGPU dropped curve
-    // fragments with the non-premultiplied form; referencing alpha
-    // in every channel keeps WebKit's optimiser honest and matches
-    // the premultiplied blend factors (src=ONE, dst=ONE_MINUS_SRC_ALPHA).
-    const aa_ = alpha * uniform.PathColor.w;
-    return { Colors: new V4f(uniform.PathColor.x * aa_, uniform.PathColor.y * aa_, uniform.PathColor.z * aa_, aa_) };
-  });
-  pathTextEffectAaAlphaBlending = effect(vsRibbon, fs);
+  pathTextEffectAaAlphaBlending = effect(vsRibbon, pathFsAaAlpha);
   return pathTextEffectAaAlphaBlending;
 }
 

@@ -210,6 +210,14 @@ export {
   type TextAa,
 } from "./text.js";
 
+export {
+  SgPath,
+  pathGeometry,
+  type SgPathProps,
+  type PathInput,
+  type PathFillRule,
+} from "./path.js";
+
 // Attach `<Sg.Text/>` onto the Sg namespace at module load. This is
 // in `index.ts` rather than `constructors.ts` because `text.ts`
 // itself imports from `constructors.ts`, so wiring it up there
@@ -218,6 +226,9 @@ import { Sg as _SgForText } from "./constructors.js";
 import { SgText as _SgTextImpl } from "./text.js";
 (_SgForText as unknown as { Text: typeof _SgTextImpl }).Text = _SgTextImpl;
 (_SgTextImpl as { __isSg?: boolean }).__isSg = true;
+import { SgPath as _SgPathImpl } from "./path.js";
+(_SgForText as unknown as { Path: typeof _SgPathImpl }).Path = _SgPathImpl;
+(_SgPathImpl as { __isSg?: boolean }).__isSg = true;
 
 // Ambient context plumbing. The avals themselves live as static
 // members on `RenderControl` (`RenderControl.viewport`, `.view`,
