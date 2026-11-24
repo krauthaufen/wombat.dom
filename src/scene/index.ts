@@ -254,6 +254,7 @@ export {
   pickFinalANoNormalNoPiEffect,
   pickFinalBEffect,
   pickFinalPortalEffect,
+  pickFinalPortalDepthEffect,
   resolveThroughPortals,
   chooseChain,
   composePickChain,

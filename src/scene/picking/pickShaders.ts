@@ -299,6 +299,32 @@ export function pickFinalPortalEffect(): Effect {
   return pickFinalPortalCache;
 }
 
+// The portal final for a leaf whose effect writes its own `Depth` (a
+// composite that brings an offscreen layer back WITH the layer's depth,
+// from a quad that has none of its own): the effect's depth stays the
+// fragment's depth, and it is also the depth the arbitration compares.
+// With the plain portal final such a leaf lost its depth to the quad's
+// `fragCoord.z` and, drawn at z 0 under reversed-Z, was never drawn.
+let pickFinalPortalDepthCache: Effect | undefined;
+
+export function pickFinalPortalDepthEffect(): Effect {
+  if (pickFinalPortalDepthCache !== undefined) return pickFinalPortalDepthCache;
+  const fs = fragment((input: {
+    Colors: V4f;
+    PickContextCoord: V2f;
+    Depth: f32;
+  }) => {
+    const id = new V4f(
+      (uniform.PickId as number) as f32,
+      input.PickContextCoord.x, input.PickContextCoord.y,
+      input.Depth,
+    );
+    return { Colors: input.Colors, pickId: id, Depth: input.Depth };
+  });
+  pickFinalPortalDepthCache = effect(fs);
+  return pickFinalPortalDepthCache;
+}
+
 // ---------------------------------------------------------------------------
 // pickFinalB — mode B (real position). Tags mode via NEGATIVE PickId
 // in slot 0; pvp components fill 1/2/3. No depth slot — pvp is the

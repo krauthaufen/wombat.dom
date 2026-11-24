@@ -23,6 +23,7 @@ import {
 
 const Tvec3f: Type = Vec(Tf32, 3);
 const Tvec4f: Type = Vec(Tf32, 4);
+const Tvec2f: Type = Vec(Tf32, 2);
 
 // ---------------------------------------------------------------------------
 // Helpers — build minimal user effects.
@@ -38,6 +39,10 @@ interface UserEffectFlags {
   readonly produceVsn: boolean;
   readonly producePi:  boolean;
   readonly producePvp: boolean;
+  /** A portal leaf's sampled source uv. */
+  readonly produceUv?: boolean;
+  /** The effect writes its own fragment depth. */
+  readonly produceDepth?: boolean;
 }
 
 function buildUserEffect(flags: UserEffectFlags): Effect {
@@ -72,11 +77,16 @@ function buildUserEffect(flags: UserEffectFlags): Effect {
     fsOutputs.push("PickViewPosition: V3f");
   }
 
+  if (flags.produceUv) fsOutputs.push("PickContextCoord: V2f");
+  if (flags.produceDepth) fsOutputs.push("Depth: f32");
+
   const vsRet = ["gl_Position: input.Positions", ...vsReturnExtra].join(", ");
   const fsRetParts = ["Colors: new V4f(1.0, 1.0, 1.0, 1.0)"];
   if (flags.produceVsn) fsRetParts.push("ViewSpaceNormal: input.vNormal");
   if (flags.producePi)  fsRetParts.push("PickPartIndex: 7.0");
   if (flags.producePvp) fsRetParts.push("PickViewPosition: input.vPvp");
+  if (flags.produceUv) fsRetParts.push("PickContextCoord: new V2f(0.25, 0.75)");
+  if (flags.produceDepth) fsRetParts.push("Depth: 0.5");
 
   const fsInputDecl = fsInputs.length === 0 ? "{}" : `{ ${fsInputs.join("; ")} }`;
   const source = `
@@ -113,6 +123,8 @@ function buildUserEffect(flags: UserEffectFlags): Effect {
   if (flags.produceVsn) fsOutputDescs.push({ name: "ViewSpaceNormal",  type: Tvec3f, semantic: "ViewSpaceNormal",  decorations: [{ kind: "Location", value: fsOutLoc++ }] });
   if (flags.producePi)  fsOutputDescs.push({ name: "PickPartIndex",   type: Tf32,   semantic: "PickPartIndex",   decorations: [{ kind: "Location", value: fsOutLoc++ }] });
   if (flags.producePvp) fsOutputDescs.push({ name: "PickViewPosition", type: Tvec3f, semantic: "PickViewPosition", decorations: [{ kind: "Location", value: fsOutLoc++ }] });
+  if (flags.produceUv) fsOutputDescs.push({ name: "PickContextCoord", type: Tvec2f, semantic: "PickContextCoord", decorations: [{ kind: "Location", value: fsOutLoc++ }] });
+  if (flags.produceDepth) fsOutputDescs.push({ name: "Depth", type: Tf32, semantic: "Depth", decorations: [{ kind: "Builtin", value: "frag_depth" }] });
 
   const entries: EntryRequest[] = [
     { name: "vsMain", stage: "vertex",   inputs: vsInputDescs, outputs: vsOutputDescs },
@@ -217,6 +229,28 @@ describe("chooseChain decision matrix", () => {
       expect(choice).toEqual(c.expected);
     });
   }
+});
+
+// A leaf under a pick context: the portal final, with the leaf's own depth
+// where its effect writes one (a composite that brings an offscreen layer
+// back with the layer's depth), and the usual chain when it gives no uv.
+describe("chooseChain for a portal leaf", () => {
+  const geom = geomFromSet(new Set(["Positions"]));
+  const plain = { produceVsn: false, producePi: false, producePvp: false };
+  it("takes the portal final for an effect that gives the sampled uv", () => {
+    expect(chooseChain(buildUserEffect({ ...plain, produceUv: true }), geom, true))
+      .toEqual({ final: "FinalPortal", injectVsn: false, keepDepth: false });
+  });
+  it("keeps the depth of an effect that writes its own", () => {
+    expect(chooseChain(buildUserEffect({ ...plain, produceUv: true, produceDepth: true }), geom, true))
+      .toEqual({ final: "FinalPortal", injectVsn: false, keepDepth: true });
+  });
+  it("composes to a fragment that writes the effect's depth, not the quad's", () => {
+    const composed = composePickChain(buildUserEffect({ ...plain, produceUv: true, produceDepth: true }), geom, true);
+    const fragment = composed.compile({ target: "wgsl" }).stages.map((s) => s.source).join("\n");
+    expect(fragment).toContain("frag_depth");
+    expect(fragment).not.toMatch(/fragCoord\.z|position\.z/);
+  });
 });
 
 // ---------------------------------------------------------------------------
