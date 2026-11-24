@@ -92,7 +92,7 @@
     }
   },
   "devDependencies": {
-    "@aardworx/wombat.adaptive": "^0.3.1",
+    "@aardworx/wombat.adaptive": "^0.3.7",
     "@aardworx/wombat.base": "^0.6.2",
     "@aardworx/wombat.rendering": "^0.25.20",
     "@aardworx/wombat.shader": "^0.6.12",
