@@ -59,6 +59,8 @@ declare module "@aardworx/wombat.shader/uniforms" {
   interface UniformScope {
     readonly PathColor: V4f;
     readonly AaWidthPx: number;
+    /** `Sg.Text`'s background plate. */
+    readonly PlateColor: V4f;
   }
 }
 
@@ -332,10 +334,74 @@ export interface SgTextProps {
   /** `aa === "alpha-blending"` only: the SDF shader's debug colouring
    *  (the `DebugMode` uniform). Debug aid only. Default: `false`. */
   debugSdf?: boolean | aval<boolean>;
+  /** A plate behind the text, of this colour: the run's advance wide and
+   *  from the font's descender to its ascender high, plus `padding`.
+   *  Drawn by the text itself, before its glyphs and in their frame, so
+   *  a label is one node. Default: none. */
+  background?: V4f | aval<V4f>;
+  /** The plate's margin around the text in em, `[x, y]`. Default `[0.3, 0.1]`. */
+  padding?: readonly [number, number];
 }
+
+const plateVs = vertex((input: { a_platePos: V2f }) => {
+  const clip = uniform.ProjTrafo.mul(uniform.ModelViewTrafo.mul(new V4f(input.a_platePos.x, input.a_platePos.y, 0.0, 1.0)));
+  return { gl_Position: clip };
+});
+const plateFs = fragment((_input: {}) => {
+  return { Colors: uniform.PlateColor };
+});
+let plateEffect: Effect | undefined;
 
 /** Build a self-contained `<Sg.Text/>` JSX element. */
 export function SgText(
+  props: SgTextProps & SgScopeProps,
+): SgNode {
+  const { background, padding, ...rest } = props;
+  if (background === undefined) return textNode(rest as SgTextProps & SgScopeProps);
+  // The plate and the glyphs share the depth state (the text sets its own
+  // inside its tree) and stand in one ordered group under the caller's
+  // scope: the plate first.
+  const { font, text, align = "left", aa, kerning = true, Color, aaWidthPx, wireframe, debugSdf, ...scope } = rest;
+  const { DepthTest, DepthMask, ...outer } = scope as SgScopeProps;
+  const depth = {
+    ...(DepthTest !== undefined ? { DepthTest } : {}),
+    ...(DepthMask !== undefined ? { DepthMask } : {}),
+  };
+  const glyphs = textNode({
+    font, text, align, kerning,
+    ...(aa !== undefined ? { aa } : {}), ...(Color !== undefined ? { Color } : {}),
+    ...(aaWidthPx !== undefined ? { aaWidthPx } : {}), ...(wireframe !== undefined ? { wireframe } : {}),
+    ...(debugSdf !== undefined ? { debugSdf } : {}),
+    ...depth,
+  } as SgTextProps & SgScopeProps);
+  const em = 1 / (font.unitsPerEm || 1);
+  const advance = layoutText(font, text, { kerning }).advance * em;
+  const [padX, padY] = padding ?? [0.3, 0.1];
+  // The glyphs are centred on x = 0 and moved by half the advance for
+  // `left` and `right`; the plate goes with them.
+  const cx = align === "left" ? advance * 0.5 : align === "right" ? -advance * 0.5 : 0;
+  const x0 = cx - advance * 0.5 - padX, x1 = cx + advance * 0.5 + padX;
+  const y0 = font.descender * em - padY, y1 = font.ascender * em + padY;
+  const positions = new Float32Array([x0, y0, x1, y0, x1, y1, x0, y0, x1, y1, x0, y1]);
+  const leaf = Sg.leaf({
+    vertexAttributes: HashMap.empty<string, BufferView>()
+      .add("a_platePos", { buffer: AVal.constant(IBuffer.fromHost(positions)), elementType: ElementType.V2f }),
+    drawCall: AVal.constant<DrawCall>({ kind: "non-indexed", vertexCount: 6, instanceCount: 1, firstVertex: 0, firstInstance: 0 }),
+  });
+  plateEffect ??= effect(plateVs, plateFs);
+  const plate = Sg({
+    Shader: plateEffect,
+    Uniform: { PlateColor: background instanceof V4f ? AVal.constant(background) : background },
+    CullMode: "none",
+    BlendMode: alphaOverBlendState(),
+    DepthTest: DepthTest ?? depthByProjection("less-equal"),
+    DepthMask: DepthMask ?? true,
+    children: [leaf],
+  } as never);
+  return Sg({ ...(outer as object), children: [plate, glyphs] } as never);
+}
+
+function textNode(
   props: SgTextProps & SgScopeProps,
 ): SgNode {
   const {
