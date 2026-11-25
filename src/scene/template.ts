@@ -53,6 +53,10 @@ export interface SceneTemplate {
   /** True when the spine carries a Dynamic (amap) uniform bag — such
    *  subtrees are not row-lowerable (their key set is reactive). */
   readonly hasDynamicUniforms: boolean;
+  /** A View or Proj scope stands inside the shape: its leaf is drawn under
+   *  that camera, not its parent's, so it lowers classically — a row reads
+   *  its view and projection from the group's state. */
+  readonly hasCamera: boolean;
   /** Hole indices of Trafo scope values BEFORE any Instanced scope
    *  (outer→inner order) — compose over the parent's model. */
   readonly preTrafoHoles: ReadonlyArray<number>;
@@ -282,6 +286,7 @@ interface WalkOut {
   readonly provided: Set<string>;
   readonly uniformHoles: Map<string, number>;
   hasDynamicUniforms: boolean;
+  hasCamera: boolean;
   readonly preTrafoHoles: number[];
   readonly postTrafoHoles: number[];
   hasInstancing: boolean;
@@ -466,6 +471,7 @@ function walk(node: SgNode, out: WalkOut): void {
       // scopes, Index, Mode, VertexAttributes, InstanceAttributes, …
       // Encode kind + each non-child own property generically.
       const rec = node as unknown as Record<string, unknown>;
+      if (node.kind === "View" || node.kind === "Proj") { out.hasCamera = true; out.fastRowSafe = false; }
       parts.push(`${node.kind}(`);
       const keys = Object.keys(rec).filter((k) => k !== "kind" && k !== "child").sort();
       const holesBefore = holes.length;
@@ -505,7 +511,7 @@ function walk(node: SgNode, out: WalkOut): void {
 export function stageNode(node: SgNode): StagedNode {
   const out: WalkOut = {
     parts: [], holes: [], provided: new Set(), uniformHoles: new Map(),
-    hasDynamicUniforms: false, preTrafoHoles: [], postTrafoHoles: [],
+    hasDynamicUniforms: false, hasCamera: false, preTrafoHoles: [], postTrafoHoles: [],
     hasInstancing: false, spineEffectId: undefined,
     fastRowSafe: true, frTagHole: undefined, frCountHole: undefined,
     frInstanceAttrHoles: [], frVertexAttrHoles: [],
@@ -522,6 +528,7 @@ export function stageNode(node: SgNode): StagedNode {
       providedUniforms: out.provided,
       uniformHoles: out.uniformHoles,
       hasDynamicUniforms: out.hasDynamicUniforms,
+      hasCamera: out.hasCamera,
       preTrafoHoles: out.preTrafoHoles,
       postTrafoHoles: out.postTrafoHoles,
       hasInstancing: out.hasInstancing,
@@ -757,6 +764,7 @@ export function sgSourceOf(node: unknown): string | undefined {
 
 export type RowBailReason =
   | "dynamic-uniform-bag"
+  | "camera-scope-in-row"
   | "mixed-plan-group"
   | "auto-uniforms-off"
   | "multi-leaf-subtree"

@@ -1075,6 +1075,9 @@ function lowerGroupEntry(
   try {
     const staged = stageNode(real);
     if (staged.template.hasDynamicUniforms) { recordRowBail("dynamic-uniform-bag", undefined, src); return classic(); }
+    // A camera scope inside the shape: the classic RO already has that
+    // camera's trafos; a row would read its parent's.
+    if (staged.template.hasCamera) { recordRowBail("camera-scope-in-row", undefined, src); return classic(); }
     const obj = t.object as RenderObject & { uniforms: IUniformProvider };
     const plan = getPlan(
       staged.template, state, obj.effect,

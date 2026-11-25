@@ -79,7 +79,15 @@ export function trafo(): Effect {
       // wombat.shader-vite plugin maps `gl_Position` to
       // `@builtin(position)`; everything else gets an inter-stage
       // varying location auto-assigned at WGSL emit time.
-      gl_Position:             uniform.ViewProjTrafo.mul(wp),
+      //
+      // The clip position goes through the DERIVED `ModelViewProjTrafo`
+      // (composed CPU-side through the df32 chain), never through the
+      // f32 world position: with geodetic coordinates (millions of
+      // metres) a world-space f32 holds about half a metre, and the
+      // geometry wobbles and snaps as the camera moves.
+      gl_Position:             uniform.ModelViewProjTrafo.mul(v.Positions),
+      // The world position is for lighting only, and is as coarse as f32
+      // is at that distance from the origin.
       WorldPositions:          wp,
       Normals:                 n4.xyz,
       DiffuseColorUTangents:   t4.xyz,

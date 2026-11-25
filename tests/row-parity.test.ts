@@ -186,3 +186,52 @@ describe("row lowering — formal parity vs classic", () => {
     }
   });
 });
+
+// Scopes INSIDE a row with constant values (a camera, a depth test) are
+// folded into the template's key. A row must still be lowered under them:
+// its derived trafos read ITS view and projection, not its parent's, and
+// its pipeline state is its own.
+describe("row lowering — constant scopes inside a row", () => {
+  const proj = Trafo3d.scaling(new V3d(0.5, 0.25, 1));
+  const view = Trafo3d.translation(new V3d(0, 0, -7));
+  const lower = (rows: boolean): Array<RenderTree & { kind: "Leaf" }> => {
+    resetTemplates();
+    __setRowLowering(rows);
+    const eff = buildUserEffect();
+    const registry = new PickRegistry();
+    const row = (i: number) =>
+      Sg.uniform({ LineColor: AVal.init(i) },
+        Sg.view(AVal.constant(view),
+          Sg.proj(AVal.constant(proj),
+            Sg.depthTest("always")(
+              Sg.trafo(Trafo3d.translation(new V3d(i, 0, 0)), leaf())))));
+    const scene = Sg.shader(eff, Sg.unordered([row(1), row(2), row(3)]));
+    const cmds = compileScene(scene, { picking: { registry } });
+    const list = AVal.force(cmds.content);
+    const r = list.toArray().find((c: { kind: string }) => c.kind === "Render") as { tree: RenderTree };
+    return leafObjects(__basePassTree(r.tree));
+  };
+  const matrix = (leaf: RenderTree & { kind: "Leaf" }, name: string): number[] =>
+    (AVal.force(leaf.object.uniforms.tryGet(name) as never) as Trafo3d).forward.toArray();
+  const key = (l: RenderTree & { kind: "Leaf" }): number => AVal.force(l.object.uniforms.tryGet("LineColor") as never) as number;
+
+  it("the derived trafos are the row's own camera's, as in the classic lowering", () => {
+    const classic = lower(false).sort((a, b) => key(a) - key(b));
+    const rows = lower(true).sort((a, b) => key(a) - key(b));
+    expect(rows.length).toBe(3);
+    for (let i = 0; i < 3; i++) {
+      for (const name of ["ProjTrafo", "ViewTrafo", "ModelViewTrafo", "ModelViewProjTrafo"]) {
+        expect(matrix(rows[i]!, name)).toEqual(matrix(classic[i]!, name));
+      }
+      // And they are that camera: model · view · proj.
+      const expected = Trafo3d.translation(new V3d(i + 1, 0, 0)).mul(view).mul(proj).forward.toArray();
+      expect(matrix(rows[i]!, "ModelViewProjTrafo")).toEqual(expected);
+    }
+  });
+
+  it("the depth test is the row's", () => {
+    for (const rows of [false, true]) {
+      for (const l of lower(rows)) expect(AVal.force(l.object.pipelineState.depth!.compare)).toBe("always");
+    }
+  });
+});
