@@ -44,12 +44,9 @@ function order(cmds: alist<Command>): string[] {
   for (const cmd of AVal.force(cmds.content)) if (cmd.kind === "Render") walk(cmd.tree, out);
   return out.map((o) => (o.effect as never as { id: string }).id);
 }
-/** Number of per-pass trees at the top of the compiled scene. */
+/** Number of passes of the compiled scene: one Render command each. */
 function passCount(cmds: alist<Command>): number {
-  const render = AVal.force(cmds.content).toArray().find((c) => c.kind === "Render")! as { tree: RenderTree };
-  const t = render.tree;
-  if (t.kind !== "OrderedFromList") throw new Error(`top is ${t.kind}`);
-  return AVal.force(t.children.content).count;
+  return AVal.force(cmds.content).toArray().filter((c) => c.kind === "Render").length;
 }
 
 describe("Sg.pass — reactive pass discovery", () => {
@@ -109,5 +106,13 @@ describe("Sg.pass — reactive pass discovery", () => {
     const cmds = compileScene(Sg.group([Sg.pass(10, named("A")), named("B")]), { passFilter: (p) => p < 5 });
     expect(order(cmds)).toEqual(["B"]);
     expect(passCount(cmds)).toBe(1);
+  });
+
+  it("each pass is a Render command of its own, in pass order: the renderer keeps no order inside one", () => {
+    const cmds = compileScene(Sg.group([Sg.pass(3000, named("over")), named("base"), Sg.pass(1000, named("mid"))]), { clear: {} as never });
+    const list = AVal.force(cmds.content).toArray();
+    expect(list.map((c) => c.kind)).toEqual(["Clear", "Render", "Render", "Render"]);
+    const ids = list.filter((c) => c.kind === "Render").map((c) => { const out: RenderObject[] = []; walk((c as { tree: RenderTree }).tree, out); return out.map((o) => (o.effect as never as { id: string }).id); });
+    expect(ids).toEqual([["base"], ["mid"], ["over"]]);
   });
 });

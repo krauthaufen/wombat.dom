@@ -174,8 +174,8 @@ export interface PickingOptions {
 
 /**
  * Compile a scene-graph tree into the `alist<Command>` that
- * `Runtime.compile` consumes. Returns one `Render` command (and
- * optionally one `Clear` ahead of it). The framebuffer is no longer
+ * `Runtime.compile` consumes. Returns one `Render` command per render
+ * pass in use, in pass order (and optionally one `Clear` ahead of them). The framebuffer is no longer
  * part of the Command — it's supplied at `task.run(framebuffer, token)`.
  */
 export function compileScene(
@@ -192,15 +192,18 @@ export function compileScene(
   // once per leaf, and `derivePipelineState` runs once instead of N×.
   const initial = base.withPipelineState(derivePipelineState(base, opts));
   // Passes are found while lowering, not by a pre-walk: see `PassSplit`.
-  const { value: tree, dispose } = collect(opts.picking?.registry, () =>
+  const { value: passes, dispose } = collect(opts.picking?.registry, () =>
     new PassSplit(sg, initial, opts).build());
   opts.lifetime?.onDispose(dispose);
-  const cmds: Command[] = [];
-  if (opts.clear !== undefined) {
-    cmds.push({ kind: "Clear", values: opts.clear });
-  }
-  cmds.push({ kind: "Render", tree });
-  return AList.ofList(cmds);
+  // ONE `Render` COMMAND PER PASS, in pass order. Inside a Render command
+  // the renderer draws a SET of objects: it promises no order between them
+  // (its batched objects are drawn before the others, whatever their place
+  // in the tree), so an order that matters — one pass after another — is
+  // an order of commands. With all passes in one command an overlay pass
+  // of batched lines was drawn BEFORE the base pass's fullscreen composite.
+  const renders = AList.map((tree: RenderTree): Command => ({ kind: "Render", tree }), passes);
+  if (opts.clear === undefined) return renders;
+  return AList.append(AList.ofList<Command>([{ kind: "Clear", values: opts.clear }]), renders);
 }
 
 /** Does a staged template's key contain a `Pass` scope? Kinds are
@@ -262,8 +265,8 @@ class PassSplit {
   }
 
   /** Lowers the base pass and the passes known at compile time; returns
-   *  the pass-ordered tree. Runs inside compileScene's root `collect`. */
-  build(): RenderTree {
+   *  the per-pass trees in pass order. Runs inside compileScene's root `collect`. */
+  build(): alist<RenderTree> {
     const user = this._opts.passFilter;
     const passes = new Set<number>();
     seedConstantPasses(this._sg, passes);
@@ -295,9 +298,7 @@ class PassSplit {
       this._lowered.set(e.p, { index, dispose: e.dispose });
     }
     this._list = list;
-    const root = RenderTree.orderedFromList(list);
-    _passRoots.set(root, baseTree);
-    return root;
+    return list;
   }
 
   /** A lowered `Pass` scope of the base lowering; held until the
