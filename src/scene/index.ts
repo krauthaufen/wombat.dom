@@ -231,6 +231,12 @@ import { SgText as _SgTextImpl } from "./text.js";
 import { SgPath as _SgPathImpl } from "./path.js";
 (_SgForText as unknown as { Path: typeof _SgPathImpl }).Path = _SgPathImpl;
 (_SgPathImpl as { __isSg?: boolean }).__isSg = true;
+import { SgLines as _SgLinesImpl, SgPoints as _SgPointsImpl } from "./lines.js";
+(_SgForText as unknown as { Lines: typeof _SgLinesImpl }).Lines = _SgLinesImpl;
+(_SgLinesImpl as { __isSg?: boolean }).__isSg = true;
+(_SgForText as unknown as { Points: typeof _SgPointsImpl }).Points = _SgPointsImpl;
+(_SgPointsImpl as { __isSg?: boolean }).__isSg = true;
+export { SgLines, SgPoints, type SgLinesProps, type SgPointsProps, cylinderGeometry, sphereGeometry } from "./lines.js";
 
 // Ambient context plumbing. The avals themselves live as static
 // members on `RenderControl` (`RenderControl.viewport`, `.view`,
