@@ -158,4 +158,40 @@ describe("RenderControl canvas as the router's scene leaf", () => {
     expect(log).toEqual(["overlay"]);
     expect(picked).toBe(false); // overlay is a separate DOM branch, no scene dive
   });
+
+  it("a drag begun outside the canvas goes on over it: its moves reach the host and not the scene", async () => {
+    const { canvas, router, reg, d } = harness();
+    const log: string[] = [];
+    const id = acquire(reg, { bubble: { OnPointerMove: () => { log.push("scene.move"); }, OnPointerDown: () => { log.push("scene.down"); } } });
+    const detach = d.attach(canvas, async () => pixelWinner(id, { px: 50, py: 50, dist2: 0 }), { region: router });
+    const host = (e: Event) => { log.push("host." + e.type); };
+    document.addEventListener("pointermove", host);
+    document.addEventListener("pointerup", host);
+    const outside = document.createElement("div");
+    document.body.appendChild(outside);
+
+    // A hover move is the scene's and stays from the host.
+    pevent(canvas, "pointermove");
+    await flush();
+    expect(log).toEqual(["scene.move"]);
+
+    // Pressed outside, dragged across the canvas, released over it: all the host's.
+    log.length = 0;
+    pevent(outside, "pointerdown");
+    pevent(canvas, "pointermove");
+    pevent(canvas, "pointerup");
+    await flush();
+    expect(log).toEqual(["host.pointermove", "host.pointerup"]);
+
+    // The next press on the canvas is the scene's again, with its moves.
+    log.length = 0;
+    pevent(canvas, "pointerdown");
+    pevent(canvas, "pointermove");
+    await flush();
+    expect(log).toEqual(["scene.down", "scene.move"]);
+
+    document.removeEventListener("pointermove", host);
+    document.removeEventListener("pointerup", host);
+    detach();
+  });
 });

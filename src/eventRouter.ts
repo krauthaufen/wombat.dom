@@ -95,8 +95,26 @@ export class RegionRouter implements EventRegion {
   private readonly sceneLeaves = new Map<Element, SceneLeaf>();
   private readonly listeners: Array<[UnifiedEventName, EventListener]> = [];
   private disposed = false;
+  /** Pointers that are down OUTSIDE a scene canvas: a drag the host page (or a DOM sibling) began. Their moves and
+   *  release over a canvas are not the scene's; see `onRootEvent`. */
+  private readonly foreign = new Set<number>();
+  private readonly windowListeners: Array<[string, EventListener]> = [];
 
   constructor(private readonly root: Element) {
+    // Every press and release in the window, before anyone can stop it: a press is foreign until the walk below finds
+    // a scene canvas on its path.
+    if (typeof window !== "undefined") {
+      const down: EventListener = (ev) => { this.foreign.add((ev as PointerEvent).pointerId ?? 0); };
+      const up: EventListener = (ev) => {
+        const id = (ev as PointerEvent).pointerId ?? 0;
+        // After the walk (and the host's own listeners) saw the release.
+        queueMicrotask(() => this.foreign.delete(id));
+      };
+      window.addEventListener("pointerdown", down, true);
+      window.addEventListener("pointerup", up, true);
+      window.addEventListener("pointercancel", up, true);
+      this.windowListeners.push(["pointerdown", down], ["pointerup", up], ["pointercancel", up]);
+    }
     for (const name of UNIFIED_EVENTS) {
       const l: EventListener = (ev) => this.onRootEvent(name, ev);
       // Capture phase on the root: we see the event before it reaches any
@@ -136,6 +154,8 @@ export class RegionRouter implements EventRegion {
     if (this.disposed) return;
     this.disposed = true;
     for (const [name, l] of this.listeners) this.root.removeEventListener(name, l, true);
+    for (const [name, l] of this.windowListeners) window.removeEventListener(name, l, true);
+    this.windowListeners.length = 0;
     this.listeners.length = 0;
     this.handlers.clear();
     this.sceneLeaves.clear();
@@ -170,6 +190,16 @@ export class RegionRouter implements EventRegion {
     if (leaf === undefined) {
       // Pure DOM (overlay / HUD): fully synchronous.
       if (!prop.stopped) this.runPhase(path, "bubble", name, ev, prop, /*reverse*/ true);
+      this.finalize(ev, prop);
+      return;
+    }
+
+    // A press on the canvas is the scene's own. The moves and the release of a pointer pressed elsewhere are not:
+    // a drag begun outside (a splitter, a scrollbar, a window being dragged across) goes on over the canvas, so
+    // the event continues natively and the scene does not see it.
+    const pointer = (ev as PointerEvent).pointerId ?? 0;
+    if (name === "pointerdown") this.foreign.delete(pointer);
+    else if ((name === "pointermove" || name === "pointerup") && this.foreign.has(pointer)) {
       this.finalize(ev, prop);
       return;
     }
