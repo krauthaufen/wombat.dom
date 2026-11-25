@@ -11,6 +11,13 @@ import type { Effect } from "@aardworx/wombat.shader";
 import { vertex, fragment } from "@aardworx/wombat.shader";
 import { abs } from "@aardworx/wombat.shader/types";
 import { uniform } from "@aardworx/wombat.shader/uniforms";
+
+declare module "@aardworx/wombat.shader/uniforms" {
+  interface UniformScope {
+    /** The light's location in view space (see `viewLightLocation`). */
+    readonly ViewLightLocation: V3f;
+  }
+}
 import { V3f, V4f, type V2f } from "@aardworx/wombat.base";
 
 
@@ -56,22 +63,23 @@ export function trafo(): Effect {
     Colors:                  V4f;
     DiffuseColorCoordinates: V2f;
   }) => {
-    const wp = uniform.ModelTrafo.mul(v.Positions);
-    // World-space normal: `transpose(inverse(M)) · n`. Under
-    // wombat.shader's row-major-on-CPU / column-major-on-GPU
-    // convention, the row-vec form `vec.mul(uniform.ModelTrafoInv)`
-    // computes the inv-transpose for free — `M_wgsl` already holds
-    // `transpose(M_dsl)` thanks to the upload trick, and the row-vec
-    // mul implicitly transposes once more, giving
-    // `transpose(transpose(MTI_dsl)) · v = MTI_dsl · v` (the inverse-
-    // transpose normal transform). Avoids the redundant `NormalMatrix`
-    // uniform binding for the default pipeline. User shaders that
-    // explicitly read `uniform.NormalMatrix` still work — it stays
-    // auto-injected, and the auto-instancing rule rebuilds the per-
-    // instance form via `uniform.NormalMatrix · transpose(m33(InstanceTrafoInv))`.
-    const n4 = new V4f(v.Normals.xyz, 0.0).mul(uniform.ModelTrafoInv);
-    const t4 = uniform.ModelTrafo.mul(new V4f(v.DiffuseColorUTangents.xyz, 0.0));
-    const b4 = uniform.ModelTrafo.mul(new V4f(v.DiffuseColorVTangents.xyz, 0.0));
+    // VIEW space throughout. Positions go through the DERIVED
+    // `ModelViewTrafo` (composed CPU-side through the df32 chain), never
+    // through an f32 world position: with geodetic coordinates (millions
+    // of metres) a world-space f32 holds about half a metre, so geometry
+    // wobbles as the camera moves and `LightLocation − WorldPositions`
+    // cancels to noise. In view space the numbers are small.
+    const vp = uniform.ModelViewTrafo.mul(v.Positions);
+    // View-space normal: `transpose(inverse(MV)) · n`. Under
+    // wombat.shader's row-major-on-CPU / column-major-on-GPU convention
+    // the row-vec form `vec.mul(uniform.ModelViewTrafoInv)` computes the
+    // inv-transpose for free (the upload already transposes once, the
+    // row-vec mul once more). Tangents are directions: plain `MV · t`.
+    // Normals, tangents and positions are all in ONE space — view — and
+    // the lighting below is too.
+    const n4 = new V4f(v.Normals.xyz, 0.0).mul(uniform.ModelViewTrafoInv);
+    const t4 = uniform.ModelViewTrafo.mul(new V4f(v.DiffuseColorUTangents.xyz, 0.0));
+    const b4 = uniform.ModelViewTrafo.mul(new V4f(v.DiffuseColorVTangents.xyz, 0.0));
     return {
       // `gl_Position` is the rasterizer's built-in clip-space output —
       // separate concern from the vertex-attribute `Positions` semantic
@@ -79,16 +87,8 @@ export function trafo(): Effect {
       // wombat.shader-vite plugin maps `gl_Position` to
       // `@builtin(position)`; everything else gets an inter-stage
       // varying location auto-assigned at WGSL emit time.
-      //
-      // The clip position goes through the DERIVED `ModelViewProjTrafo`
-      // (composed CPU-side through the df32 chain), never through the
-      // f32 world position: with geodetic coordinates (millions of
-      // metres) a world-space f32 holds about half a metre, and the
-      // geometry wobbles and snaps as the camera moves.
-      gl_Position:             uniform.ModelViewProjTrafo.mul(v.Positions),
-      // The world position is for lighting only, and is as coarse as f32
-      // is at that distance from the origin.
-      WorldPositions:          wp,
+      gl_Position:             uniform.ProjTrafo.mul(vp),
+      ViewPositions:           vp,
       Normals:                 n4.xyz,
       DiffuseColorUTangents:   t4.xyz,
       DiffuseColorVTangents:   b4.xyz,
@@ -104,11 +104,12 @@ export function trafo(): Effect {
 // `DefaultSurfaces.simpleLighting`
 // (`Effects/Default/Impl/SimpleLighting.fs`).
 //
-// Per-pixel Lambertian + ambient using a single point light. Reads
-// `Normals`, `Colors`, `WorldPositions` from the inter-stage carrier
-// (so it composes naturally after `trafo`); reads `LightLocation`
-// from the auto-injected uniform set (default = (10,10,10), override
-// via `<Sg Uniform={{LightLocation: cval(...)}}>`).
+// Per-pixel Lambertian + ambient using a single point light, in VIEW
+// space. Reads `Normals`, `Colors`, `ViewPositions` from the inter-stage
+// carrier (so it composes naturally after `trafo`) and the light from
+// `ViewLightLocation`: the scope's `LightLocation` (world space, override
+// via `<Sg Uniform={{LightLocation: cval(...)}}>`) in view space, the
+// camera itself by default.
 //
 // Output is `Colors` — the framebuffer's `Colors` attachment.
 // Once phase-3 8a (DefaultSemantic registry) lands the output field
@@ -127,15 +128,16 @@ let simpleLightingCache: Effect | undefined;
 export function simpleLighting(): Effect {
   if (simpleLightingCache !== undefined) return simpleLightingCache;
   simpleLightingCache = fragment((v: {
-    Normals:        V3f;
-    Colors:         V4f;
-    WorldPositions: V4f;
+    Normals:       V3f;
+    Colors:        V4f;
+    ViewPositions: V4f;
   }) => {
+    // Everything in VIEW space, as `trafo` hands it over: the normal, the
+    // surface position and the light (`ViewLightLocation`, the scope's
+    // `LightLocation` taken to view space CPU-side; the origin for the
+    // default headlight).
     const n = v.Normals.normalize();
-    // World-space surface → light direction. WorldPositions is V4f
-    // (homogeneous); .xyz drops the .w component.
-    const wp = v.WorldPositions.xyz;
-    const c = uniform.LightLocation.sub(wp).normalize();
+    const c = uniform.ViewLightLocation.sub(v.ViewPositions.xyz).normalize();
     const ambient = 0.2;
     // `dot` returns plain number; use `abs()` from wombat.shader's
     // shipped intrinsic table (recognised by name in the

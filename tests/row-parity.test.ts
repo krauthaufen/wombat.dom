@@ -235,3 +235,50 @@ describe("row lowering — constant scopes inside a row", () => {
     }
   });
 });
+
+// The default surfaces light in VIEW space: `ViewLightLocation` is the
+// scope's LightLocation taken there in doubles, and exactly the eye when
+// no light is set — on both lowering paths.
+describe("ViewLightLocation — the light in view space", () => {
+  // A camera at geodetic magnitude, where an f32 world position holds ~0.5 m.
+  const eye = new V3d(4_193_790.25, 1_163_590.75, 4_647_190.5);
+  const view = Trafo3d.translation(new V3d(-eye.x, -eye.y, -eye.z));
+  const lower = (rows: boolean, light: V3d | undefined): Array<RenderTree & { kind: "Leaf" }> => {
+    resetTemplates();
+    __setRowLowering(rows);
+    const eff = buildUserEffect();
+    const registry = new PickRegistry();
+    const row = (i: number) => Sg.uniform({ LineColor: AVal.init(i) }, Sg.trafo(Trafo3d.translation(new V3d(i, 0, 0)), leaf()));
+    const body = Sg.unordered([row(1), row(2)]);
+    const lit = light === undefined ? body : Sg.uniform({ LightLocation: AVal.constant(light) }, body);
+    const scene = Sg.shader(eff, Sg.view(AVal.constant(view), lit));
+    const cmds = compileScene(scene, { picking: { registry } });
+    const list = AVal.force(cmds.content);
+    const r = list.toArray().find((c: { kind: string }) => c.kind === "Render") as { tree: RenderTree };
+    return leafObjects(__basePassTree(r.tree));
+  };
+  const lightOf = (l: RenderTree & { kind: "Leaf" }): number[] => {
+    const v = AVal.force(l.object.uniforms.tryGet("ViewLightLocation") as never) as { x: number; y: number; z: number };
+    return [v.x, v.y, v.z];
+  };
+
+  it("is exactly the eye without a light (the headlight)", () => {
+    for (const rows of [false, true]) {
+      const leaves = lower(rows, undefined);
+      expect(leaves.length).toBe(2);
+      for (const l of leaves) expect(lightOf(l)).toEqual([0, 0, 0]);
+    }
+  });
+
+  it("is the scope's light relative to the eye, to the millimetre at geodetic coordinates", () => {
+    const light = new V3d(eye.x + 3.125, eye.y - 2.5, eye.z + 10.375);
+    for (const rows of [false, true]) {
+      for (const l of lower(rows, light)) {
+        const [x, y, z] = lightOf(l);
+        expect(x).toBeCloseTo(3.125, 3);
+        expect(y).toBeCloseTo(-2.5, 3);
+        expect(z).toBeCloseTo(10.375, 3);
+      }
+    }
+  });
+});

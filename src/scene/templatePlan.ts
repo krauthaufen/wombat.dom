@@ -18,7 +18,7 @@ import { Trafo3d } from "@aardworx/wombat.base";
 import type { Effect } from "@aardworx/wombat.shader";
 import type { IUniformProvider } from "@aardworx/wombat.rendering/core";
 import {
-  composeModel, composeTrafoValue, deriveAutoUniform,
+  composeModel, composeTrafoValue, deriveAutoUniform, viewLightLocation,
   type TraversalState,
 } from "./traversalState.js";
 import type { TrafoValue } from "./sg.js";
@@ -159,7 +159,19 @@ export class RowProvider implements IUniformProvider {
       const inj = this.plan.injected.tryGet(name);
       if (inj !== undefined) return inj as aval<unknown>;
     }
+    // The light in view space follows the scope's LightLocation (a row's
+    // own, a parent's or an injected one), as in the classic lowering.
+    if (name === "ViewLightLocation") return viewLightLocation(this.tryGetScoped("LightLocation"), p.view);
     return deriveAutoUniform(name, this.rowModel(), p.view, p.proj, p.viewport);
+  }
+
+  /** A uniform a scope or the pass supplies (not an auto-derived one). */
+  private tryGetScoped(name: string): aval<unknown> | undefined {
+    const hole = this.plan.template.uniformHoles.get(name);
+    if (hole !== undefined) return this.holes[hole] as aval<unknown>;
+    const scoped = this.plan.parent.uniforms.tryFind(name);
+    if (scoped !== undefined) return scoped;
+    return this.plan.injected?.tryGet(name) as aval<unknown> | undefined;
   }
 
   *names(): Iterable<string> {

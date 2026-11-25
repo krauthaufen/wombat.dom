@@ -144,7 +144,7 @@ export const AUTO_UNIFORM_NAMES: readonly string[] = [
   "ModelViewTrafo", "ViewProjTrafo", "ModelViewProjTrafo",
   "ModelTrafoInv", "ViewTrafoInv", "ProjTrafoInv",
   "ModelViewTrafoInv", "ViewProjTrafoInv", "ModelViewProjTrafoInv",
-  "NormalMatrix", "CameraLocation", "LightLocation", "ViewportSize",
+  "NormalMatrix", "CameraLocation", "LightLocation", "ViewLightLocation", "ViewportSize",
 ];
 
 /**
@@ -886,6 +886,7 @@ export class TraversalState implements IUniformProvider {
   tryGet(name: string): aval<unknown> | undefined {
     const u = this.uniforms.tryFind(name);
     if (u !== undefined) return u;
+    if (name === "ViewLightLocation") return viewLightLocation(this.uniforms.tryFind("LightLocation"), this.view);
     return this.tryGetAutoUniform(name);
   }
 
@@ -947,6 +948,25 @@ export function depthTestByProjection(proj: aval<Trafo3d>, standard: DepthCompar
     byTest.set(standard, t);
   }
   return t;
+}
+
+const HEADLIGHT: aval<V3f> = AVal.constant(new V3f(0, 0, 0));
+
+/**
+ * `ViewLightLocation`: where the light is in VIEW space, which is where the
+ * default surfaces light. `light` is the scope's `LightLocation` (world
+ * space), if one is set; without one the light is the camera itself (the
+ * headlight default), which in view space is the origin EXACTLY — not the
+ * f32 camera location pushed through the view matrix, which is off by up
+ * to half a metre at geodetic coordinates. The transform runs CPU-side in
+ * doubles for the same reason.
+ */
+export function viewLightLocation(light: aval<unknown> | undefined, view: aval<Trafo3d>): aval<V3f> {
+  if (light === undefined) return HEADLIGHT;
+  return AVal.zip(light as aval<{ x: number; y: number; z: number }>, view).map((l, v) => {
+    const p = v.forward.transformPos(new V3d(l.x, l.y, l.z));
+    return new V3f(p.x, p.y, p.z);
+  });
 }
 
 /**

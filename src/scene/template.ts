@@ -563,7 +563,7 @@ const AUTO_UNIFORMS: ReadonlySet<string> = new Set([
   "ModelViewTrafo", "ViewProjTrafo", "ModelViewProjTrafo",
   "ModelTrafoInv", "ViewTrafoInv", "ProjTrafoInv",
   "ModelViewTrafoInv", "ViewProjTrafoInv", "ModelViewProjTrafoInv",
-  "NormalMatrix", "CameraLocation", "LightLocation", "ViewportSize",
+  "NormalMatrix", "CameraLocation", "LightLocation", "ViewLightLocation", "ViewportSize",
   // First-class / injected by the render control & picking infra.
   "PickId", "ViewportSizePx",
 ]);
