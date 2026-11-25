@@ -845,6 +845,7 @@ const HINTS: Record<RowBailReason, string> = {
   "dynamic-uniform-bag": "an amap-backed Sg.Uniform prevents row lowering — use per-key avals in a static bag if the key set is fixed",
   "mixed-plan-group": "children with a second template/effect in one collection lower classically — split the collection per shape (v1: one row set per group)",
   "auto-uniforms-off": "autoUniforms:false disables the derivations rows rely on",
+  "camera-scope-in-row": "a Sg.View / Sg.Proj inside each child — put the camera ONCE above the collection, or accept the classic lowering",
   "multi-leaf-subtree": "children lowering to several leaves aren't rows — split the collection so each child is one leaf",
   "per-leaf-effect-scope": "Sg.Effect applied per child — apply it ONCE above the collection",
   "staging-failed": "staging threw (internal — please report)",
