@@ -66,6 +66,22 @@ describe("Sg.pass — reactive pass discovery", () => {
     expect(order(cmds)).toEqual(["C", "B", "A"]);
   });
 
+  it("a linear pass's Render command is marked linear, in constant structure and when it appears at runtime", () => {
+    const linear = (cmds: alist<Command>): boolean[] =>
+      AVal.force(cmds.content).toArray().filter((c) => c.kind === "Render").map((c) => (c as { linear?: boolean }).linear === true);
+    const constant = compileScene(Sg.group([Sg.linearPass(10, named("A")), named("B"), Sg.pass(5, named("C"))]));
+    expect(order(constant)).toEqual(["B", "C", "A"]);
+    expect(linear(constant)).toEqual([false, false, true]);
+    const slot = cval<SgNode>(Sg.empty);
+    const late = compileScene(Sg.group([named("B"), Sg.adaptive(slot)]));
+    expect(order(late)).toEqual(["B"]);
+    expect(linear(late)).toEqual([false]);
+    transact(() => { slot.value = Sg.linearPass(10, named("A")); });
+    order(late);
+    expect(order(late)).toEqual(["B", "A"]);
+    expect(linear(late)).toEqual([false, true]);
+  });
+
   it("a pass that appears at runtime is drawn, in pass order", () => {
     const slot = cval<SgNode>(Sg.empty);
     const cmds = compileScene(Sg.group([Sg.adaptive(slot), named("A")]));

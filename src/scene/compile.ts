@@ -201,7 +201,8 @@ export function compileScene(
   // in the tree), so an order that matters — one pass after another — is
   // an order of commands. With all passes in one command an overlay pass
   // of batched lines was drawn BEFORE the base pass's fullscreen composite.
-  const renders = AList.map((tree: RenderTree): Command => ({ kind: "Render", tree }), passes);
+  const renders = AList.map((tree: RenderTree): Command =>
+    _linearTrees.has(tree) ? { kind: "Render", tree, linear: true } : { kind: "Render", tree }, passes);
   if (opts.clear === undefined) return renders;
   return AList.append(AList.ofList<Command>([{ kind: "Clear", values: opts.clear }]), renders);
 }
@@ -252,6 +253,8 @@ class PassSplit {
   private readonly _counts = new Map<number, number>();
   /** Passes with a lowering: the list entry and its release. */
   private readonly _lowered = new Map<number, { index: Index; dispose: () => void }>();
+  /** Passes a scope declared linear (`Sg.linearPass`) before they were lowered. */
+  private readonly _linear = new Set<number>();
   private _list: clist<RenderTree> | undefined = undefined;
   private _scheduled = false;
   private _disposed = false;
@@ -269,7 +272,7 @@ class PassSplit {
   build(): alist<RenderTree> {
     const user = this._opts.passFilter;
     const passes = new Set<number>();
-    seedConstantPasses(this._sg, passes);
+    seedConstantPasses(this._sg, passes, this._linear);
     // Constant structure never changes: these stay for the scene's life.
     for (const p of passes) if (this._wanted(p)) this._counts.set(p, (this._counts.get(p) ?? 0) + 1);
     const base = this._base;
@@ -303,8 +306,9 @@ class PassSplit {
 
   /** A lowered `Pass` scope of the base lowering; held until the
    *  enclosing owner releases it. */
-  report(pass: number): void {
+  report(pass: number, linear: boolean): void {
     if (!this._wanted(pass)) return;
+    if (linear) this._linear.add(pass);
     this._counts.set(pass, (this._counts.get(pass) ?? 0) + 1);
     if (this._counts.get(pass) === 1 && !this._lowered.has(pass)) this._schedule();
     own(() => {
@@ -327,6 +331,7 @@ class PassSplit {
     const passFilter = user === undefined ? (rp: number) => rp === pass : (rp: number) => rp === pass && user(rp);
     const { value: tree, dispose } = collect(this._opts.picking?.registry, () =>
       lower(this._sg, this._state, { ...this._opts, passFilter }));
+    if (this._linear.has(pass)) _linearTrees.add(tree);
     return { tree, dispose };
   }
 
@@ -367,6 +372,8 @@ class PassSplit {
 }
 
 const _passRoots = new WeakMap<RenderTree, RenderTree>();
+/** The trees of linear passes: their `Render` commands draw through the frame's sRGB views. */
+const _linearTrees = new WeakSet<RenderTree>();
 
 /** TEST-ONLY: the base pass's lowering inside a compiled scene's
  *  pass-ordered root (the root itself for any other tree). */
@@ -380,28 +387,32 @@ export function __basePassTree(tree: RenderTree): RenderTree {
  * adaptive groups whose value is. Adaptive containers and `Sg.delay`
  * creators are not entered — their passes are reported while lowering.
  */
-function seedConstantPasses(node: SgNode, out: Set<number>): void {
+function seedConstantPasses(node: SgNode, out: Set<number>, linear: Set<number>): void {
   switch (node.kind) {
     case "Empty": case "Leaf": case "Delay": return;
-    case "Pass": out.add(node.pass); seedConstantPasses(node.child, out); return;
+    case "Pass":
+      out.add(node.pass);
+      if (node.linear === true) linear.add(node.pass);
+      seedConstantPasses(node.child, out, linear);
+      return;
     case "Group": case "UnorderedGroup":
       if (!node.children.isConstant) return;
       // AVal.force OK: isConstant guard — a constant collection's content.
-      for (const c of node.children.content.force()) seedConstantPasses(c, out);
+      for (const c of node.children.content.force()) seedConstantPasses(c, out, linear);
       return;
     case "AdaptiveGroup":
       if (!node.child.isConstant) return;
       // AVal.force OK: isConstant guard — a constant value.
-      seedConstantPasses(node.child.force(), out);
+      seedConstantPasses(node.child.force(), out, linear);
       return;
     case "Row":
       // The staged key records every node kind on the spine.
-      if (rowKeyHasPass(node.staged.template.key)) seedConstantPasses(materializeRowSg(node), out);
+      if (rowKeyHasPass(node.staged.template.key)) seedConstantPasses(materializeRowSg(node), out, linear);
       return;
     default: {
       // every remaining node kind is a single-child scope
       const child = (node as { child?: SgNode }).child;
-      if (child !== undefined) seedConstantPasses(child, out);
+      if (child !== undefined) seedConstantPasses(child, out, linear);
     }
   }
 }
@@ -634,7 +645,7 @@ function lower(
     case "Pass": {
       // The base pass's lowering reports the pass (see `PassSplit`); the
       // leaves below are kept or dropped by the lowering's pass filter.
-      (opts as LowerOptions).passSink?.report(node.pass);
+      (opts as LowerOptions).passSink?.report(node.pass, node.linear === true);
       return lower(node.child, state.pushRenderPass(node.pass), opts);
     }
     case "VertexAttributes":

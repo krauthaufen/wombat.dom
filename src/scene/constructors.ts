@@ -403,6 +403,11 @@ function stencilMode(mode: StencilModeValue | aval<StencilModeValue>): (child: S
 function pass(value: number, child: SgNode): SgNode {
   return { kind: "Pass", pass: value, child };
 }
+/** A pass that blends in linear light: its shaders write linear colour,
+ *  which the frame stores sRGB-encoded (see `SgPass.linear`). */
+function linearPass(value: number, child: SgNode): SgNode {
+  return { kind: "Pass", pass: value, linear: true, child };
+}
 
 /** Marks a subtree as transparent (render-pass ordinal `RenderPass.transparent`).
  *  The order-independent-transparency path routes these objects through the
@@ -1281,6 +1286,7 @@ export interface SgNamespace {
   colorMask:    typeof colorMask;
   stencilMode:  typeof stencilMode;
   pass:         typeof pass;
+  linearPass:   typeof linearPass;
   transparent:  typeof transparent;
   opaque:       typeof opaque;
   RenderPass:   typeof RenderPass;
@@ -1381,6 +1387,7 @@ export const Sg: SgNamespace = (() => {
   fn.colorMask    = colorMask;
   fn.stencilMode  = stencilMode;
   fn.pass         = pass;
+  fn.linearPass   = linearPass;
   fn.transparent  = transparent;
   fn.opaque       = opaque;
   fn.RenderPass   = RenderPass;

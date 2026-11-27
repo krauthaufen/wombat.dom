@@ -29,8 +29,8 @@ const compileTs = resolve(here, "..", "src", "scene", "compile.ts");
 const ALLOWLIST: readonly string[] = [
   // seedConstantPasses — isConstant-guarded reads of constant groups /
   // adaptive values at compileScene time (passes in constant structure).
-  "for (const c of node.children.content.force()) seedConstantPasses(c, out);",
-  "seedConstantPasses(node.child.force(), out);",
+  "for (const c of node.children.content.force()) seedConstantPasses(c, out, linear);",
+  "seedConstantPasses(node.child.force(), out, linear);",
   // Uniform key-set static snapshot at the bucketing boundary.
   "const entries = node.bag.kind === \"Static\" ? node.bag.entries : node.bag.entries.content.force();",
   // state.noEvents.isConstant fast path — force on a constant aval has

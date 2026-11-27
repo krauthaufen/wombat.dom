@@ -529,6 +529,10 @@ export const RenderPass = {
 export interface SgPass {
   readonly kind: "Pass";
   readonly pass: number;
+  /** The pass blends in linear light: its shaders write linear colour, and
+   *  the frame stores it sRGB-encoded (the canvas' sRGB view). What a pass
+   *  is, is told by the scopes that bring it up. Not for the main pass. */
+  readonly linear?: boolean;
   readonly child: SgNode;
 }
 

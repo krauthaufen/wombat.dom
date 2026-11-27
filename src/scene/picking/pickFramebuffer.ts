@@ -184,10 +184,23 @@ export function createPickFramebuffer(
     void colorName; // colorName is informational; we copy whatever the canvas FB exposes.
     let colorTextures = fb.colorTextures ?? HashMap.empty<string, GPUTexture>();
     colorTextures = colorTextures.add(PICK_NAME, pick);
+    // The frame's linear variant with the pick attachment beside its sRGB views.
+    const base = fb.linear;
+    const linear: IFramebuffer | undefined = base === undefined ? undefined : {
+      signature: { ...signature, colors: [...base.signature.colors].reduce((all, [name, format]) => all.add(name, format), signature.colors) },
+      colors: [...base.colors].reduce((all, [name, view]) => all.add(name, view), colors),
+      colorTextures,
+      ...(base.resolveColors !== undefined ? { resolveColors: base.resolveColors } : {}),
+      ...(fb.depthStencil !== undefined ? { depthStencil: fb.depthStencil } : {}),
+      ...(fb.depthStencilTexture !== undefined ? { depthStencilTexture: fb.depthStencilTexture } : {}),
+      width: fb.width,
+      height: fb.height,
+    };
     const out: IFramebuffer = {
       signature,
       colors,
       colorTextures,
+      ...(linear !== undefined ? { linear } : {}),
       ...(fb.depthStencil !== undefined ? { depthStencil: fb.depthStencil } : {}),
       ...(fb.depthStencilTexture !== undefined ? { depthStencilTexture: fb.depthStencilTexture } : {}),
       width: fb.width,
